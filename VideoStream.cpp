@@ -25,6 +25,7 @@ using namespace Spinnaker::GenICam;
 #include <condition_variable>
 #include <chrono>
 #include <queue>
+#include <csignal>
 
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -76,7 +77,16 @@ extern "C" {
 #endif
 
 
-bool done = false;
+namespace
+{
+  volatile std::sig_atomic_t done;
+}
+
+void signal_handler(int signal)
+{
+  do_shutdown();
+}
+
 /* Buffer to hold video frames */
 int nFrames = 50;
 std::vector<Mat> Frames(nFrames);
@@ -1375,6 +1385,11 @@ int main(int argc, char **argv)
   
   int curFrame = 0;
 
+  done = false;
+
+  // Install a signal handler
+  std::signal(SIGINT, signal_handler);
+  
   setupTcl(argv[0]);
 
   // Start a watchdog thread
