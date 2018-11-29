@@ -1,0 +1,1 @@
+sudo chrt --rr 99 ./VideoStream -v -d -s 2 -f ./config.tcl
