@@ -1,5 +1,7 @@
 // Tcl Code to be evaluated directly
-
+#ifdef __cplusplus
+extern "C" {
+#endif
 const char *ds_str = R"V0G0N(
   proc vstream::dsRegister { server { port 4620 } } {
 	set s [socket $server $port]
@@ -56,3 +58,6 @@ const char *ds_str = R"V0G0N(
 	return $status
     }
 )V0G0N";
+#ifdef __cplusplus
+}
+#endif

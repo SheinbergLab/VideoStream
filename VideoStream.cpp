@@ -72,6 +72,13 @@ extern "C" {
 
   int do_shutdown();
 
+  /* Shared with tcl */
+  int dsPort;
+  int useWebcam = 1;
+  int displayEvery = 1;   // Determines how often to update display
+
+  int ShowChunk = 0;
+
 #ifdef __cplusplus
 }
 #endif
@@ -105,17 +112,12 @@ bool overwrite = false;
 bool in_obs = false;
 int obs_count = -1;
 
-/* Shared with tcl */
-int dsPort;
-int useWebcam = 1;
-int displayEvery = 1;		// Determines how often to update display
 
 #ifdef _WIN32
 bool WSA_initialized = false;	// Windows Socket startup needs to be called once
 bool WSA_shutdown = false;	// Windows Socket cleanup only once
 #endif
 
-int ShowChunk = 0;
 
 #ifdef USE_FLIR
 INodeMap *nodeMapPtr = NULL;
@@ -151,7 +153,11 @@ class WatchdogThread
       /* rqueue will be available after command has been processed */
       std::string s(rqueue.front());
       rqueue.pop_front();
+#ifndef _WIN32
       sleep(interval);
+#else
+      _sleep(interval);
+#endif      
     }
   }
 };
