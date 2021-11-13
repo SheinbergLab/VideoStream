@@ -1,10 +1,11 @@
-#include <tacopie/tacopie>
 
 #include <tcl.h>
 
 // Use dgz format to store metadata about frames
 #include <df.h>
 #include <dynio.h>
+
+#include <sockpp/tcp_acceptor.h>
 
 #include "opencv2/opencv.hpp"
 
@@ -180,38 +181,40 @@ class TcpipThread
     port = 4610;
     done = false;
   }
-  
-  void onNewMessage(const std::shared_ptr<tacopie::tcp_client>& client,
-		    const tacopie::tcp_client::read_result& res) {
-    if (res.success) {
-      if (std::string(res.buffer.data()).compare(0,4,"done") == 0) {
+
+  ~TcpipThread()
+  {
+  }
+
+  static void tcpClientProcess(sockpp::tcp_socket sock) {
+    ssize_t n;
+    char buf[1024];
+    
+    while ((n = sock.read(buf, sizeof(buf))) > 0) {
+      
+      if (std::string(buf).compare(0,4,"done") == 0) {
       }
       /*
        * Queue up message 
        */
 
+      std::cout << "TCP/IP: " << std::string(buf) << std::endl;
+      
       /* push command onto Tcl queue */
-      cqueue.push_back(std::string(res.buffer.data()));
+      cqueue.push_back(std::string(buf));
 
       /* rqueue will be available after command has been processed */
       std::string s(rqueue.front());
       rqueue.pop_front();
+
+      std::cout << "Response: " << s << std::endl;
+
       std::vector<char> rvec(s.begin(), s.end());
       rvec.push_back('\n');
       rvec.push_back('\0');	// for compatibility with Windows version
-      client->async_write({rvec, nullptr});
-
-      /* reset read callback */
-      client->async_read({1024, std::bind(&TcpipThread::onNewMessage,
-					  this, client,
-					  std::placeholders::_1)});
-    }
-    else {
-      //      std::cout << "Client disconnected" << std::endl;
-      client->disconnect();
+      sock.write_n(rvec.data(), rvec.size());
     }
   }
-
   
   void
   startTcpServer(void) {
@@ -229,27 +232,38 @@ class TcpipThread
       WSA_initialized = true;
     }
 #endif /* _WIN32 */
-    
-    tacopie::tcp_server server;
 
-    try { 
-      server.start("0.0.0.0", port,
-		 [this](const std::shared_ptr<tacopie::tcp_client>& client) -> bool {
-		   //		   std::cout << "New client" << std::endl;
-		   client->async_read({1024,
-			 std::bind(&TcpipThread::onNewMessage, this,
-				   client, std::placeholders::_1)});
-		   return true;
-		 });
-    }
-    catch (const std::exception& e) {
-      std::cout << "Unable to start TCP/IP server: " << e.what() << std::endl;
+
+    sockpp::socket_initializer sockInit;
+    
+    sockpp::tcp_acceptor acc(port);
+    
+    if (!acc) {
+      std::cerr << "Error creating the acceptor: " << acc.last_error_str() << std::endl;
       return;
-    }    
+    }
+    //cout << "Acceptor bound to address: " << acc.address() << std::endl;
+    //        std::cout << "Awaiting connections on port " << port << "..." << std::endl;
+    
+    while (!m_bDone) {
+      sockpp::inet_address peer;
+      // Accept a new client connection
+      sockpp::tcp_socket sock = acc.accept(&peer);
+      //            std::cout << "Received a connection request from " << peer << std::endl;
+      
+      if (!sock) {
+	std::cerr << "Error accepting incoming connection: "
+		  << acc.last_error_str() << std::endl;
+      }
+      else {
+	// Create a thread and transfer the new stream to it.
+	std::thread thr(tcpClientProcess, std::move(sock));
+	thr.detach();
+      }
+    }
+
     std::unique_lock<std::mutex> lock(m_sig_mutex);
     m_sig_cv.wait(lock);
-
-    server.stop();
     
 #ifdef _WIN32
     if (!WSA_shutdown) {
@@ -278,23 +292,23 @@ class DSTcpipThread
     m_bDone = false;
     done = false;
   }
-  
-  void onNewMessage(const std::shared_ptr<tacopie::tcp_client>& client,
-		    const tacopie::tcp_client::read_result& res) {
-    if (res.success) {
-      /* push command onto dataserver queue */
-      ds_queue.push_back(std::string(res.buffer.data()));
 
-      /* reset read callback */
-      client->async_read({1024, std::bind(&DSTcpipThread::onNewMessage,
-					  this, client,
-					  std::placeholders::_1)});
-    }
-    else {
-      //      std::cout << "Client disconnected" << std::endl;
-      client->disconnect();
+  static void dstcpClientProcess(sockpp::tcp_socket sock) {
+    ssize_t n;
+    char buf[1024];
+    
+    while ((n = sock.read(buf, sizeof(buf))) > 0) {
+      if (std::string(buf).compare(0,4,"done") == 0) {
+      }
+      /*
+       * Queue up message 
+       */
+
+      /* push command onto Tcl queue */
+      ds_queue.push_back(std::string(buf));
     }
   }
+  
   
   void
   startTcpServer(void) {
@@ -312,28 +326,41 @@ class DSTcpipThread
       WSA_initialized = true;
     }
 #endif /* _WIN32 */
-    
-    tacopie::tcp_server server;
 
-    try { 
-      server.start("0.0.0.0", port,
-		 [this](const std::shared_ptr<tacopie::tcp_client>& client) -> bool {
-		   //		   std::cout << "New client" << std::endl;
-		   client->async_read({1024,
-			 std::bind(&DSTcpipThread::onNewMessage, this,
-				   client, std::placeholders::_1)});
-		   return true;
-		   });
-    }
-    catch (const std::exception& e) {
-      std::cout << "Unable to start DS TCP/IP server: " << e.what() << std::endl;
+
+    sockpp::socket_initializer sockInit;
+    
+    sockpp::tcp_acceptor acc(port);
+    
+    if (!acc) {
+      std::cerr << "Error creating the acceptor: " << acc.last_error_str() << std::endl;
       return;
-    }    
+    }
+    //cout << "Acceptor bound to address: " << acc.address() << std::endl;
+    //        std::cout << "Awaiting connections on port " << port << "..." << std::endl;
+    
+    while (!m_bDone) {
+      sockpp::inet_address peer;
+      // Accept a new client connection
+      sockpp::tcp_socket sock = acc.accept(&peer);
+      //            std::cout << "Received a connection request from " << peer << std::endl;
+      
+      if (!sock) {
+	std::cerr << "Error accepting incoming connection: "
+		  << acc.last_error_str() << std::endl;
+      }
+      else {
+	// Create a thread and transfer the new stream to it.
+	std::thread thr(dstcpClientProcess, std::move(sock));
+	thr.detach();
+      }
+    }
+    
+    std::cout << "Shutting down TCP/IP server" << std::endl;
+
     std::unique_lock<std::mutex> lock(m_sig_mutex);
     m_sig_cv.wait(lock);
 
-    server.stop();
-      
 #ifdef _WIN32
     if (!WSA_shutdown) {
       WSACleanup();
@@ -415,9 +442,9 @@ public:
     j = dfuAddDynGroupNewList(dg, (char *) "obs_stops", DF_LONG, 50);
     obs_stops = DYN_GROUP_LIST(dg, j);
 
-    fourcc = CV_FOURCC('X','V','I','D');
-    //    fourcc = CV_FOURCC('x','2','6','4');
-    //    fourcc = CV_FOURCC('a','v','c','1');
+    fourcc = cv::VideoWriter::fourcc('X','V','I','D');
+    //    ('x','2','6','4');
+    //    ('a','v','c','1');
   }
 
 
@@ -448,7 +475,7 @@ public:
     int oldfourcc = fourcc;
     if (strlen(s) != 4)
       return -1;
-    fourcc = CV_FOURCC(s[0], s[1], s[2], s[3]);
+    fourcc = cv::VideoWriter::fourcc(s[0], s[1], s[2], s[3]);
     return oldfourcc;
   }
   
@@ -738,7 +765,7 @@ public:
       }
       else if (show_frames) {
 	/* See if the window was closed by the wm */
-	if (cvGetWindowHandle("Frame")) {
+	if (getWindowProperty("Frame", WND_PROP_AUTOSIZE) >= 0) {
 	  // Use opencv highgui to display frame
 
 	  Mat dframe;
@@ -746,7 +773,7 @@ public:
 	    cv::resize(Frames[displayFrame], dframe,
 		       cv::Size(Frames[displayFrame].cols * scale,
 				Frames[displayFrame].rows * scale),
-		       0, 0, CV_INTER_LINEAR);
+		       0, 0, cv::INTER_LINEAR);
 	  }
 	  else {
 	    dframe = Frames[displayFrame].clone();
@@ -1364,9 +1391,9 @@ int main(int argc, char **argv)
 	return -1; 
       } 
     
-    frame_width = cap.get(CV_CAP_PROP_FRAME_WIDTH); 
-    frame_height = cap.get(CV_CAP_PROP_FRAME_HEIGHT); 
-    frame_rate = cap.get(CV_CAP_PROP_FPS);
+    frame_width = cap.get(CAP_PROP_FRAME_WIDTH); 
+    frame_height = cap.get(CAP_PROP_FRAME_HEIGHT); 
+    frame_rate = cap.get(CAP_PROP_FPS);
     if (frame_rate == 0.0) frame_rate = 30.0; // Some cameras don't supply
   }
 #else
@@ -1546,7 +1573,7 @@ int main(int argc, char **argv)
       if (scale != 1.0) {
 	cv::resize(frame, dframe,
 		   cv::Size(frame.cols * scale,frame.rows * scale),
-		   0, 0, CV_INTER_LINEAR);
+		   0, 0, cv::INTER_LINEAR);
       }
       else {
 	dframe = frame.clone();
@@ -1596,8 +1623,8 @@ int main(int argc, char **argv)
   dstcpServer.m_sig_cv.notify_all();
 
   /* don't leave until TCP/IP threads are finished */
-  net_thread.join();
-  ds_thread.join();
+  net_thread.detach();
+  ds_thread.detach();
 
   if (verbose) std::cout << "Shutting down" << std::endl;
 
