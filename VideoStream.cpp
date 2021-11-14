@@ -191,28 +191,18 @@ class TcpipThread
     char buf[1024];
     
     while ((n = sock.read(buf, sizeof(buf))) > 0) {
-      
-      if (std::string(buf).compare(0,4,"done") == 0) {
-      }
       /*
        * Queue up message 
        */
 
-      std::cout << "TCP/IP: " << std::string(buf) << std::endl;
-      
       /* push command onto Tcl queue */
-      cqueue.push_back(std::string(buf));
+      cqueue.push_back(std::string(buf, n));
 
       /* rqueue will be available after command has been processed */
       std::string s(rqueue.front());
       rqueue.pop_front();
-
-      std::cout << "Response: " << s << std::endl;
-
-      std::vector<char> rvec(s.begin(), s.end());
-      rvec.push_back('\n');
-      rvec.push_back('\0');	// for compatibility with Windows version
-      sock.write_n(rvec.data(), rvec.size());
+      s += "\n";
+      sock.write_n(s.data(), s.size()+1);
     }
   }
   
@@ -298,14 +288,7 @@ class DSTcpipThread
     char buf[1024];
     
     while ((n = sock.read(buf, sizeof(buf))) > 0) {
-      if (std::string(buf).compare(0,4,"done") == 0) {
-      }
-      /*
-       * Queue up message 
-       */
-
-      /* push command onto Tcl queue */
-      ds_queue.push_back(std::string(buf));
+      ds_queue.push_back(std::string(buf, n));
     }
   }
   
@@ -336,14 +319,11 @@ class DSTcpipThread
       std::cerr << "Error creating the acceptor: " << acc.last_error_str() << std::endl;
       return;
     }
-    //cout << "Acceptor bound to address: " << acc.address() << std::endl;
-    //        std::cout << "Awaiting connections on port " << port << "..." << std::endl;
-    
+
     while (!m_bDone) {
       sockpp::inet_address peer;
       // Accept a new client connection
       sockpp::tcp_socket sock = acc.accept(&peer);
-      //            std::cout << "Received a connection request from " << peer << std::endl;
       
       if (!sock) {
 	std::cerr << "Error accepting incoming connection: "
@@ -356,8 +336,6 @@ class DSTcpipThread
       }
     }
     
-    std::cout << "Shutting down TCP/IP server" << std::endl;
-
     std::unique_lock<std::mutex> lock(m_sig_mutex);
     m_sig_cv.wait(lock);
 
@@ -964,7 +942,7 @@ static int docmd(const char *dscmd)
 
 
 /*
- * processDSCommand - process input from dataserver supplying events into stim
+ * processDSCommand - process input from dataserver supplying events
  */
 int processDSCommand(const char *dscmd)
 {
