@@ -1246,6 +1246,7 @@ int main(int argc, char **argv)
   bool help = false;
   bool init_display = false;
   bool flip_view = true;
+  int  flip_code = -2;
   float scale = 1.0;
   const char *startup_file = NULL;
   int port = 4610;
@@ -1266,6 +1267,8 @@ int main(int argc, char **argv)
     ("s,scale", "Scale factor", cxxopts::value<float>(scale))
     ("n,showevery", "Show every n frames", cxxopts::value<int>(display_every))
     ("f,file", "File name", cxxopts::value<std::string>())
+    ("e,flipcode", "Flip code (OpenCV)", cxxopts::value<int>(flip_code))
+    ("l,flip", "Flip video(OpenCV)", cxxopts::value<bool>(flip_view))
     ("help", "Print help", cxxopts::value<bool>(help))
     ;
 
@@ -1287,7 +1290,7 @@ int main(int argc, char **argv)
     std::cout << options.help({"", "Group"}) << std::endl;
     exit(0);
   }
-  
+
   // Connect to Tcl variable
   displayEvery = display_every;
 
@@ -1487,7 +1490,7 @@ int main(int argc, char **argv)
 
       if ( flip_view ) {
 	Mat flipped = cv::Mat(cvimg.rows, cvimg.cols, CV_8UC1);
-	cv::flip(cvimg, flipped, -1);
+	cv::flip(cvimg, flipped, flip_code);
 	
 	frame = flipped.clone();
       }
