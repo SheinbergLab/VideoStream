@@ -27,6 +27,8 @@ using namespace Spinnaker::GenICam;
 #include <chrono>
 #include <queue>
 #include <csignal>
+#include <sys/un.h>
+#include <sys/socket.h>
 
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -58,6 +60,10 @@ extern "C" {
   void addTclCommands(Tcl_Interp *interp);
   int open_videoFile(char *filename);
   int close_videoFile(void);
+
+  int open_domainSocket(char *socket_path);
+  int close_domainSocket(void);
+
   int set_inObs(int status);
   int set_fourCC(char *str);
 
@@ -115,8 +121,8 @@ int obs_count = -1;
 
 
 #ifdef _WIN32
-bool WSA_initialized = false;	// Windows Socket startup needs to be called once
-bool WSA_shutdown = false;	// Windows Socket cleanup only once
+bool WSA_initialized = false;   // Windows Socket startup needs to be called once
+bool WSA_shutdown = false;  // Windows Socket cleanup only once
 #endif
 
 
@@ -145,7 +151,7 @@ class WatchdogThread
   WatchdogThread()
   {
     m_bDone = false;
-    interval = 1;		// 1 second wakeup
+    interval = 1;       // 1 second wakeup
   }
   
   void startWatchdog(void) {
@@ -216,8 +222,8 @@ class TcpipThread
       WSADATA data;
       
       if (WSAStartup(version, &data) != 0) {
-	std::cerr << "WSAStartup() failure" << std::endl;
-	return;
+    std::cerr << "WSAStartup() failure" << std::endl;
+    return;
       }
       WSA_initialized = true;
     }
@@ -242,13 +248,13 @@ class TcpipThread
       //            std::cout << "Received a connection request from " << peer << std::endl;
       
       if (!sock) {
-	std::cerr << "Error accepting incoming connection: "
-		  << acc.last_error_str() << std::endl;
+    std::cerr << "Error accepting incoming connection: "
+          << acc.last_error_str() << std::endl;
       }
       else {
-	// Create a thread and transfer the new stream to it.
-	std::thread thr(tcpClientProcess, std::move(sock));
-	thr.detach();
+    // Create a thread and transfer the new stream to it.
+    std::thread thr(tcpClientProcess, std::move(sock));
+    thr.detach();
       }
     }
 
@@ -303,8 +309,8 @@ class DSTcpipThread
       WSADATA data;
       
       if (WSAStartup(version, &data) != 0) {
-	std::cerr << "WSAStartup() failure" << std::endl;
-	return;
+    std::cerr << "WSAStartup() failure" << std::endl;
+    return;
       }
       WSA_initialized = true;
     }
@@ -326,13 +332,13 @@ class DSTcpipThread
       sockpp::tcp_socket sock = acc.accept(&peer);
       
       if (!sock) {
-	std::cerr << "Error accepting incoming connection: "
-		  << acc.last_error_str() << std::endl;
+    std::cerr << "Error accepting incoming connection: "
+          << acc.last_error_str() << std::endl;
       }
       else {
-	// Create a thread and transfer the new stream to it.
-	std::thread thr(dstcpClientProcess, std::move(sock));
-	thr.detach();
+    // Create a thread and transfer the new stream to it.
+    std::thread thr(dstcpClientProcess, std::move(sock));
+    thr.detach();
       }
     }
     
@@ -361,11 +367,13 @@ class ProcessThread
   bool just_opened;
   bool only_save_in_obs;
   bool annotate;
-  int frame_count;		// keep track of frames output
-  int prev_fr;    		// track previous frame id
-  int start_obs;    		
-  int end_obs;    		
-  
+  int frame_count;      // keep track of frames output
+  int prev_fr;          // track previous frame id
+  int start_obs;            
+  int end_obs;          
+
+  int sfd = -1;         // socket file descriptor 
+
   VideoWriter video;
   DYN_GROUP *dg;
   DYN_LIST *ids, *obs_starts, *obs_stops;
@@ -388,14 +396,13 @@ public:
   ProcessThread()
   {
     int j;
-    
     openfile = false;
     closefile = false;
     overwrite = false;
     do_open = false;
     just_opened = false;
     only_save_in_obs = true;
-    annotate = true;	// add info to each frame
+    annotate = true;    // add info to each frame
     
     dg = dfuCreateDynGroup(6);
     
@@ -433,11 +440,11 @@ public:
   void annotate_frame(Mat frame)
   {
     cv::putText(frame,
-		std::to_string(frame_count),
-		cv::Point(20,20), // Coordinates
-		cv::FONT_HERSHEY_SIMPLEX, // Font
-		0.7, // Scale. 2.0 = 2x bigger
-		cv::Scalar(20,20,20));
+        std::to_string(frame_count),
+        cv::Point(20,20), // Coordinates
+        cv::FONT_HERSHEY_SIMPLEX, // Font
+        0.7, // Scale. 2.0 = 2x bigger
+        cv::Scalar(20,20,20));
   }
 
   bool fileIsOpen(void) {
@@ -468,8 +475,8 @@ public:
   {
     if (openfile) return false;
     do_open = true;
-    obs_count = -1;		// reset
-    frame_count = 0;		// reset
+    obs_count = -1;     // reset
+    frame_count = 0;        // reset
     output_file = std::string(filename);
     return true;
   }
@@ -484,9 +491,9 @@ public:
     
     // Define the codec and create VideoWriter object
     video = VideoWriter(output_file,
-			fourcc,
-			frame_rate,
-			Size(frame_width,frame_height), is_color);
+            fourcc,
+            frame_rate,
+            Size(frame_width,frame_height), is_color);
     
 
     /*
@@ -528,8 +535,8 @@ public:
 
     dgInitBuffer();
     strncpy(DYN_GROUP_NAME(dg),
-	    getFileName(filename).c_str(),
-	    DYN_GROUP_NAME_SIZE); 
+        getFileName(filename).c_str(),
+        DYN_GROUP_NAME_SIZE); 
     dgRecordDynGroup(dg);
     if (!dgWriteBufferCompressed((char *) (output_file+".dgz").c_str())) {
       return false;
@@ -538,86 +545,116 @@ public:
     return true;
   }
 
+  bool openDomainSocket(char *path)
+  {
+    struct sockaddr_un svaddr, claddr;
+    if (sfd >= 0) close(sfd);
+
+    sfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if(sfd == -1) return false;
+
+    memset(&svaddr,0,sizeof(struct sockaddr_un));
+    svaddr.sun_family = AF_UNIX;
+    strncpy(svaddr.sun_path, path, strlen(path));
+
+  if (connect(sfd, (struct sockaddr *) &svaddr,
+                sizeof(struct sockaddr_un)) == -1) {
+      close(sfd);
+      sfd = -1;
+      return false;
+    }
+   return true;
+  }
   
+  bool closeDomainSocket(void)
+  {
+    if (sfd >= 0) {
+      close(sfd);
+      sfd = -1;
+      return true;
+    }
+    return false;
+  }
+
   void startProcessThread(void)     
   {
     while (1) {
       if (do_open) {
-	doOpenFile();
-	do_open = false;
-	just_opened = true;
+    doOpenFile();
+    do_open = false;
+    just_opened = true;
       }
 
       do {
-	processFrame = process_queue.front();
-	process_queue.pop_front();
+    processFrame = process_queue.front();
+    process_queue.pop_front();
 
-	// If we just opened a file, stash away id and timestamp
-	if (just_opened) {
-	  just_opened = false;
-	  on_frameID = FrameIDs[processFrame];
-	  on_frameTimestamp = FrameTimestamps[processFrame];
-	  on_systemTimestamp = SystemTimestamps[processFrame];
-	}
-	
-	// Write the frame into the file
-	if (openfile) {
-	  // Add metadata to frame info file
-	  if (processFrame)
-	    prev_fr = (processFrame-1);
-	  else prev_fr = nFrames-1;
-	  
-	  if (FrameInObs[processFrame] && !FrameInObs[prev_fr]) {
-	    start_obs = true;
-	    dfuAddDynListLong(obs_starts, frame_count);
-	  }
-	  else start_obs = false;
-	  
-	  if (!FrameInObs[processFrame] && FrameInObs[prev_fr]) {
-	    end_obs = true;
-	    dfuAddDynListLong(obs_stops, frame_count-1);
-	  }
-	  else end_obs = false;
+    // If we just opened a file, stash away id and timestamp
+    if (just_opened) {
+      just_opened = false;
+      on_frameID = FrameIDs[processFrame];
+      on_frameTimestamp = FrameTimestamps[processFrame];
+      on_systemTimestamp = SystemTimestamps[processFrame];
+    }
+    
+    // Write the frame into the file
+    if (openfile) {
+      // Add metadata to frame info file
+      if (processFrame)
+        prev_fr = (processFrame-1);
+      else prev_fr = nFrames-1;
+      
+      if (FrameInObs[processFrame] && !FrameInObs[prev_fr]) {
+        start_obs = true;
+        dfuAddDynListLong(obs_starts, frame_count);
+      }
+      else start_obs = false;
+      
+      if (!FrameInObs[processFrame] && FrameInObs[prev_fr]) {
+        end_obs = true;
+        dfuAddDynListLong(obs_stops, frame_count-1);
+      }
+      else end_obs = false;
 
-	  if (!only_save_in_obs ||
-	      (only_save_in_obs && FrameInObs[processFrame])) {
+      if (!only_save_in_obs ||
+          (only_save_in_obs && FrameInObs[processFrame])) {
 
-	    if (annotate) annotate_frame(Frames[processFrame]);
-	    
-	    video.write(Frames[processFrame]);
+        if (annotate) annotate_frame(Frames[processFrame]);
+        
+        video.write(Frames[processFrame]);
 
-	    dfuAddDynListLong(ids, frame_count);
-	    dfuAddDynListLong(frame_ids,
-			      (int) (FrameIDs[processFrame]-on_frameID));
+        dfuAddDynListLong(ids, frame_count);
+        dfuAddDynListLong(frame_ids,
+                  (int) (FrameIDs[processFrame]-on_frameID));
 
-	    int64_t ns = FrameTimestamps[processFrame]-on_frameTimestamp; 
-	    dfuAddDynListLong(frame_timestamps, (int) (ns/1000));
+        int64_t ns = FrameTimestamps[processFrame]-on_frameTimestamp; 
+        dfuAddDynListLong(frame_timestamps, (int) (ns/1000));
 
-	    int elapsed = chrono::duration_cast<chrono::microseconds>(SystemTimestamps[processFrame] - on_systemTimestamp).count();
-	    dfuAddDynListLong(frame_systemtimes, elapsed);
+        int elapsed = chrono::duration_cast<chrono::microseconds>(SystemTimestamps[processFrame] - on_systemTimestamp).count();
+        dfuAddDynListLong(frame_systemtimes, elapsed);
 
-	    dfuAddDynListChar(frame_linestatus,
-			      (unsigned char) FrameLinestatus[processFrame]);
-	    
-	    frame_count++;
-	  }
-	}
+        dfuAddDynListChar(frame_linestatus,
+                  (unsigned char) FrameLinestatus[processFrame]);
+        
+        frame_count++;
+      }
+    }
       } while (processFrame >= 0 && process_queue.size());
 
       /* Message to shut down - if file open, then close */
       if (processFrame < 0 || processFrame >= nFrames) {
-	if (openfile) {
-	  video.release();
-	  writeFrameDG(dg, output_file);
-	}
-	break;
+    if (openfile) {
+      video.release();
+      writeFrameDG(dg, output_file);
+    }
+    break;
       }
       
       if (closefile) {
-	video.release();
-	openfile = false;
-	closefile = false;
-	writeFrameDG(dg, output_file);
+    video.release();
+    openfile = false;
+    closefile = false;
+    writeFrameDG(dg, output_file);
       }
     }
   }
@@ -634,6 +671,17 @@ int close_videoFile(void)
 {
   return processThread.closeFile();
 }
+
+int open_domainSocket(char *socket_path)
+{
+  return processThread.openDomainSocket(socket_path);
+}
+
+int close_domainSocket(void)
+{
+  return processThread.closeDomainSocket();
+}
+
 
 int set_inObs(int status)
 {
@@ -697,20 +745,20 @@ public:
   static void annotate_frame(Mat frame, bool inobs)
   {
     cv::putText(frame,
-		"Frame: " + std::to_string(processThread.getFrameCount()),
-		cv::Point(50,50), // Coordinates
-		cv::FONT_HERSHEY_SIMPLEX, // Font
-		1.0, // Scale. 2.0 = 2x bigger
-		cv::Scalar(20,20,20));
+        "Frame: " + std::to_string(processThread.getFrameCount()),
+        cv::Point(50,50), // Coordinates
+        cv::FONT_HERSHEY_SIMPLEX, // Font
+        1.0, // Scale. 2.0 = 2x bigger
+        cv::Scalar(20,20,20));
     
     if (processThread.fileIsOpen()) {
       cv::putText(frame,
-		  "File: " + processThread.currentFile() + "[" +
-		  std::to_string(obs_count) + "]",
-		  cv::Point(50,85), // Coordinates
-		  cv::FONT_HERSHEY_SIMPLEX, // Font
-		  0.75, // Scale. 2.0 = 2x bigger
-		  cv::Scalar(20,20,20));
+          "File: " + processThread.currentFile() + "[" +
+          std::to_string(obs_count) + "]",
+          cv::Point(50,85), // Coordinates
+          cv::FONT_HERSHEY_SIMPLEX, // Font
+          0.75, // Scale. 2.0 = 2x bigger
+          cv::Scalar(20,20,20));
     }
     if (inobs) {
       cv::circle(frame, cv::Point(40,80), 6, cv::Scalar(10,10,200));
@@ -721,61 +769,61 @@ public:
   {
     while (1) {
       do {
-	displayFrame = display_queue.front();
-	display_queue.pop_front();
+    displayFrame = display_queue.front();
+    display_queue.pop_front();
       }
       while (displayFrame >= 0 && display_queue.size());
       
       /* Message to shut down */
       if (displayFrame == -1 || displayFrame >= nFrames) {
-	
-	// Closes all the windows
-	destroyAllWindows();
-	
-	break;
+    
+    // Closes all the windows
+    destroyAllWindows();
+    
+    break;
       }
-      else if (displayFrame == -2) {	// show
-	namedWindow("Frame", WINDOW_AUTOSIZE);
-	//	setMouseCallback("Frame", onMouse, NULL);
+      else if (displayFrame == -2) {    // show
+    namedWindow("Frame", WINDOW_AUTOSIZE);
+    //  setMouseCallback("Frame", onMouse, NULL);
       }
       else if (displayFrame == -3) { // hide
-	destroyWindow("Frame");
+    destroyWindow("Frame");
       }
       else if (show_frames) {
-	/* See if the window was closed by the wm */
-	if (getWindowProperty("Frame", WND_PROP_AUTOSIZE) >= 0) {
-	  // Use opencv highgui to display frame
+    /* See if the window was closed by the wm */
+    if (getWindowProperty("Frame", WND_PROP_AUTOSIZE) >= 0) {
+      // Use opencv highgui to display frame
 
-	  Mat dframe;
-	  if (scale != 1.0) {
-	    cv::resize(Frames[displayFrame], dframe,
-		       cv::Size(Frames[displayFrame].cols * scale,
-				Frames[displayFrame].rows * scale),
-		       0, 0, cv::INTER_LINEAR);
-	  }
-	  else {
-	    dframe = Frames[displayFrame].clone();
-	  }
+      Mat dframe;
+      if (scale != 1.0) {
+        cv::resize(Frames[displayFrame], dframe,
+               cv::Size(Frames[displayFrame].cols * scale,
+                Frames[displayFrame].rows * scale),
+               0, 0, cv::INTER_LINEAR);
+      }
+      else {
+        dframe = Frames[displayFrame].clone();
+      }
 
-	  annotate_frame(dframe, FrameInObs[displayFrame]);
-	  imshow( "Frame", dframe );
-	  
-	  // Press  ESC on keyboard to  exit
-	  char c = (char)waitKey(5);
-	  switch (c) {
-	  case 27:
-	    do_shutdown();
-	    break;
-	  case 'h':
-	    hide();
-	    break;
-	  default:
-	    break;
-	  }
-	}
-	else {
-	  show_frames = false;
-	}
+      annotate_frame(dframe, FrameInObs[displayFrame]);
+      imshow( "Frame", dframe );
+      
+      // Press  ESC on keyboard to  exit
+      char c = (char)waitKey(5);
+      switch (c) {
+      case 27:
+        do_shutdown();
+        break;
+      case 'h':
+        hide();
+        break;
+      default:
+        break;
+      }
+    }
+    else {
+      show_frames = false;
+    }
       }
     }
   }
@@ -844,15 +892,15 @@ int processShutdownCommands(void) {
     if (retcode == TCL_OK) {
       const char *rcstr = Tcl_GetStringResult(interp);
       if (rcstr) {
-	//rqueue.push_back(std::string(rcstr));
-	//std::cout << std::string(rcstr) << std::endl;
+    //rqueue.push_back(std::string(rcstr));
+    //std::cout << std::string(rcstr) << std::endl;
       }
     }
     else {
       const char *rcstr = Tcl_GetStringResult(interp);
       if (rcstr) {
-	//rqueue.push_back("!TCL_ERROR "+std::string(rcstr));
-	//std::cout << "Error: " + std::string(rcstr) << std::endl;
+    //rqueue.push_back("!TCL_ERROR "+std::string(rcstr));
+    //std::cout << "Error: " + std::string(rcstr) << std::endl;
       }
     }
   }
@@ -868,24 +916,24 @@ int processTclCommands(void) {
     const char *script = s.c_str();
       int retcode = Tcl_Eval(interp, script);
       if (retcode == TCL_OK) {
-	const char *rcstr = Tcl_GetStringResult(interp);
-	if (rcstr) {
-	  rqueue.push_back(std::string(rcstr));
-	  //std::cout << std::string(rcstr) << std::endl;
-	}
-	else {
-	  rqueue.push_back("");
-	}
+    const char *rcstr = Tcl_GetStringResult(interp);
+    if (rcstr) {
+      rqueue.push_back(std::string(rcstr));
+      //std::cout << std::string(rcstr) << std::endl;
+    }
+    else {
+      rqueue.push_back("");
+    }
       }
       else {
-	const char *rcstr = Tcl_GetStringResult(interp);
-	if (rcstr) {
-	  rqueue.push_back("!TCL_ERROR "+std::string(rcstr));
-	  //std::cout << "Error: " + std::string(rcstr) << std::endl;
-	}
-	else {
-	  rqueue.push_back("Error:");
-	}
+    const char *rcstr = Tcl_GetStringResult(interp);
+    if (rcstr) {
+      rqueue.push_back("!TCL_ERROR "+std::string(rcstr));
+      //std::cout << "Error: " + std::string(rcstr) << std::endl;
+    }
+    else {
+      rqueue.push_back("Error:");
+    }
       }
   }
   
@@ -1097,10 +1145,10 @@ int configure_chunk_data(bool v)
 
       CBooleanPtr ptrChunkModeActive = nodeMapPtr->GetNode("ChunkModeActive");
       if (!IsAvailable(ptrChunkModeActive) || !IsWritable(ptrChunkModeActive))
-	{
-	  cout << "Unable to activate chunk mode. Aborting..." << endl << endl;
-	  return -1;
-	}
+    {
+      cout << "Unable to activate chunk mode. Aborting..." << endl << endl;
+      return -1;
+    }
       ptrChunkModeActive->SetValue(true);
       if (v) cout << "Chunk mode activated..." << endl;
       //
@@ -1121,50 +1169,50 @@ int configure_chunk_data(bool v)
       // Retrieve the selector node
       CEnumerationPtr ptrChunkSelector = nodeMapPtr->GetNode("ChunkSelector");
       if (!IsAvailable(ptrChunkSelector) || !IsReadable(ptrChunkSelector))
-	{
-	  cout << "Unable to retrieve chunk selector. Aborting..." << endl << endl;
-	  return -1;
-	}
+    {
+      cout << "Unable to retrieve chunk selector. Aborting..." << endl << endl;
+      return -1;
+    }
       // Retrieve entries
       ptrChunkSelector->GetEntries(entries);
       if (v) cout << "Enabling entries..." << endl;
       for (int i = 0; i < entries.size(); i++)
-	{
-	  // Select entry to be enabled
-	  CEnumEntryPtr ptrChunkSelectorEntry = entries.at(i);
-	  // Go to next node if problem occurs
-	  if (!IsAvailable(ptrChunkSelectorEntry) || !IsReadable(ptrChunkSelectorEntry))
-	    {
-	      continue;
-	    }
-	  ptrChunkSelector->SetIntValue(ptrChunkSelectorEntry->GetValue());
-	  if (v) cout << "\t" << ptrChunkSelectorEntry->GetSymbolic() << ": ";
-	  // Retrieve corresponding boolean
-	  CBooleanPtr ptrChunkEnable = nodeMapPtr->GetNode("ChunkEnable");
-	  // Enable the boolean, thus enabling the corresponding chunk data
-	  if (!IsAvailable(ptrChunkEnable))
-	    {
-	      if (v) cout << "Node not available" << endl;
-	    }
-	  else if (ptrChunkEnable->GetValue())
-	    {
-	      if (v) cout << "Enabled" << endl;
-	    }
-	  else if (IsWritable(ptrChunkEnable))
-	    {
-	      ptrChunkEnable->SetValue(true);
-	      if (v) cout << "Enabled" << endl;
-	    }
-	  else
-	    {
-	      if (v) cout << "Node not writable" << endl;
-	    }
-	}
+    {
+      // Select entry to be enabled
+      CEnumEntryPtr ptrChunkSelectorEntry = entries.at(i);
+      // Go to next node if problem occurs
+      if (!IsAvailable(ptrChunkSelectorEntry) || !IsReadable(ptrChunkSelectorEntry))
+        {
+          continue;
+        }
+      ptrChunkSelector->SetIntValue(ptrChunkSelectorEntry->GetValue());
+      if (v) cout << "\t" << ptrChunkSelectorEntry->GetSymbolic() << ": ";
+      // Retrieve corresponding boolean
+      CBooleanPtr ptrChunkEnable = nodeMapPtr->GetNode("ChunkEnable");
+      // Enable the boolean, thus enabling the corresponding chunk data
+      if (!IsAvailable(ptrChunkEnable))
+        {
+          if (v) cout << "Node not available" << endl;
+        }
+      else if (ptrChunkEnable->GetValue())
+        {
+          if (v) cout << "Enabled" << endl;
+        }
+      else if (IsWritable(ptrChunkEnable))
+        {
+          ptrChunkEnable->SetValue(true);
+          if (v) cout << "Enabled" << endl;
+        }
+      else
+        {
+          if (v) cout << "Node not writable" << endl;
+        }
+    }
     }
   catch (Spinnaker::Exception &e)
         {
-	  cout << "Error: " << e.what() << endl;
-	  result = -1;
+      cout << "Error: " << e.what() << endl;
+      result = -1;
         }
   return result;
 }
@@ -1241,7 +1289,7 @@ int main(int argc, char **argv)
 {
   int camera_id = 0;
   bool verbose = false;
-  bool use_webcam = false;	// even if FLIR defined, use webcam
+  bool use_webcam = false;  // even if FLIR defined, use webcam
   int display_every = 1;
   bool help = false;
   bool init_display = false;
@@ -1301,7 +1349,7 @@ int main(int argc, char **argv)
   CameraList camList;
   
   if (!use_webcam) {
-    useWebcam = 0;		// linked to Tcl
+    useWebcam = 0;      // linked to Tcl
     
     // Retrieve singleton reference to system object
     system = System::GetInstance();
@@ -1336,7 +1384,7 @@ int main(int argc, char **argv)
     CEnumerationPtr ptrAcquisitionMode = nodeMap.GetNode("AcquisitionMode");
     if (!IsAvailable(ptrAcquisitionMode) || !IsWritable(ptrAcquisitionMode))
       {
-	cout << "Unable to set acquisition mode to continuous (enum retrieval). Aborting..." << endl << endl;
+    cout << "Unable to set acquisition mode to continuous (enum retrieval). Aborting..." << endl << endl;
       return -1;
     }
                 
@@ -1344,10 +1392,10 @@ int main(int argc, char **argv)
     CEnumEntryPtr ptrAcquisitionModeContinuous =
       ptrAcquisitionMode->GetEntryByName("Continuous");
     if (!IsAvailable(ptrAcquisitionModeContinuous) ||
-	!IsReadable(ptrAcquisitionModeContinuous))
+    !IsReadable(ptrAcquisitionModeContinuous))
       {
-	cout << "Unable to set acquisition mode to continuous (entry retrieval). Aborting..." << endl << endl;
-	return -1;
+    cout << "Unable to set acquisition mode to continuous (entry retrieval). Aborting..." << endl << endl;
+    return -1;
       }
     
     // Retrieve integer value from entry node
@@ -1368,8 +1416,8 @@ int main(int argc, char **argv)
     // Check if camera opened successfully
     if(!cap.isOpened())
       {
-	cout << "Error opening video stream" << endl; 
-	return -1; 
+    cout << "Error opening video stream" << endl; 
+    return -1; 
       } 
     
     frame_width = cap.get(CAP_PROP_FRAME_WIDTH); 
@@ -1420,7 +1468,7 @@ int main(int argc, char **argv)
 
   DSTcpipThread dstcpServer;
   dstcpServer.port = port+1;
-  dsPort = dstcpServer.port;	// shared in tcl thread
+  dsPort = dstcpServer.port;    // shared in tcl thread
   
   if (verbose)
     cout << "Starting ds server on port " << dstcpServer.port << std::endl;
@@ -1436,11 +1484,11 @@ int main(int argc, char **argv)
   
   // Fire up processing thread
   std::thread process_thread(&ProcessThread::startProcessThread,
-			     &processThread);
+                 &processThread);
 #if !defined(__APPLE__)
   // Fire up display thread
   std::thread display_thread(&DisplayThread::startDisplayThread,
-			     &displayThread);
+                 &displayThread);
 #endif
   
 #ifdef USE_FLIR  
@@ -1462,45 +1510,45 @@ int main(int argc, char **argv)
 
       // If the image isn't complete don't process
       if (pResultImage->IsIncomplete()) {
-	if (verbose) {
-	  cout << "Image incomplete with image status " << pResultImage->GetImageStatus() << endl;
-	}
-	continue;
+    if (verbose) {
+      cout << "Image incomplete with image status " << pResultImage->GetImageStatus() << endl;
+    }
+    continue;
       }
 
       linestatus = get_linestatus();
       
       ImagePtr convertedImage =
-	pResultImage->Convert(PixelFormat_Mono8, HQ_LINEAR);
+    pResultImage->Convert(PixelFormat_Mono8, HQ_LINEAR);
       unsigned int XPadding =
-	static_cast<unsigned int>(convertedImage->GetXPadding());
+    static_cast<unsigned int>(convertedImage->GetXPadding());
       unsigned int YPadding =
-	static_cast<unsigned int>(convertedImage->GetYPadding());
+    static_cast<unsigned int>(convertedImage->GetYPadding());
       unsigned int rowsize =
-	static_cast<unsigned int>(convertedImage->GetWidth());
+    static_cast<unsigned int>(convertedImage->GetWidth());
       unsigned int colsize =
-	static_cast<unsigned int>(convertedImage->GetHeight());
+    static_cast<unsigned int>(convertedImage->GetHeight());
       
       // image data contains padding. When allocating Mat container size,
       // you need to account for the X,Y image data padding. 
       is_color = false;
       Mat cvimg = cv::Mat(colsize + YPadding, rowsize + XPadding,
-			  CV_8UC1, convertedImage->GetData(),
-			  convertedImage->GetStride());
+              CV_8UC1, convertedImage->GetData(),
+              convertedImage->GetStride());
 
       if ( flip_view ) {
-	Mat flipped = cv::Mat(cvimg.rows, cvimg.cols, CV_8UC1);
-	cv::flip(cvimg, flipped, flip_code);
-	
-	frame = flipped.clone();
+    Mat flipped = cv::Mat(cvimg.rows, cvimg.cols, CV_8UC1);
+    cv::flip(cvimg, flipped, flip_code);
+    
+    frame = flipped.clone();
       }
       else {
-	frame = cvimg.clone();
+    frame = cvimg.clone();
       }
 
       if (ShowChunk) {
-	display_chunk_data(pResultImage);
-	ShowChunk = 0;
+    display_chunk_data(pResultImage);
+    ShowChunk = 0;
       }
 
       ChunkData chunkData = pResultImage->GetChunkData();
@@ -1552,12 +1600,12 @@ int main(int argc, char **argv)
 #else
       Mat dframe;
       if (scale != 1.0) {
-	cv::resize(frame, dframe,
-		   cv::Size(frame.cols * scale,frame.rows * scale),
-		   0, 0, cv::INTER_LINEAR);
+    cv::resize(frame, dframe,
+           cv::Size(frame.cols * scale,frame.rows * scale),
+           0, 0, cv::INTER_LINEAR);
       }
       else {
-	dframe = frame.clone();
+    dframe = frame.clone();
       }
       
       DisplayThread::annotate_frame(dframe, FrameInObs[curFrame]);
@@ -1567,10 +1615,10 @@ int main(int argc, char **argv)
       char c = (char)waitKey(1);
       switch (c) {
       case 27:
-	do_shutdown();
-	break;
+    do_shutdown();
+    break;
       default:
-	break;
+    break;
       }
 #endif
     }

@@ -33,6 +33,10 @@ void addTclCommands(Tcl_Interp *interp);
 extern int open_videoFile(char *filename);
 extern int close_videoFile(void);
 extern int set_inObs(int);
+
+extern int open_domainSocket(char *socket_path);
+extern int close_domainSocket(void);
+
 extern int set_fourCC(char *);
 extern int show_display(void);
 extern int hide_display(void);
@@ -58,7 +62,7 @@ extern int ShowChunk;
 /*********************************************************************/
 
 static int pingCmd(ClientData clientData, Tcl_Interp *interp,
-		   int argc, char *argv[])
+           int argc, char *argv[])
 {
   Tcl_AppendResult(interp, "pong", NULL);
   if (argc > 1) {
@@ -72,7 +76,7 @@ static int pingCmd(ClientData clientData, Tcl_Interp *interp,
 /*********************************************************************/
 
 static int openFileCmd(ClientData clientData, Tcl_Interp *interp,
-		       int argc, char *argv[])
+               int argc, char *argv[])
 {
   int res;
   if (argc < 2) {
@@ -90,18 +94,48 @@ static int openFileCmd(ClientData clientData, Tcl_Interp *interp,
 }
 
 static int closeFileCmd(ClientData clientData, Tcl_Interp *interp,
-			int argc, char *argv[])
+            int argc, char *argv[])
 {
   int res;
   close_videoFile();
   return TCL_OK;
 }
 
-static int setInObsCmd(ClientData clientData, Tcl_Interp *interp,
-		       int argc, char *argv[])
+/*********************************************************************/
+/*                    Domain Socket Commands                         */
+/*********************************************************************/
+
+static int openDomainSocketCmd(ClientData clientData, Tcl_Interp *interp,
+               int argc, char *argv[])
 {
   int res;
-  int status = -1;	/* used to get current value w/o setting */
+  if (argc < 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " path", NULL); 
+    return TCL_ERROR;
+  }
+  res = open_domainSocket(argv[1]);
+  if (res) {
+    Tcl_SetResult(interp, "1", TCL_STATIC);
+  }
+  else {
+    Tcl_SetResult(interp, "0", TCL_STATIC);
+  }
+  return TCL_OK;
+}
+
+static int closeDomainSocketCmd(ClientData clientData, Tcl_Interp *interp,
+            int argc, char *argv[])
+{
+  int res;
+  close_domainSocket();
+  return TCL_OK;
+}
+
+static int setInObsCmd(ClientData clientData, Tcl_Interp *interp,
+               int argc, char *argv[])
+{
+  int res;
+  int status = -1;  /* used to get current value w/o setting */
 
   if (argc > 1) {
     if (Tcl_GetInt(interp, argv[1], &status) != TCL_OK)
@@ -118,10 +152,10 @@ static int setInObsCmd(ClientData clientData, Tcl_Interp *interp,
 }
 
 static int setFourCCCmd(ClientData clientData, Tcl_Interp *interp,
-			int argc, char *argv[])
+            int argc, char *argv[])
 {
   int res;
-  int status = -1;	/* used to get current value w/o setting */
+  int status = -1;  /* used to get current value w/o setting */
 
   if (argc < 2) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " fourcc", TCL_STATIC);
@@ -132,7 +166,7 @@ static int setFourCCCmd(ClientData clientData, Tcl_Interp *interp,
 }
 
 static int addShutdownCmdCmd(ClientData clientData, Tcl_Interp *interp,
-			     int argc, char *argv[])
+                 int argc, char *argv[])
 {
   if (argc < 2) {
     Tcl_AppendResult(interp, "usage: ", argv[0], " shutdownCmd", TCL_STATIC);
@@ -147,14 +181,14 @@ static int addShutdownCmdCmd(ClientData clientData, Tcl_Interp *interp,
 /*********************************************************************/
 
 static int showCmd(ClientData clientData, Tcl_Interp *interp,
-		   int argc, char *argv[])
+           int argc, char *argv[])
 {
   show_display();
   return TCL_OK;
 }
 
 static int hideCmd(ClientData clientData, Tcl_Interp *interp,
-		   int argc, char *argv[])
+           int argc, char *argv[])
 {
   hide_display();
   return TCL_OK;
@@ -166,7 +200,7 @@ static int hideCmd(ClientData clientData, Tcl_Interp *interp,
 /*********************************************************************/
 
 static int configureExposureCmd(ClientData clientData, Tcl_Interp *interp,
-				int argc, char *argv[])
+                int argc, char *argv[])
 {
   int res = 0;
   double exposure;
@@ -187,7 +221,7 @@ static int configureExposureCmd(ClientData clientData, Tcl_Interp *interp,
 }
 
 static int configureGainCmd(ClientData clientData, Tcl_Interp *interp,
-			    int argc, char *argv[])
+                int argc, char *argv[])
 {
   int res = 0;
   double gain;
@@ -208,7 +242,7 @@ static int configureGainCmd(ClientData clientData, Tcl_Interp *interp,
 }
 
 static int configureFrameRateCmd(ClientData clientData, Tcl_Interp *interp,
-				 int argc, char *argv[])
+                 int argc, char *argv[])
 {
   int res  = 0;
   double fr;
@@ -230,14 +264,14 @@ static int configureFrameRateCmd(ClientData clientData, Tcl_Interp *interp,
 
 
 static int configureROICmd(ClientData clientData, Tcl_Interp *interp,
-			   int argc, char *argv[])
+               int argc, char *argv[])
 {
   int res = 0;
   int w, h, x, y;
 
   if (argc < 5) {
     Tcl_AppendResult(interp, "usage: ", argv[0],
-		     " width height offsetx offsety", TCL_STATIC);
+             " width height offsetx offsety", TCL_STATIC);
     return TCL_ERROR;
   }
   if (Tcl_GetInt(interp, argv[1], &w) != TCL_OK) return TCL_ERROR;
@@ -261,7 +295,7 @@ static int configureROICmd(ClientData clientData, Tcl_Interp *interp,
 /*********************************************************************/
 
 static int shutdownCmd(ClientData clientData, Tcl_Interp *interp,
-		       int argc, char *argv[])
+               int argc, char *argv[])
 {
   do_shutdown();
   return TCL_OK;
@@ -271,45 +305,53 @@ static int shutdownCmd(ClientData clientData, Tcl_Interp *interp,
 void addTclCommands(Tcl_Interp *interp)
 {
   Tcl_CreateCommand(interp, "ping", (Tcl_CmdProc *) pingCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
   Tcl_Eval(interp, "namespace eval vstream {}");
   Tcl_CreateCommand(interp, "vstream::fileOpen", (Tcl_CmdProc *) openFileCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::fileClose",
-		    (Tcl_CmdProc *) closeFileCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (Tcl_CmdProc *) closeFileCmd, 
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+
+  Tcl_CreateCommand(interp, "vstream::domainSocketOpen", 
+            (Tcl_CmdProc *) openDomainSocketCmd, 
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "vstream::domainSocketClose",
+            (Tcl_CmdProc *) closeDomainSocketCmd, 
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+
   Tcl_CreateCommand(interp, "vstream::inObs", (Tcl_CmdProc *) setInObsCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::fourcc", (Tcl_CmdProc *) setFourCCCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
   Tcl_CreateCommand(interp, "vstream::addShutdownCmd",
-		    (Tcl_CmdProc *) addShutdownCmdCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (Tcl_CmdProc *) addShutdownCmdCmd, 
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   
   Tcl_CreateCommand(interp, "vstream::displayOpen", (Tcl_CmdProc *) showCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::displayClose", (Tcl_CmdProc *) hideCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
   Tcl_CreateCommand(interp, "vstream::configureExposure",
-		    (Tcl_CmdProc *) configureExposureCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (Tcl_CmdProc *) configureExposureCmd, 
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::configureGain",
-		    (Tcl_CmdProc *) configureGainCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (Tcl_CmdProc *) configureGainCmd, 
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::configureFrameRate",
-		    (Tcl_CmdProc *) configureFrameRateCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (Tcl_CmdProc *) configureFrameRateCmd, 
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::configureROI",
-		    (Tcl_CmdProc *) configureROICmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (Tcl_CmdProc *) configureROICmd, 
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   
   Tcl_CreateCommand(interp, "vstream::shutdown", (Tcl_CmdProc *) shutdownCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::exit", (Tcl_CmdProc *) shutdownCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
   extern int dsPort;
   Tcl_LinkVar(interp, "vstream::dsPort", (char *) &dsPort, TCL_LINK_INT);
@@ -319,48 +361,48 @@ void addTclCommands(Tcl_Interp *interp)
 
   extern int displayEvery;
   Tcl_LinkVar(interp, "vstream::displayEvery", 
-	      (char *) &useWebcam, TCL_LINK_INT);
+          (char *) &useWebcam, TCL_LINK_INT);
 
 #if 0
   const char *ds_str = R"V0G0N(
   proc vstream::dsRegister { server { port 4620 } } {
-	set s [socket $server $port]
-	fconfigure $s -buffering line
-	set our_ip [lindex [fconfigure $s -sockname] 0]
-	puts $s "%reg $our_ip $::vstream::dsPort"
-	catch {gets $s status}
-	close $s
-	return $status
+    set s [socket $server $port]
+    fconfigure $s -buffering line
+    set our_ip [lindex [fconfigure $s -sockname] 0]
+    puts $s "%reg $our_ip $::vstream::dsPort"
+    catch {gets $s status}
+    close $s
+    return $status
     }
 
     proc vstream::dsUnregister { server { port 4620 } } {
-	set s [socket $server $port]
-	fconfigure $s -buffering line
-	set our_ip [lindex [fconfigure $s -sockname] 0]
-	puts $s "%unreg $our_ip $::vstream::dsPort"
-	catch {gets $s status}
-	close $s
-	return $status
+    set s [socket $server $port]
+    fconfigure $s -buffering line
+    set our_ip [lindex [fconfigure $s -sockname] 0]
+    puts $s "%unreg $our_ip $::vstream::dsPort"
+    catch {gets $s status}
+    close $s
+    return $status
     }
 
     proc vstream::dsAddMatch { server pattern { port 4620 } } {
-	set s [socket $server $port]
-	fconfigure $s -buffering line
-	set our_ip [lindex [fconfigure $s -sockname] 0]
-	puts $s "%match $our_ip $::vstream::dsPort $pattern 1"
-	catch {gets $s status}
-	close $s
-	return $status
+    set s [socket $server $port]
+    fconfigure $s -buffering line
+    set our_ip [lindex [fconfigure $s -sockname] 0]
+    puts $s "%match $our_ip $::vstream::dsPort $pattern 1"
+    catch {gets $s status}
+    close $s
+    return $status
     }
 
     proc vstream::dsRemoveMatch { server pattern { port 4620 } } {
-	set s [socket $server $port]
-	fconfigure $s -buffering line
-	set our_ip [lindex [fconfigure $s -sockname] 0]
-	puts $s "%unmatch $our_ip $::vstream::dsPort $pattern"
-	catch {gets $s status}
-	close $s
-	return $status
+    set s [socket $server $port]
+    fconfigure $s -buffering line
+    set our_ip [lindex [fconfigure $s -sockname] 0]
+    puts $s "%unmatch $our_ip $::vstream::dsPort $pattern"
+    catch {gets $s status}
+    close $s
+    return $status
     }
 )V0G0N";
 #endif
@@ -368,7 +410,7 @@ void addTclCommands(Tcl_Interp *interp)
   Tcl_Eval(interp, ds_str);
 
   Tcl_LinkVar(interp, "vstream::show_chunk",
-	      (char *) &ShowChunk, TCL_LINK_BOOLEAN);
+          (char *) &ShowChunk, TCL_LINK_BOOLEAN);
 }
 
 
