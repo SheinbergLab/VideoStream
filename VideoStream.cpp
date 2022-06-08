@@ -373,6 +373,7 @@ class ProcessThread
   int end_obs;          
 
   int sfd = -1;         // socket file descriptor 
+  struct sockaddr_un svaddr;
 
   VideoWriter video;
   DYN_GROUP *dg;
@@ -547,7 +548,6 @@ public:
 
   bool openDomainSocket(char *path)
   {
-    struct sockaddr_un svaddr, claddr;
     if (sfd >= 0) close(sfd);
 
     sfd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -566,6 +566,21 @@ public:
    return true;
   }
   
+  int sendToDomainSocket(Mat *m)
+  {
+    if (sfd >= 0) {
+      char buf[32];
+      sprintf(buf, "%d %d", m->rows, m->cols);
+        int msgLen = strlen(buf);
+        if(sendto(sfd, buf, msgLen, 0, (struct sockaddr*) &svaddr, sizeof(struct sockaddr_un)) != msgLen) {
+           fprintf(stderr, "error writing to domain socket\n");
+           return -1;
+        }
+        return 1;
+    }
+    return 0;
+  }
+
   bool closeDomainSocket(void)
   {
     if (sfd >= 0) {
@@ -597,6 +612,8 @@ public:
       on_systemTimestamp = SystemTimestamps[processFrame];
     }
     
+    sendToDomainSocket(&Frames[processFrame]);
+
     // Write the frame into the file
     if (openfile) {
       // Add metadata to frame info file
