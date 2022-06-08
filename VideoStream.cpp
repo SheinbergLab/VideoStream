@@ -1391,9 +1391,9 @@ int main(int argc, char **argv)
     return -1; 
   } 
  
-  frame_width = cap.get(CV_CAP_PROP_FRAME_WIDTH); 
-  frame_height = cap.get(CV_CAP_PROP_FRAME_HEIGHT);
-  frame_rate = cap.get(CV_CAP_PROP_FPS);
+  frame_width = cap.get(CAP_PROP_FRAME_WIDTH); 
+  frame_height = cap.get(CAP_PROP_FRAME_HEIGHT);
+  frame_rate = cap.get(CAP_PROP_FPS);
   if (frame_rate == 0.0) frame_rate = 30.0; // Some cameras don't supply
 #endif
   
