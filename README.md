@@ -3,3 +3,24 @@
 Stand alone program to acquire video frames using the FLIR Spinnaker library or OpenCV device, display, and store to disk.
 
 For control, the program opens a TCP/IP communication port, and receives Tcl scripts across the port.  Metadata about frames are stored alongside the video using the "dgz" format.  Dependencies are [Tcl](https://tcl.tk), [sockpp](https://github.com/fpagliughi/sockpp), and [libdg](https://github.com/sheinb/libdg).
+
+## General Functions
+```
+ vstream::fileOpen
+ vstream::fileClose
+ vstream::domainSocketOpen
+ vstream::domainSocketClose
+ vstream::inObs
+ vstream::fourcc
+ vstream::addShutdownCmd
+ vstream::displayOpen
+ vstream::displayClose
+```
+
+## FLIR Camera Functions
+```
+vstream::configureExposure
+vstream::configureGain
+vstream::configureFrameRate
+vstream::configureROI
+```
