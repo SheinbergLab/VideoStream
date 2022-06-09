@@ -20,9 +20,7 @@
 #     (where ./videoframes refers to the unix domain socket opened in this program)
 #
 
-from configparser import Interpolation
 import socket
-import sys
 import os
 import numpy as np
 import cv2 as cv
@@ -80,7 +78,6 @@ while True:
                         cv.waitKey(1)
                     else:
                         break
-#                    print(f"{image.shape} {image.dtype} image received")
             else:
                 break
     finally:
