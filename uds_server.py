@@ -2,6 +2,7 @@
 import socket
 import sys
 import os
+import numpy as np
 
 server_address = './videoframes'
 
@@ -29,17 +30,14 @@ while True:
     try:
         print('connection from', client_address)
 
-        # Receive the data in small chunks and retransmit it
+        # Receive the data 
         while True:
-            data = connection.recv(16)
-            print('received {!r}'.format(data))
-            if data:
-                print('sending data back to the client')
-                connection.sendall(data)
+            databytes = connection.recv(16)
+            if databytes:
+                data = np.frombuffer(databytes, dtype=np.uint32)
+                print(f'received: {data}')
             else:
-                print('no data from', client_address)
                 break
-
     finally:
         # Clean up the connection
         connection.close()

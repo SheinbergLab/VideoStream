@@ -566,17 +566,31 @@ public:
    return true;
   }
   
-  int sendToDomainSocket(Mat *m)
+  int sendToDomainSocket(Mat &m)
   {
     if (sfd >= 0) {
       char buf[32];
-      sprintf(buf, "%d %d", m->rows, m->cols);
-        int msgLen = strlen(buf);
-        if(sendto(sfd, buf, msgLen, 0, (struct sockaddr*) &svaddr, sizeof(struct sockaddr_un)) != msgLen) {
+      uint32_t header[4];
+      header[0] = m.total() * m.elemSize();
+      header[1] = m.rows;
+      header[2] = m.cols;
+      header[3] = m.type();
+      int msgLen = sizeof(header);
+
+      // send the header info
+      if (sendto(sfd, header, msgLen, 0, (struct sockaddr*) &svaddr, sizeof(struct sockaddr_un)) != msgLen) {
            fprintf(stderr, "error writing to domain socket\n");
            return -1;
-        }
-        return 1;
+      }
+
+      // now send the data
+      if (sendto(sfd, m.data, header[0], 0, (struct sockaddr*) &svaddr, sizeof(struct sockaddr_un)) != header[0]) {
+        fprintf(stderr, "error writing to domain socket\n");
+           return -1;
+      }
+      
+      return 1;
+
     }
     return 0;
   }
@@ -612,7 +626,7 @@ public:
       on_systemTimestamp = SystemTimestamps[processFrame];
     }
     
-    sendToDomainSocket(&Frames[processFrame]);
+    sendToDomainSocket(Frames[processFrame]);
 
     // Write the frame into the file
     if (openfile) {
