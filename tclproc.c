@@ -36,6 +36,7 @@ extern int set_inObs(int);
 
 extern int open_domainSocket(char *socket_path);
 extern int close_domainSocket(void);
+extern int sendn_domainSocket(int n);
 
 extern int set_fourCC(char *);
 extern int show_display(void);
@@ -126,10 +127,24 @@ static int openDomainSocketCmd(ClientData clientData, Tcl_Interp *interp,
 static int closeDomainSocketCmd(ClientData clientData, Tcl_Interp *interp,
             int argc, char *argv[])
 {
-  int res;
   close_domainSocket();
   return TCL_OK;
 }
+
+static int sendNDomainSocketCmd(ClientData clientData, Tcl_Interp *interp,
+            int argc, char *argv[])
+{
+  int n;
+  if (argc < 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " n {-1|0|n}", NULL); 
+    return TCL_ERROR;
+  }
+  if (Tcl_GetInt(interp, argv[1], &n) != TCL_OK) return TCL_ERROR;
+  sendn_domainSocket(n);
+  return TCL_OK;
+}
+
+
 
 static int setInObsCmd(ClientData clientData, Tcl_Interp *interp,
                int argc, char *argv[])
@@ -320,6 +335,10 @@ void addTclCommands(Tcl_Interp *interp)
   Tcl_CreateCommand(interp, "vstream::domainSocketClose",
             (Tcl_CmdProc *) closeDomainSocketCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "vstream::domainSocketSendN",
+            (Tcl_CmdProc *) sendNDomainSocketCmd, 
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+            
 
   Tcl_CreateCommand(interp, "vstream::inObs", (Tcl_CmdProc *) setInObsCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);

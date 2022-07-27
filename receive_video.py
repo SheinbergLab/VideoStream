@@ -25,6 +25,12 @@ import os
 import numpy as np
 import cv2 as cv
 
+
+server_address = './videoframes'
+
+# header is currently totalbytes:width:height:type
+header_size = 16
+
 def recvall(sock, n):
     # Helper function to recv n bytes or return None if EOF is hit
     data = bytearray()
@@ -35,7 +41,6 @@ def recvall(sock, n):
         data.extend(packet)
     return data
 
-server_address = './videoframes'
 
 # Make sure the socket does not already exist
 try:
@@ -65,16 +70,18 @@ while True:
 
         # Receive the data 
         while True:
-            databytes = connection.recv(16)
+            databytes = connection.recv(header_size)
             if databytes:
-                data = np.frombuffer(databytes, dtype=np.uint32)
-                if data[0]:
-                    imagebytes = recvall(connection, data[0])
+                totalbytes, width, height, mat_type = np.frombuffer(databytes, dtype=np.uint32)
+                if totalbytes:
+                    imagebytes = recvall(connection, totalbytes)
                     if imagebytes:
-                        image = np.frombuffer(imagebytes, dtype=np.uint8).reshape(data[1], data[2],3)
+                        depth = totalbytes//(width*height)
+                        image = np.frombuffer(imagebytes, dtype=np.uint8).reshape(width, height, depth)
                         dim = (int(image.shape[1]*scale_prop), int(image.shape[0]*scale_prop))
-                        resized = cv.resize(image, dim, interpolation=cv.INTER_AREA)
-                        cv.imshow('frame', resized)
+                        resized = cv.resize(image, dim, interpolation=cv.INTER_AREA)                    
+                        gray = cv.cvtColor(resized, cv.COLOR_BGR2GRAY)
+                        cv.imshow('frame', gray)
                         cv.waitKey(1)
                     else:
                         break

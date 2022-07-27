@@ -63,6 +63,7 @@ extern "C" {
 
   int open_domainSocket(char *socket_path);
   int close_domainSocket(void);
+  int sendn_domainSocket(int n);
 
   int set_inObs(int status);
   int set_fourCC(char *str);
@@ -118,7 +119,6 @@ std::string output_file;
 bool overwrite = false;
 bool in_obs = false;
 int obs_count = -1;
-
 
 #ifdef _WIN32
 bool WSA_initialized = false;   // Windows Socket startup needs to be called once
@@ -375,6 +375,11 @@ class ProcessThread
   int sfd = -1;         // socket file descriptor 
   struct sockaddr_un svaddr;
 
+  int push_next_frame = -1;     // control how frames are sent over open domain socket
+                                // -1 means send all frames
+                                // 0 means don't send
+                                // n means send next n frames
+
   VideoWriter video;
   DYN_GROUP *dg;
   DYN_LIST *ids, *obs_starts, *obs_stops;
@@ -604,6 +609,13 @@ public:
     }
     return false;
   }
+  
+  int setNSendDomainSocket(int n)
+  {
+  	int last = push_next_frame;
+  	push_next_frame = n;
+  	return last;
+  }
 
   void startProcessThread(void)     
   {
@@ -626,7 +638,10 @@ public:
       on_systemTimestamp = SystemTimestamps[processFrame];
     }
     
-    sendToDomainSocket(Frames[processFrame]);
+    if (push_next_frame != 0) {
+       sendToDomainSocket(Frames[processFrame]);
+    }
+    if (push_next_frame > 0) push_next_frame--;
 
     // Write the frame into the file
     if (openfile) {
@@ -713,6 +728,10 @@ int close_domainSocket(void)
   return processThread.closeDomainSocket();
 }
 
+int sendn_domainSocket(int n)
+{
+	return processThread.setNSendDomainSocket(n);
+}
 
 int set_inObs(int status)
 {
