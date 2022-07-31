@@ -583,14 +583,14 @@ public:
       int msgLen = sizeof(header);
 
       // send the header info
-      if (sendto(sfd, header, msgLen, 0, (struct sockaddr*) &svaddr, sizeof(struct sockaddr_un)) != msgLen) {
-           fprintf(stderr, "error writing to domain socket\n");
+      if (send(sfd, header, msgLen, 0) != msgLen) {
+           fprintf(stderr, "error writing header to domain socket\n");
            return -1;
       }
 
       // now send the data
-      if (sendto(sfd, m.data, header[0], 0, (struct sockaddr*) &svaddr, sizeof(struct sockaddr_un)) != header[0]) {
-        fprintf(stderr, "error writing to domain socket\n");
+      if (send(sfd, m.data, header[0], 0) != header[0]) {
+        fprintf(stderr, "error writing frame to domain socket\n");
            return -1;
       }
       
