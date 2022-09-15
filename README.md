@@ -17,11 +17,12 @@ For FLIR camera control, the Spinnaker SDK should be installed.  This does not r
 Standard libs that should be installed include:
 
 * essential build tools (gcc)
+* cmake
 * the Tcl development environment
 * the OpenCV Devlopment libraries
 
 `
-sudo apt install build-essential tcl-dev libopendev-dev
+sudo apt install build-essential cmake tcl-dev libopendev-dev
 `
 
 #### sockpp
