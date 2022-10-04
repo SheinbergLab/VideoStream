@@ -31,7 +31,7 @@ For TCP/IP communications, VideoStream uses the socket wrapper called [sockpp](h
 
 #### libdg
 
-This is a library written to allow storing and reading complex binary data file structures.  It can be installed from https://github.com/sheinb/libdg
+This is a library written to allow storing and reading complex binary data file structures.  The C API in [this repo](https://github.com/sheinb/libdg) should be built and installed.
 
 ## General Functions
 ```
