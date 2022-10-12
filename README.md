@@ -39,6 +39,7 @@ This is a library written to allow storing and reading complex binary data file 
  vstream::fileClose
  vstream::domainSocketOpen
  vstream::domainSocketClose
+ vstream::domainSocketSendN (-1: continuous; 0: stop; n send "n")
  vstream::inObs
  vstream::fourcc
  vstream::addShutdownCmd
