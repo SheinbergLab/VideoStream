@@ -33,15 +33,19 @@ header_size = 16
 
 # Commands for communicating with VideoStream over TCP/IP socket (port 4610)
 def open_control_socket():
-	# Create a control socket for sending commands to VideoStream
-	videostream_address = ('localhost', 4610)
-	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	sock.connect(videostream_address)
-	sock.sendall(b"vstream::domainSocketSendN 0; vstream::domainSocketOpen ./videoframes\r\n")
-	return sock
+    # Create a control socket for sending commands to VideoStream
+    videostream_address = ('localhost', 4610)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect(videostream_address)
+    return sock
+
+def start_videoframes(sock):
+    sock.sendall(b"vstream::domainSocketSendN 0; vstream::domainSocketOpen ./videoframes\r\n")
+    sock.recv(256)
 
 def request_videoframe(sock):
-	cmdsock.sendall(b"vstream::domainSocketSendN 1\r\n")
+    sock.sendall(b"vstream::domainSocketSendN 1\r\n")
+    sock.recv(256)
 
 # Helper function to recv n bytes or return None if EOF is hit
 def recvall(sock, n):
@@ -75,6 +79,8 @@ sock.listen(1)
 
 scale_prop = 0.25
 
+start_videoframes(cmdsock)
+
 while True:
     # Wait for a connection
     print('waiting for a connection')
@@ -102,7 +108,6 @@ while True:
                         break
             else:
                 break
-            time.sleep(1)
     finally:
         # Clean up the connection
         connection.close()
