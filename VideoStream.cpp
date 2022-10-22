@@ -49,6 +49,9 @@ SharedQueue<int> display_queue;
 SharedQueue<std::string> cqueue;
 SharedQueue<std::string> rqueue;
 
+SharedQueue<std::string> wd_cqueue;
+SharedQueue<std::string> wd_rqueue;
+
 SharedQueue<std::string> ds_queue;
 SharedQueue<std::string> shutdown_queue;
 
@@ -151,20 +154,18 @@ class WatchdogThread
   WatchdogThread()
   {
     m_bDone = false;
-    interval = 1;       // 1 second wakeup
+    interval = 1000;       // 1 second wakeup
   }
   
   void startWatchdog(void) {
     while (!m_bDone) {
-      cqueue.push_back("onWatchdog");
+      wd_cqueue.push_back(std::string("onWatchdog"));
       /* rqueue will be available after command has been processed */
-      std::string s(rqueue.front());
-      rqueue.pop_front();
-#ifndef _WIN32
-      sleep(interval);
-#else
-      _sleep(interval);
-#endif      
+      std::string s(wd_rqueue.front());
+      wd_rqueue.pop_front();
+
+      // sleep 
+      std::this_thread::sleep_for(std::chrono::milliseconds(interval));
     }
   }
 };
@@ -194,7 +195,7 @@ class TcpipThread
 
   static void tcpClientProcess(sockpp::tcp_socket sock) {
     ssize_t n;
-    char buf[1024];
+    static char buf[1024];
     
     while ((n = sock.read(buf, sizeof(buf))) > 0) {
       /*
@@ -571,15 +572,15 @@ public:
    return true;
   }
   
-  int sendToDomainSocket(Mat &m)
+  int sendToDomainSocket(Mat *m)
   {
     if (sfd >= 0) {
       char buf[32];
       uint32_t header[4];
-      header[0] = m.total() * m.elemSize();
-      header[1] = m.rows;
-      header[2] = m.cols;
-      header[3] = m.type();
+      header[0] = m->total() * m->elemSize();
+      header[1] = m->rows;
+      header[2] = m->cols;
+      header[3] = m->type();
       int msgLen = sizeof(header);
 
       // send the header info
@@ -589,7 +590,7 @@ public:
       }
 
       // now send the data
-      if (send(sfd, m.data, header[0], 0) != header[0]) {
+      if (send(sfd, m->data, header[0], 0) != header[0]) {
         fprintf(stderr, "error writing frame to domain socket\n");
            return -1;
       }
@@ -612,9 +613,9 @@ public:
   
   int setNSendDomainSocket(int n)
   {
-  	int last = push_next_frame;
-  	push_next_frame = n;
-  	return last;
+    int last = push_next_frame;
+    push_next_frame = n;
+    return last;
   }
 
   void startProcessThread(void)     
@@ -639,7 +640,7 @@ public:
     }
     
     if (push_next_frame != 0) {
-       sendToDomainSocket(Frames[processFrame]);
+       sendToDomainSocket(&Frames[processFrame]);
     }
     if (push_next_frame > 0) push_next_frame--;
 
@@ -730,7 +731,7 @@ int close_domainSocket(void)
 
 int sendn_domainSocket(int n)
 {
-	return processThread.setNSendDomainSocket(n);
+    return processThread.setNSendDomainSocket(n);
 }
 
 int set_inObs(int status)
@@ -957,42 +958,50 @@ int processShutdownCommands(void) {
   return n;
 }
 
-int processTclCommands(void) {
-  int n = 0;
-  while (cqueue.size()) {
-    n++;
-    std::string s(cqueue.front());
-    cqueue.pop_front();
+static void processTclQueues(SharedQueue<std::string> *cmdqueue, SharedQueue<std::string> *respqueue)
+{
+  while (cmdqueue->size())
+  {
+    std::string s(cmdqueue->front());
+    cmdqueue->pop_front();
     const char *script = s.c_str();
-      int retcode = Tcl_Eval(interp, script);
-      if (retcode == TCL_OK) {
-    const char *rcstr = Tcl_GetStringResult(interp);
-    if (rcstr) {
-      rqueue.push_back(std::string(rcstr));
-      //std::cout << std::string(rcstr) << std::endl;
-    }
-    else {
-      rqueue.push_back("");
-    }
+    int retcode = Tcl_Eval(interp, script);
+    if (retcode == TCL_OK)
+    {
+      const char *rcstr = Tcl_GetStringResult(interp);
+      if (rcstr)
+      {
+        respqueue->push_back(std::string(rcstr));
       }
-      else {
-    const char *rcstr = Tcl_GetStringResult(interp);
-    if (rcstr) {
-      rqueue.push_back("!TCL_ERROR "+std::string(rcstr));
-      //std::cout << "Error: " + std::string(rcstr) << std::endl;
-    }
-    else {
-      rqueue.push_back("Error:");
-    }
+      else
+      {
+        respqueue->push_back(std::string(""));
       }
+    }
+    else
+    {
+      const char *rcstr = Tcl_GetStringResult(interp);
+      if (rcstr)
+      {
+        respqueue->push_back(std::string("!TCL_ERROR ").append(rcstr));
+      }
+      else
+      {
+        respqueue->push_back(std::string("Error:"));
+      }
+    }
   }
-  
-  /* Do this here? */
-  while (Tcl_DoOneEvent(TCL_DONT_WAIT)) ;
-  
-  return n;
 }
 
+int processTclCommands(void)
+{
+  processTclQueues(&cqueue, &rqueue);
+  processTclQueues(&wd_cqueue, &wd_rqueue);
+  while (Tcl_DoOneEvent(TCL_DONT_WAIT))
+    ;
+
+  return 0;
+}
 
 int Tcl_AppInit(Tcl_Interp *interp)
 {
