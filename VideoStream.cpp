@@ -1577,8 +1577,11 @@ int main(int argc, char **argv)
 
       linestatus = get_linestatus();
       
-      ImagePtr convertedImage =
-    pResultImage->Convert(PixelFormat_Mono8, HQ_LINEAR);
+      // set in_obs based on digital line
+      set_inObs(linestatus);
+
+          ImagePtr convertedImage =
+              pResultImage->Convert(PixelFormat_Mono8, HQ_LINEAR);
       unsigned int XPadding =
     static_cast<unsigned int>(convertedImage->GetXPadding());
       unsigned int YPadding =
