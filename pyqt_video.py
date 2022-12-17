@@ -129,15 +129,11 @@ class LaserControl(QtWidgets.QMainWindow):
         self.th.start()
         self.show()
         
-    def receive_serial(self):
-        while self.serial.canReadLine():
-            input_line = self.serial.readLine().data().decode("utf-8")
-            input_line = input_line.strip('\r\n')
-            print(input_line)
-
     def update_dacs(self):
         print(f"DACS: {self.x} {self.y}")
-        if self.serial_connected:
+        if not self.serial_connected:
+            self.serial_connect()
+        else:
             self.serial.write(f'{self.x} {self.y}\n'.encode())
         
     def update_x(self, val):
@@ -210,6 +206,12 @@ class LaserControl(QtWidgets.QMainWindow):
 
         self.refresh_ports()
 
+    def receive_serial(self):
+        while self.serial.canReadLine():
+            input_line = self.serial.readLine().data().decode("utf-8")
+            input_line = input_line.strip('\r\n')
+            print(input_line)
+        
     def refresh_ports(self):
         '''find serial ports and return default'''
         if platform.system == "Linux":
@@ -222,7 +224,7 @@ class LaserControl(QtWidgets.QMainWindow):
         
     def set_connect_path(self):
         self.serial.setPortName(self.connect_path.currentText())
-
+        
     def serial_connect(self):
         if not self.serial.isOpen():
             
