@@ -99,7 +99,11 @@ class ReceiveFramesThread(QThread):
                         image = np.frombuffer(imagebytes, dtype=np.uint8)
                         scale_to_width, scale_to_height = (int(width*scale_prop), int(height*scale_prop))
                         bytesPerLine = width * depth
-                        convertToQtFormat = QImage(image, width, height, bytesPerLine, QImage.Format_BGR888)
+                        if depth == 1:
+                            format = QImage.Format_Grayscale8
+                        else:
+                            format = QImage.Format_BGR888
+                        convertToQtFormat = QImage(image, width, height, bytesPerLine, format)
                         p = convertToQtFormat.scaled(scale_to_width, scale_to_height, Qt.KeepAspectRatio)
                         self.changePixmap.emit(p)
 
