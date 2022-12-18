@@ -37,6 +37,8 @@ using namespace Spinnaker::GenICam;
 #include "cxxopts.hpp"
 #include "SharedQueue.hpp"
 
+#include "VideoStream.h"
+
 using namespace std;
 using namespace cv;
 
@@ -57,42 +59,12 @@ SharedQueue<std::string> shutdown_queue;
 
 Tcl_Interp *interp = NULL;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-  void addTclCommands(Tcl_Interp *interp);
-  int open_videoFile(char *filename);
-  int close_videoFile(void);
+/* Shared with tcl */
+int dsPort;
+int useWebcam = 1;
+int displayEvery = 1;   // Determines how often to update display
 
-  int open_domainSocket(char *socket_path);
-  int close_domainSocket(void);
-  int sendn_domainSocket(int n);
-
-  int set_inObs(int status);
-  int set_fourCC(char *str);
-
-  void add_shutdown_command(char *str);
-  
-  int show_display();
-  int hide_display();
-
-  int configure_exposure(float exposure);
-  int configure_ROI(int w, int h, int offsetx, int offsety);
-  int configure_gain(float gain);
-  int configure_framerate(float framerate);
-
-  int do_shutdown();
-
-  /* Shared with tcl */
-  int dsPort;
-  int useWebcam = 1;
-  int displayEvery = 1;   // Determines how often to update display
-
-  int ShowChunk = 0;
-
-#ifdef __cplusplus
-}
-#endif
+int ShowChunk = 0;
 
 
 namespace
@@ -882,14 +854,25 @@ public:
 
 DisplayThread displayThread;
 
-int show_display(void)
+int show_display(proginfo_t *p)
 {
+  bool old = p->display;
+#ifndef __APPLE__
   return (int) displayThread.show();
+#endif
+  p->display = 1;
+  return old;
 }
 
-int hide_display(void)
+int hide_display(proginfo_t *p)
 {
-  return (int) displayThread.hide();
+  bool old = p->display;
+#ifndef __APPLE__
+  retuPrn (int) displayThread.hide();
+#endif
+  p->display = 0;
+  return old;
+
 }
 
 void add_shutdown_command(char *cmd)
@@ -907,11 +890,11 @@ int do_shutdown(void)
 }
 
 
-int setupTcl(char *name)
+int setupTcl(proginfo_t *p)
 {
   int exitCode = 0;
   
-  Tcl_FindExecutable(name);
+  Tcl_FindExecutable(p->name);
   interp = Tcl_CreateInterp();
   
   if (!interp) {
@@ -927,6 +910,7 @@ int setupTcl(char *name)
     std::cerr << Tcl_GetStringResult(interp) << std::endl;
   }
   else {
+    addTclCommands(interp, p);
     Tcl_SourceRCFile(interp);
   }
   return TCL_OK;
@@ -1006,7 +990,6 @@ int processTclCommands(void)
 int Tcl_AppInit(Tcl_Interp *interp)
 {
   if (Tcl_Init(interp) == TCL_ERROR) return TCL_ERROR;
-  addTclCommands(interp);
   return TCL_OK;
 }
 
@@ -1361,6 +1344,9 @@ int main(int argc, char **argv)
   int64_t frameID = 0;
   int64_t timestamp = 0;
   bool linestatus = false;
+
+  // structure to hold program info to share with other threads and Tcl
+  proginfo_t programInfo;
   
   cxxopts::Options options("videostream","video streaming example program");
 
@@ -1400,7 +1386,9 @@ int main(int argc, char **argv)
 
   // Connect to Tcl variable
   displayEvery = display_every;
-
+  programInfo.name = argv[0];
+  programInfo.display = init_display;
+  
 #ifdef USE_FLIR
   CameraPtr pCam;
   VideoCapture cap; 
@@ -1511,7 +1499,7 @@ int main(int argc, char **argv)
   // Install a signal handler
   std::signal(SIGINT, signal_handler);
   
-  setupTcl(argv[0]);
+  setupTcl(&programInfo);
 
   // Start a watchdog thread
 
@@ -1660,27 +1648,29 @@ int main(int argc, char **argv)
       // wake up display thread to show this thread (if visible)
       display_queue.push_back(curFrame);
 #else
-      Mat dframe;
-      if (scale != 1.0) {
-    cv::resize(frame, dframe,
-           cv::Size(frame.cols * scale,frame.rows * scale),
-           0, 0, cv::INTER_LINEAR);
-      }
-      else {
-    dframe = frame.clone();
-      }
-      
-      DisplayThread::annotate_frame(dframe, FrameInObs[curFrame]);
-      imshow( "Frame", dframe );
-      
-      // Press  ESC on keyboard to  exit
-      char c = (char)waitKey(1);
-      switch (c) {
-      case 27:
-    do_shutdown();
-    break;
-      default:
-    break;
+      if (programInfo.display) {
+	Mat dframe;
+	if (scale != 1.0) {
+	  cv::resize(frame, dframe,
+		     cv::Size(frame.cols * scale,frame.rows * scale),
+		     0, 0, cv::INTER_LINEAR);
+	}
+	else {
+	  dframe = frame.clone();
+	}
+	
+	DisplayThread::annotate_frame(dframe, FrameInObs[curFrame]);
+	imshow( "Frame", dframe );
+	
+	// Press  ESC on keyboard to  exit
+	char c = (char)waitKey(1);
+	switch (c) {
+	case 27:
+	  do_shutdown();
+	  break;
+	default:
+	  break;
+	}
       }
 #endif
     }

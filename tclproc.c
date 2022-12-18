@@ -20,6 +20,8 @@
 #include <math.h>
 #include <tcl.h>
 
+#include "VideoStream.h"
+
 #ifdef WIN32
 static int strcasecmp(char *a,char *b) { return stricmp(a,b); }
 static int strncasecmp(char *a,char *b, int n) 
@@ -28,30 +30,6 @@ static int strncasecmp(char *a,char *b, int n)
 }
 #endif
 
-void addTclCommands(Tcl_Interp *interp);
-
-extern int open_videoFile(char *filename);
-extern int close_videoFile(void);
-extern int set_inObs(int);
-
-extern int open_domainSocket(char *socket_path);
-extern int close_domainSocket(void);
-extern int sendn_domainSocket(int n);
-
-extern int set_fourCC(char *);
-extern int show_display(void);
-extern int hide_display(void);
-extern void add_shutdown_command(char *);
-
-
-extern int configure_exposure(float);
-extern int configure_ROI(int w, int h, int offsetx, int offsety);
-extern int configure_gain(float gain);
-extern int configure_framerate(float framerate);
-
-extern int do_shutdown(void);
-
-extern int ShowChunk;
 
 /*********************************************************************/
 /*                           Tcl Code                                */
@@ -198,14 +176,16 @@ static int addShutdownCmdCmd(ClientData clientData, Tcl_Interp *interp,
 static int showCmd(ClientData clientData, Tcl_Interp *interp,
            int argc, char *argv[])
 {
-  show_display();
+  proginfo_t *p = (proginfo_t *) clientData;
+  show_display(p);
   return TCL_OK;
 }
 
 static int hideCmd(ClientData clientData, Tcl_Interp *interp,
            int argc, char *argv[])
 {
-  hide_display();
+  proginfo_t *p = (proginfo_t *) clientData;
+  hide_display(p);
   return TCL_OK;
 }
 
@@ -317,7 +297,7 @@ static int shutdownCmd(ClientData clientData, Tcl_Interp *interp,
 }
 
 
-void addTclCommands(Tcl_Interp *interp)
+void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 {
   Tcl_CreateCommand(interp, "ping", (Tcl_CmdProc *) pingCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
@@ -350,9 +330,9 @@ void addTclCommands(Tcl_Interp *interp)
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   
   Tcl_CreateCommand(interp, "vstream::displayOpen", (Tcl_CmdProc *) showCmd, 
-            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+		    (ClientData) p, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::displayClose", (Tcl_CmdProc *) hideCmd, 
-            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+		    (ClientData) p, (Tcl_CmdDeleteProc *) NULL);
 
   Tcl_CreateCommand(interp, "vstream::configureExposure",
             (Tcl_CmdProc *) configureExposureCmd, 
