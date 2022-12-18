@@ -194,9 +194,10 @@ class LaserControl(QtWidgets.QMainWindow):
 
         # Setup grid to have first column 20% of width and second column 80%
         grid = QtWidgets.QGridLayout(centralWidget)
+        grid.setColumnMinimumWidth(0, 90)
         grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 4)
-#        grid.setColumnMinimumWidth(0, 50)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(2, 2)
 
         grid.addWidget(self.connect_label, row, 0, QtCore.Qt.AlignLeft)
         grid.addWidget(self.connect_path, row, 1)
@@ -206,7 +207,7 @@ class LaserControl(QtWidgets.QMainWindow):
         grid.addLayout(self.yslider_frame, row, 1)
         row+=1
         
-        grid.addWidget(self.label, row, 0, 1, 2)
+        grid.addWidget(self.label, row, 0, 1, 3)
 
         self.refresh_ports()
 
