@@ -134,11 +134,12 @@ class LaserControl(QtWidgets.QMainWindow):
         self.show()
         
     def update_dacs(self):
-        print(f"DACS: {self.x} {self.y}")
         if not self.serial_connected:
             self.serial_connect()
-        else:
+        if self.serial_connected:
             self.serial.write(f'{self.x} {self.y}\n'.encode())
+        else:
+            print(f"DACS: {self.x} {self.y} (not connected)")
         
     def update_x(self, val):
         self.x = val
@@ -190,6 +191,15 @@ class LaserControl(QtWidgets.QMainWindow):
         self.label = QLabel(self)
         self.label.resize(480, 270)
 
+
+        # console info
+        self.console_label = QtWidgets.QLabel("Serial Monitor")
+        self.console_clear = QtWidgets.QPushButton(text="Clear")
+        self.console_clear.clicked.connect(self.clear_console)
+        
+        # actual console for logging serial port input
+        self.console = QtWidgets.QPlainTextEdit()
+        
         row = 0
 
         # Setup grid to have first column 20% of width and second column 80%
@@ -198,7 +208,12 @@ class LaserControl(QtWidgets.QMainWindow):
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         grid.setColumnStretch(2, 2)
-
+        grid.setRowStretch(0, 1)
+        grid.setRowStretch(1, 6)
+        grid.setRowStretch(2, 8)
+        grid.setRowStretch(3, 1)
+        grid.setRowStretch(4, 4)
+        
         grid.addWidget(self.connect_label, row, 0, QtCore.Qt.AlignLeft)
         grid.addWidget(self.connect_path, row, 1)
         row += 1
@@ -208,14 +223,24 @@ class LaserControl(QtWidgets.QMainWindow):
         row+=1
         
         grid.addWidget(self.label, row, 0, 1, 3)
+        row+=1
 
+        grid.addWidget(self.console_label, row, 0, 1, 1)
+        grid.addWidget(self.console_clear, row, 2, 1, 1)
+        row+=1
+
+        grid.addWidget(self.console, row, 0, 1, 3)
+        
         self.refresh_ports()
 
+    def clear_console(self):
+        self.console.clear()
+        
     def receive_serial(self):
         while self.serial.canReadLine():
             input_line = self.serial.readLine().data().decode("utf-8")
             input_line = input_line.strip('\r\n')
-            print(input_line)
+            self.console.insertPlainText(f"{input_line}\n")
         
     def refresh_ports(self):
         '''find serial ports and return default'''
@@ -258,7 +283,7 @@ class LaserControl(QtWidgets.QMainWindow):
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     w = LaserControl()
-    w.resize(500, 500)
+    w.resize(500, 640)
 
 #    w.show()
 
