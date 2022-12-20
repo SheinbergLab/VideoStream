@@ -3,16 +3,12 @@ import os
 import platform
 import numpy as np
 import sys
-#from PySide6 import QtCore, QtWidgets, QtSerialPort, QtGui
-#from PySide6.QtCore import QThread, Qt, Signal, Slot
-#from PySide6.QtGui import QImage, QPixmap
-#from PySide6.QtWidgets import QLabel
 
-from PyQt5 import QtCore, QtWidgets, QtSerialPort, QtGui
+from PyQt5 import QtCore, QtWidgets, QtGui
+from PyQt5.QtSerialPort import QSerialPort, QSerialPortInfo
 from PyQt5.QtCore import QThread, Qt, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import QLabel
-import serial.tools.list_ports
 
 class CommSock:
     def __init__(self):
@@ -121,10 +117,10 @@ class LaserControl(QtWidgets.QMainWindow):
         self.height = 480
 
         # initialize the serial port at the end
-        self.serial = QtSerialPort.QSerialPort(
+        self.serial = QSerialPort(
             None, baudRate=115200, readyRead=self.receive_serial
         )
-        self.ports = [comport.device for comport in serial.tools.list_ports.comports()]
+        self.ports = [ port.portName() for port in QSerialPortInfo().availablePorts() ]
         self.serial_connected = False
 
         self.initUI()
@@ -248,13 +244,10 @@ class LaserControl(QtWidgets.QMainWindow):
         
     def refresh_ports(self):
         '''find serial ports and return default'''
-        if platform.system == "Linux":
-            ports = [comport.device for comport in serial.tools.list_ports.comports()]
-        else:
-            ports = [comport.device for comport in serial.tools.list_ports.comports()]
-        self.connect_path.addItems(ports)
-        if ports:
-            self.connect_path.setCurrentIndex(len(ports)-1)        
+        self.ports = [ port.portName() for port in QSerialPortInfo().availablePorts() ]
+        self.connect_path.addItems(self.ports)
+        if self.ports:
+            self.connect_path.setCurrentIndex(len(self.ports)-1)
         
     def set_connect_path(self):
         self.serial.setPortName(self.connect_path.currentText())
@@ -268,7 +261,7 @@ class LaserControl(QtWidgets.QMainWindow):
                 ser.close()
 
             self.set_connect_path()
-            if not self.serial.open(QtCore.QIODeviceBase.ReadWrite):
+            if not self.serial.open(QtCore.QIODevice.ReadWrite):
                 print("error opening")
                 self.serial_connected = False
             else:
