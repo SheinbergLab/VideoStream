@@ -19,6 +19,7 @@ extern "C" {
   int sendn_domainSocket(int n);
 
   int set_inObs(int status);
+  int set_onlySaveInObs(int status);
   int set_fourCC(char *str);
 
   void add_shutdown_command(char *str);

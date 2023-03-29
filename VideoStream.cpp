@@ -93,6 +93,7 @@ float frame_rate;
 std::string output_file;
 bool overwrite = false;
 bool in_obs = false;
+bool only_save_in_obs = true;
 int obs_count = -1;
 
 #ifdef _WIN32
@@ -338,7 +339,6 @@ class ProcessThread
   bool closefile;
   bool do_open;
   bool just_opened;
-  bool only_save_in_obs;
   bool annotate;
   int frame_count;      // keep track of frames output
   int prev_fr;          // track previous frame id
@@ -714,6 +714,14 @@ int set_inObs(int status)
   if (!old && status) {
     obs_count++;
   }
+  return old;
+}
+
+int set_onlySaveInObs(int status)
+{
+  int old = only_save_in_obs;
+  if (status == 0 || status == 1)
+    only_save_in_obs = status;
   return old;
 }
 
