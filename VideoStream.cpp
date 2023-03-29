@@ -876,7 +876,7 @@ int hide_display(proginfo_t *p)
 {
   bool old = p->display;
 #ifndef __APPLE__
-  retuPrn (int) displayThread.hide();
+  return (int) displayThread.hide();
 #endif
   p->display = 0;
   return old;
