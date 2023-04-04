@@ -204,7 +204,7 @@ class TcpipThread
 #endif /* _WIN32 */
 
 
-    sockpp::socket_initializer sockInit;
+    sockpp::initialize();
     
     sockpp::tcp_acceptor acc(port);
     
@@ -291,7 +291,7 @@ class DSTcpipThread
 #endif /* _WIN32 */
 
 
-    sockpp::socket_initializer sockInit;
+    sockpp::initialize();
     
     sockpp::tcp_acceptor acc(port);
     
@@ -1576,8 +1576,12 @@ int main(int argc, char **argv)
       // set in_obs based on digital line
       set_inObs(linestatus);
 
+      ImageProcessor processor;
+
+      processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
+      
           ImagePtr convertedImage =
-              pResultImage->Convert(PixelFormat_Mono8, HQ_LINEAR);
+	    processor.Convert(pResultImage, PixelFormat_Mono8);
       unsigned int XPadding =
     static_cast<unsigned int>(convertedImage->GetXPadding());
       unsigned int YPadding =
