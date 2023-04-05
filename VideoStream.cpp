@@ -1547,6 +1547,10 @@ int main(int argc, char **argv)
 #endif
   
 #ifdef USE_FLIR  
+  ImageProcessor processor;
+
+  processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
+      
   if (!use_webcam) pCam->BeginAcquisition();
 #endif
 
@@ -1576,10 +1580,6 @@ int main(int argc, char **argv)
       // set in_obs based on digital line
       set_inObs(linestatus);
 
-      ImageProcessor processor;
-
-      processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
-      
           ImagePtr convertedImage =
 	    processor.Convert(pResultImage, PixelFormat_Mono8);
       unsigned int XPadding =
