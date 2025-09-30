@@ -259,7 +259,7 @@ static int configureGainCmd(ClientData clientData, Tcl_Interp *interp,
   FlirCameraSource* flirSource = 
     dynamic_cast<FlirCameraSource*>(g_frameSource);
   if (flirSource) {
-    res = flirSource->configure_gain(gain);
+    res = flirSource->configureGain(gain);
   }  
 #endif
   if (res < 0) {
@@ -285,7 +285,7 @@ static int configureFrameRateCmd(ClientData clientData, Tcl_Interp *interp,
   FlirCameraSource* flirSource = 
     dynamic_cast<FlirCameraSource*>(g_frameSource);
   if (flirSource) {
-    res = flirSource->configure_framerate(fr);
+    res = flirSource->configureFrameRate(fr);
   }
 #endif
   if (res < 0) {
@@ -316,7 +316,7 @@ static int configureROICmd(ClientData clientData, Tcl_Interp *interp,
   FlirCameraSource* flirSource = 
     dynamic_cast<FlirCameraSource*>(g_frameSource);
   if (flirSource) {
-    res = flirSource->configure_ROI(w, h, x, y);
+    res = flirSource->configureROI(w, h, x, y);
   }
 #endif
   if (res < 0) {
