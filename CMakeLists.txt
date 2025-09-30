@@ -11,16 +11,7 @@ endif()
 
 find_package( OpenCV REQUIRED )
 
-# Find static lz4 library
-set(LZ4_USE_STATIC_LIBS ON)
-find_library(LZ4_LIBRARY 
-    NAMES lz4_static lz4.a liblz4.a lz4
-    HINTS /usr/local/lib /usr/lib
-)
-if(NOT LZ4_LIBRARY)
-    message(WARNING "Static lz4 not found, falling back to dynamic")
-    find_library(LZ4_LIBRARY NAMES lz4)
-endif()
+find_library(LZ4_LIBRARY NAMES lz4)
 
 if(WIN32)
 set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -DUSE_FLIR=1")
