@@ -99,6 +99,6 @@ proc ds_setup { server } {
 
 
 #ds_setup 192.168.1.143
-ds_setup 128.148.110.17
+ds_setup 127.0.0.1
 ds_connect
 
