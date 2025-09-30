@@ -51,11 +51,13 @@ using namespace cv;
 // Global frame source pointer (for TCL access)
 IFrameSource* g_frameSource = nullptr;
 
+
+// Analysis registry support for plugins
+#include "AnalysisPluginRegistry.h"
+AnalysisPluginRegistry g_pluginRegistry;
+
 std::thread processThreadID;
 SharedQueue<int> process_queue;
-
-std::thread analysisThreadID;
-SharedQueue<int> analysis_queue;
 
 std::thread displayThreadID;
 SharedQueue<int> display_queue;
@@ -74,6 +76,7 @@ Tcl_Interp *interp = NULL;
 /* Shared with tcl */
 int dsPort;
 int useWebcam = 1;
+int useFlir = 0;
 int displayEvery = 1;   // Determines how often to update display
 
 int ShowChunk = 0;
@@ -150,17 +153,29 @@ private:
   std::unordered_map<int, std::string> socket_to_ip;
   
   std::mutex m_sig_mutex;
-  bool m_bDone;
   
   public:
+  bool m_bDone;
 
   std::condition_variable m_sig_cv;
   int port;
 
+  int listening_socket_fd;  // Store this in startTcpServer
+  
+  // Add a public shutdown method to both thread classes:
+  void shutdown() {
+    m_bDone = true;
+    if (listening_socket_fd >= 0) {
+      ::shutdown(listening_socket_fd, SHUT_RDWR);
+      close(listening_socket_fd);
+      listening_socket_fd = -1;
+    }
+}
+  
   TcpipThread()
   {
     m_bDone = false;
-    port = 4610;
+    port = 4630;
     done = false;
   }
 
@@ -263,6 +278,8 @@ private:
         return;
     }
 
+    listening_socket_fd = socket_fd;
+    
     setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
     
     if (::bind(socket_fd, (const struct sockaddr*)&address, sizeof(struct sockaddr)) == -1) {
@@ -321,18 +338,29 @@ private:
   std::unordered_map<int, std::string> socket_to_ip;
   
   std::mutex m_sig_mutex;
-  bool m_bDone;
   
   public:
+  bool m_bDone;
 
   std::condition_variable m_sig_cv;
   int port;
+
+  int listening_socket_fd;
 
   DSTcpipThread()
   {
     m_bDone = false;
     done = false;
   }
+
+  void shutdown() {
+    m_bDone = true;
+    if (listening_socket_fd >= 0) {
+      ::shutdown(listening_socket_fd, SHUT_RDWR);
+      close(listening_socket_fd);
+      listening_socket_fd = -1;
+    }
+  }  
 
   std::string get_client_ip(const struct sockaddr& client_address) {
     char ip_str[INET_ADDRSTRLEN];
@@ -420,7 +448,9 @@ private:
       perror("socket");
       return;
     }
-    
+
+    listening_socket_fd = socket_fd;
+
     setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
     
     if (::bind(socket_fd, (const struct sockaddr*)&address, sizeof(struct sockaddr)) == -1) {
@@ -467,246 +497,6 @@ private:
 #endif
   }
 };
-
-struct PupilData {
-    cv::Point2f center;
-    float radius;
-    bool detected;
-};
-
-struct PurkinjeData {
-    cv::Point2f p1_center;
-    cv::Point2f p4_center;
-    bool p1_detected, p4_detected;
-};
-
-std::mutex analysis_results_mutex;
-struct AnalysisResults {
-    int frame_idx;
-    PupilData pupil;
-    PurkinjeData purkinje;
-    bool valid;
-} latest_analysis_results;
-
-class AnalysisThread {
-private:
-    cv::Rect current_roi;
-    bool roi_enabled = false;
-    int frame_count = 0;
-
-    int pupil_threshold = 65;  // Dark threshold for pupil
-    int pupil_min_area = 5000;
-    int pupil_max_area = 100000;
-    float pupil_min_circularity = 0.65;
-    
-    int purkinje_threshold = 240;  // Bright threshold
-   
-    cv::SimpleBlobDetector::Params blob_params;
-    cv::Ptr<cv::SimpleBlobDetector> detector;
-    
-    void initializeBlobDetector() {
-        blob_params.filterByArea = true;
-        blob_params.minArea = 5;
-        blob_params.maxArea = 200;
-        
-        blob_params.filterByCircularity = true;
-        blob_params.minCircularity = 0.8f;
-        
-        blob_params.filterByConvexity = true;
-        blob_params.minConvexity = 0.8f;
-        
-        blob_params.filterByInertia = true;
-        blob_params.minInertiaRatio = 0.5f;
-        
-        detector = cv::SimpleBlobDetector::create(blob_params);
-    }
-
-public:
-    AnalysisThread() {
-        initializeBlobDetector();
-    }
-
-    void setPupilThreshold(int t) { pupil_threshold = t; }
-    void setPupilMinArea(int a) { pupil_min_area = a; }
-    void setPupilMaxArea(int a) { pupil_max_area = a; }
-    void setPupilMinCircularity(float c) { pupil_min_circularity = c; }
-    void setPurkinjeThreshold(int t) { purkinje_threshold = t; }
-    
-    // Getters
-    int getPupilThreshold() { return pupil_threshold; }
-    int getPupilMinArea() { return pupil_min_area; }
-    int getPupilMaxArea() { return pupil_max_area; }
-    float getPupilMinCircularity() { return pupil_min_circularity; }
-    int getPurkinjeThreshold() { return purkinje_threshold; }
-  
-    PupilData detectPupil(const cv::Mat& frame);
-    PurkinjeData detectPurkinje(const cv::Mat& frame);
-    void startAnalysisThread();
-    void setROI(cv::Rect roi) { current_roi = roi; roi_enabled = true; }
-    void disableROI() { roi_enabled = false; }
-    cv::Rect getROI() { return current_roi; }
-    bool isROIEnabled() { return roi_enabled; }  
-};
-
-PupilData AnalysisThread::detectPupil(const cv::Mat& frame) {
-    PupilData result = {cv::Point2f(-1,-1), -1, false};
-    
-    cv::Mat roi_frame = roi_enabled ? frame(current_roi) : frame;
-    cv::Mat gray;
-    
-    if (roi_frame.channels() > 1) {
-        cv::cvtColor(roi_frame, gray, cv::COLOR_BGR2GRAY);
-    } else {
-        gray = roi_frame;
-    }
-    
-    cv::Mat binary;
-    cv::threshold(gray, binary, pupil_threshold, 255, cv::THRESH_BINARY_INV);
-    
-    // Calculate moments for center of mass
-    cv::Moments m = cv::moments(binary, true);
-    
-    if (m.m00 > 0) {  // m00 is total mass (non-zero pixels)
-        cv::Point2f center;
-        center.x = m.m10 / m.m00;
-        center.y = m.m01 / m.m00;
-        
-        // Estimate radius from area (assuming circular)
-        float area = m.m00;
-        float radius = sqrt(area / M_PI);
-        
-        std::cout << "DEBUG: CoM center=(" << center.x << "," << center.y 
-                  << ") area=" << area << " radius=" << radius << std::endl;
-        
-        if (roi_enabled) {
-            std::cout << "DEBUG: ROI offset=(" << current_roi.x << "," 
-                      << current_roi.y << ")" << std::endl;
-            center.x += current_roi.x;
-            center.y += current_roi.y;
-            std::cout << "DEBUG: After offset=(" << center.x << "," 
-                      << center.y << ")" << std::endl;
-        }
-        
-        result = {center, radius, true};
-    }
-    
-    return result;
-}
-
-PurkinjeData AnalysisThread::detectPurkinje(const cv::Mat& frame) {
-    PurkinjeData result = {{-1,-1}, {-1,-1}, false, false};
-    
-    cv::Mat roi_frame = roi_enabled ? frame(current_roi) : frame;
-    cv::Mat gray;
-    
-    if (roi_frame.channels() > 1) {
-        cv::cvtColor(roi_frame, gray, cv::COLOR_BGR2GRAY);
-    } else {
-        gray = roi_frame;
-    }
-    
-    // Two-pass detection: high threshold for P1, lower for P4
-    
-    // Pass 1: Find bright P1 (corneal reflection)
-    cv::Mat bright_spots;
-    cv::threshold(gray, bright_spots, 240, 255, cv::THRESH_BINARY);  // Very bright
-    
-    std::vector<cv::KeyPoint> bright_keypoints;
-    detector->detect(bright_spots, bright_keypoints);
-    
-    // Pass 2: Find dimmer P4 (lens reflection) 
-    cv::Mat dim_spots;
-    cv::threshold(gray, dim_spots, 180, 255, cv::THRESH_BINARY);  // Lower threshold
-    
-    std::vector<cv::KeyPoint> dim_keypoints;
-    detector->detect(dim_spots, dim_keypoints);
-    
-    // Sort by brightness/response
-    std::sort(bright_keypoints.begin(), bright_keypoints.end(), 
-              [](const cv::KeyPoint& a, const cv::KeyPoint& b) {
-                  return a.response > b.response;
-              });
-    std::sort(dim_keypoints.begin(), dim_keypoints.end(), 
-              [](const cv::KeyPoint& a, const cv::KeyPoint& b) {
-                  return a.response > b.response;
-              });
-    
-    // Take brightest as P1
-    if (bright_keypoints.size() >= 1) {
-        result.p1_center = bright_keypoints[0].pt;
-        if (roi_enabled) {
-            result.p1_center.x += current_roi.x;
-            result.p1_center.y += current_roi.y;
-        }
-        result.p1_detected = true;
-    }
-    
-    // P4 is dimmer, look for it separately
-    if (dim_keypoints.size() >= 1) {
-        // Find keypoint that's NOT the same as P1
-        for (const auto& kp : dim_keypoints) {
-            if (result.p1_detected) {
-                float dist = cv::norm(kp.pt - bright_keypoints[0].pt);
-                if (dist > 10) {  // Different spot from P1
-                    result.p4_center = kp.pt;
-                    if (roi_enabled) {
-                        result.p4_center.x += current_roi.x;
-                        result.p4_center.y += current_roi.y;
-                    }
-                    result.p4_detected = true;
-                    break;
-                }
-            }
-        }
-    }
-    
-    return result;
-}
-
-void AnalysisThread::startAnalysisThread() {
-  while (!done) {
-    try {
-      auto start = std::chrono::high_resolution_clock::now();
-      
-      int frame_idx = analysis_queue.front();
-      analysis_queue.pop_front();
-      
-      if (frame_idx < 0 || frame_idx >= nFrames) {
-	break;
-      }
-      
-      PupilData pupil = detectPupil(Frames[frame_idx]);
-      PurkinjeData purkinje = detectPurkinje(Frames[frame_idx]);
-      
-      {
-	std::lock_guard<std::mutex> lock(analysis_results_mutex);
-	latest_analysis_results.frame_idx = frame_idx;
-	latest_analysis_results.pupil = pupil;
-	latest_analysis_results.purkinje = purkinje;
-	latest_analysis_results.valid = true;
-      }
-      
-	
-      auto end = std::chrono::high_resolution_clock::now();
-      auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-      
-      frame_count++;
-      
-      if (frame_count % 100 == 0) {
-	std::cout << "Analysis time: " << duration.count() << "µs" << std::endl;
-	if (pupil.detected) {
-	  std::cout << "Pupil: (" << pupil.center.x << "," << pupil.center.y 
-		    << ") r=" << pupil.radius << std::endl;
-	}
-      }
-    } catch (...) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-  }
-}
-
-AnalysisThread analysisThread;
-
 class ProcessThread
 {
   int overwrite;
@@ -1124,62 +914,28 @@ public:
     return old;
   }
 
-static void draw_analysis_results(Mat& frame, int frame_idx)
-{
-    // Convert to color if grayscale
+  static void draw_plugin_overlays(Mat& frame, int frame_idx)
+  {
+    // Convert to color if grayscale (plugins may want color)
     if (frame.channels() == 1) {
-        cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
+      cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
     }
     
-    std::lock_guard<std::mutex> lock(analysis_results_mutex);
+    // Let each plugin draw its own overlay
+    extern AnalysisPluginRegistry g_pluginRegistry;
+    auto plugin_names = g_pluginRegistry.listPlugins();
     
-    if (!latest_analysis_results.valid) return;
-    
-    // REMOVED: Frame matching check - just draw the latest results
-    // The analysis lags behind display, so we always show the most recent detection
-    
-    // Draw pupil
-    if (latest_analysis_results.pupil.detected) {
-        cv::Point2f center = latest_analysis_results.pupil.center;
-        float radius = latest_analysis_results.pupil.radius;
-        
-        // Draw circle around pupil
-        cv::circle(frame, center, (int)radius, cv::Scalar(0, 255, 0), 2);
-        
-        // Draw center crosshair
-        cv::drawMarker(frame, center, cv::Scalar(0, 255, 0), 
-                       cv::MARKER_CROSS, 10, 2);
-        
-        // Label
-        cv::putText(frame, "Pupil", 
-                    cv::Point(center.x + radius + 5, center.y),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, 
-                    cv::Scalar(0, 255, 0), 1);
+    for (const auto& name : plugin_names) {
+      auto* plugin = g_pluginRegistry.getPlugin(name);
+      if (plugin) {
+	plugin->drawOverlay(frame, frame_idx);
+      }
     }
-    
-    // Draw Purkinje reflections
-    if (latest_analysis_results.purkinje.p1_detected) {
-        cv::Point2f p1 = latest_analysis_results.purkinje.p1_center;
-        cv::circle(frame, p1, 5, cv::Scalar(255, 0, 0), 2);
-        cv::putText(frame, "P1", 
-                    cv::Point(p1.x + 8, p1.y),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.4, 
-                    cv::Scalar(255, 0, 0), 1);
-    }
-    
-    if (latest_analysis_results.purkinje.p4_detected) {
-        cv::Point2f p4 = latest_analysis_results.purkinje.p4_center;
-        cv::circle(frame, p4, 5, cv::Scalar(0, 0, 255), 2);
-        cv::putText(frame, "P4", 
-                    cv::Point(p4.x + 8, p4.y),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.4, 
-                    cv::Scalar(0, 0, 255), 1);
-    }
-}
+  }
   
   static void annotate_frame(Mat frame, bool inobs, int frame_idx)
   {
-    draw_analysis_results(frame, frame_idx);
+    draw_plugin_overlays(frame, frame_idx);    
     
     cv::putText(frame,
         "Frame: " + std::to_string(processThread.getFrameCount()),
@@ -1459,7 +1215,7 @@ int main(int argc, char **argv)
   int flip_code = -2;
   float scale = 1.0;
   const char *startup_file = NULL;
-  int port = 4610;
+  int port = 4630;
 
   // Playback mode options
   std::string playback_file = "";
@@ -1545,13 +1301,14 @@ int main(int argc, char **argv)
       frameSource = std::make_unique<VideoFileSource>(
         playback_file, metadata_file, playback_speed, true);
       useWebcam = 0;
+      useFlir = 0;
       
     } else if (use_webcam) {
       // Webcam mode
       std::cout << "Webcam mode (camera " << camera_id << ")" << std::endl;
       frameSource = std::make_unique<WebcamSource>(camera_id);
       useWebcam = 1;
-      
+      useFlir = 0;
     } else {
       // FLIR camera mode
 #ifdef USE_FLIR
@@ -1559,6 +1316,7 @@ int main(int argc, char **argv)
       frameSource = std::make_unique<FlirCameraSource>(
         camera_id, flip_view, flip_code);
       useWebcam = 0;
+      useFlir = 1;
 #else
       std::cerr << "FLIR support not compiled. Use --webcam or recompile with USE_FLIR" << std::endl;
       return -1;
@@ -1614,7 +1372,6 @@ int main(int argc, char **argv)
   }
   
   std::thread process_thread(&ProcessThread::startProcessThread, &processThread);
-  std::thread analysis_thread(&AnalysisThread::startAnalysisThread, &analysisThread);
 
 #if !defined(__APPLE__)
   std::thread display_thread(&DisplayThread::startDisplayThread, &displayThread);
@@ -1649,7 +1406,9 @@ int main(int argc, char **argv)
     frame_height = frame.rows;
 
     // Update observation status based on line status
-    set_inObs(metadata.lineStatus);
+    if (useFlir) {
+      set_inObs(metadata.lineStatus);
+    }
 
     // Store in circular buffer
     Frames[curFrame] = frame;
@@ -1659,8 +1418,9 @@ int main(int argc, char **argv)
     FrameTimestamps[curFrame] = metadata.timestamp;
     SystemTimestamps[curFrame] = metadata.systemTime;
 
-    // Wake up analysis thread
-    analysis_queue.push_back(curFrame);
+    if (g_pluginRegistry.hasPlugins()) {
+      g_pluginRegistry.processFrame(Frames[curFrame], curFrame, metadata);
+    }
     
     // Wake up processing thread
     process_queue.push_back(curFrame);
@@ -1703,12 +1463,8 @@ int main(int argc, char **argv)
     processTclCommands();
   }
 
-  // Cleanup
-  frameSource->close();
-
-  analysis_queue.push_back(-1);
-  analysis_thread.join();
-
+  g_pluginRegistry.shutdownAll();
+ 
   process_queue.push_back(-1);
   process_thread.join();
 
@@ -1720,12 +1476,27 @@ int main(int argc, char **argv)
   watchdogTimer.m_bDone = true;
   watchdog_thread.join();
 
-  tcpServer.m_sig_cv.notify_all();
-  dstcpServer.m_sig_cv.notify_all();
+  // Cleanup
+  if (frameSource) {
+    frameSource->close();
+    frameSource.reset();
+    frameSource = nullptr;
+  }
 
-  net_thread.detach();
-  ds_thread.detach();
+  // Give CoreMediaIO time to settle
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
+  tcpServer.shutdown();
+  dstcpServer.shutdown();
+
+  // Join instead of detach
+  if (net_thread.joinable()) {
+    net_thread.join();
+  }
+  if (ds_thread.joinable()) {
+    ds_thread.join();
+  }
+  
   if (verbose) std::cout << "Shutting down" << std::endl;
 
   processShutdownCommands();
