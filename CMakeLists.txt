@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.1)
-set(CMAKE_CXX_STANDARD 11)
+cmake_minimum_required(VERSION 3.11)
+set(CMAKE_CXX_STANDARD 14)
 
 set(CMAKE_BUILD_TYPE Release)
 
@@ -11,39 +11,91 @@ endif()
 
 find_package( OpenCV REQUIRED )
 
-set (SOCKPP sockpp)
+# Find static lz4 library
+set(LZ4_USE_STATIC_LIBS ON)
+find_library(LZ4_LIBRARY 
+    NAMES lz4_static lz4.a liblz4.a lz4
+    HINTS /usr/local/lib /usr/lib
+)
+if(NOT LZ4_LIBRARY)
+    message(WARNING "Static lz4 not found, falling back to dynamic")
+    find_library(LZ4_LIBRARY NAMES lz4)
+endif()
 
 if(WIN32)
 set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -DUSE_FLIR=1")
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-	set(TCLLIB tcl86t_64)
+	set(TCLLIB tcl90t_64)  # Updated to Tcl 9
 	include_directories("c:/usr/local/include" "C:/Program Files/Point Grey Research/Spinnaker/include")
 	link_directories("c:/usr/local/lib64" "c:/usr/local/lib" "C:/Program Files/Point Grey Research/Spinnaker/lib64/vs2015")
 	set(DGLIB dg)
 	set(FLIRLIB Spinnaker_v140)
 elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
-	set(TCLLIB tcl86t)
+	set(TCLLIB tcl90t)  # Updated to Tcl 9
 	set(LABLIB lablib)
 endif()
 elseif(APPLE)
-	set(TCLLIB tcl8.6)
+	# Try to find Tcl 9 first, fall back to 8.6
+	find_library(TCL_LIBRARY 
+	    NAMES tcl9.0 tcl90 tcl9 tcl8.6
+	    HINTS /usr/local/lib /opt/homebrew/lib
+	)
+	if(TCL_LIBRARY)
+	    get_filename_component(TCLLIB ${TCL_LIBRARY} NAME_WE)
+	else()
+	    set(TCLLIB tcl8.6)  # Fallback
+	endif()
 	set(DGLIB dg)
 	set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS}")
-	include_directories(/usr/local/include)
-	link_directories(/usr/local/lib)
-else()
+	include_directories(/usr/local/include /opt/homebrew/include)
+	link_directories(/usr/local/lib /opt/homebrew/lib)
+else()  # Linux
 	find_library(LIBDL dl)
 	find_library(LIBPTHREAD pthread)
-	set(TCLLIB tcl8.6)
+	
+	# Try to find Tcl 9 first
+	find_path(TCL_INCLUDE_DIR tcl.h
+	    PATHS /usr/include/tcl9.0 /usr/include/tcl9 /usr/include/tcl8.6 /usr/local/include
+	    PATH_SUFFIXES tcl9.0 tcl9 tcl8.6
+	)
+	
+	find_library(TCL_LIBRARY
+	    NAMES tcl9.0 tcl90 tcl9 tcl8.6
+	    PATHS /usr/lib /usr/local/lib
+	)
+	
+	if(TCL_LIBRARY)
+	    get_filename_component(TCLLIB ${TCL_LIBRARY} NAME_WE)
+	else()
+	    set(TCLLIB tcl8.6)  # Fallback
+	endif()
+	
 	link_directories(/opt/spinnaker/lib)
 	set(FLIRLIB Spinnaker)
 	set(DGLIB dg)
-	set(TCL_INCLUDE_DIR /usr/include/tcl8.6)
 	set(FLIR_INCLUDE_DIR /opt/spinnaker/include)
 	set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -Wno-conversion-null -DUSE_FLIR=1")
 	add_definitions(-DUSE_FLIR=1)
 endif()
 
 include_directories( ${OpenCV_INCLUDE_DIRS} ${TCL_INCLUDE_DIR} ${FLIR_INCLUDE_DIR} )
-add_executable( VideoStream VideoStream.cpp tclproc.c tclcode.cpp )
-target_link_libraries( VideoStream ${OpenCV_LIBS} ${SOCKPP} ${TCLLIB} ${LIBPTHREAD} ${FLIRLIB} ${LIBDL} ${DGLIB} lz4 z )
+
+add_executable( VideoStream VideoStream.cpp WebcamSource.cpp FlirCameraSource.cpp VideoFileSource.cpp tclproc.cpp tclcode.cpp )
+
+# Link with found libraries
+target_link_libraries( VideoStream 
+    ${OpenCV_LIBS} 
+    ${TCL_LIBRARY}    # Use the found library instead of hardcoded name
+    ${LIBPTHREAD} 
+    ${FLIRLIB} 
+    ${LIBDL} 
+    ${DGLIB} 
+    ${LZ4_LIBRARY}    # Use the found lz4 library
+    z 
+)
+
+# For static linking of lz4, you might need to set this
+if(LZ4_USE_STATIC_LIBS)
+    set_target_properties(VideoStream PROPERTIES LINK_SEARCH_START_STATIC ON)
+    set_target_properties(VideoStream PROPERTIES LINK_SEARCH_END_STATIC OFF)
+endif()
