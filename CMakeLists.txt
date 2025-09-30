@@ -80,7 +80,7 @@ endif()
 
 include_directories( ${OpenCV_INCLUDE_DIRS} ${TCL_INCLUDE_DIR} ${FLIR_INCLUDE_DIR} )
 
-add_executable( VideoStream VideoStream.cpp WebcamSource.cpp FlirCameraSource.cpp VideoFileSource.cpp tclproc.cpp tclcode.cpp )
+add_executable( VideoStream VideoStream.cpp WebcamSource.cpp FlirCameraSource.cpp VideoFileSource.cpp AnalysisPluginRegistry.cpp tclproc.cpp tclcode.cpp )
 
 # Link with found libraries
 target_link_libraries( VideoStream 
@@ -98,4 +98,36 @@ target_link_libraries( VideoStream
 if(LZ4_USE_STATIC_LIBS)
     set_target_properties(VideoStream PROPERTIES LINK_SEARCH_START_STATIC ON)
     set_target_properties(VideoStream PROPERTIES LINK_SEARCH_END_STATIC OFF)
+endif()
+
+######
+##### Plugins
+######
+
+# Build eye tracking plugin
+add_library(eyetracking SHARED 
+    plugins/EyeTrackingPlugin.cpp
+)
+
+target_include_directories(eyetracking PRIVATE
+    ${OpenCV_INCLUDE_DIRS}
+    ${TCL_INCLUDE_DIR}
+    ${CMAKE_SOURCE_DIR}  # For IAnalysisPlugin.h, etc.
+)
+
+target_link_libraries(eyetracking
+    ${OpenCV_LIBS}
+    ${TCL_LIBRARY}
+)
+
+# Set output directory for plugin
+set_target_properties(eyetracking PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
+    PREFIX ""  # Don't add 'lib' prefix on Unix
+)
+
+if(APPLE)
+    set_target_properties(eyetracking PROPERTIES
+        LINK_FLAGS "-undefined dynamic_lookup"
+    )
 endif()
