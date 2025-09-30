@@ -53,6 +53,8 @@ else()  # Linux
 	find_library(LIBDL dl)
 	find_library(LIBPTHREAD pthread)
 	
+	link_directories(/opt/spinnaker/lib)
+	
 	# Try to find Tcl 9 first
 	find_path(TCL_INCLUDE_DIR tcl.h
 	    PATHS /usr/include/tcl9.0 /usr/include/tcl9 /usr/include/tcl8.6 /usr/local/include
@@ -70,7 +72,9 @@ else()  # Linux
 	    set(TCLLIB tcl8.6)  # Fallback
 	endif()
 	
-	link_directories(/opt/spinnaker/lib)
+	# REMOVE THIS LINE FROM HERE
+	# link_directories(/opt/spinnaker/lib)
+	
 	set(FLIRLIB Spinnaker)
 	set(DGLIB dg)
 	set(FLIR_INCLUDE_DIR /opt/spinnaker/include)
