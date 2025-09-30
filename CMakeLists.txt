@@ -52,8 +52,12 @@ elseif(APPLE)
 else()  # Linux
 	find_library(LIBDL dl)
 	find_library(LIBPTHREAD pthread)
-	
-	link_directories(/opt/spinnaker/lib)
+
+        find_library(FLIR_LIBRARY
+          NAMES Spinnaker
+          PATHS /opt/spinnaker/lib
+          REQUIRED
+        )
 	
 	# Try to find Tcl 9 first
 	find_path(TCL_INCLUDE_DIR tcl.h
@@ -75,7 +79,6 @@ else()  # Linux
 	# REMOVE THIS LINE FROM HERE
 	# link_directories(/opt/spinnaker/lib)
 	
-	set(FLIRLIB Spinnaker)
 	set(DGLIB dg)
 	set(FLIR_INCLUDE_DIR /opt/spinnaker/include)
 	set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -Wno-conversion-null -DUSE_FLIR=1")
@@ -91,7 +94,7 @@ target_link_libraries( VideoStream
     ${OpenCV_LIBS} 
     ${TCL_LIBRARY}    # Use the found library instead of hardcoded name
     ${LIBPTHREAD} 
-    ${FLIRLIB} 
+    ${FLIR_LIBRARY} 
     ${LIBDL} 
     ${DGLIB} 
     ${LZ4_LIBRARY}    # Use the found lz4 library
