@@ -21,6 +21,8 @@
 #include <tcl.h>
 
 #include "VideoStream.h"
+#include "IFrameSource.h"
+#include "FlirCameraSource.h"
 
 #ifdef WIN32
 static int strcasecmp(char *a,char *b) { return stricmp(a,b); }
@@ -227,7 +229,12 @@ static int configureExposureCmd(ClientData clientData, Tcl_Interp *interp,
   }
   if (Tcl_GetDouble(interp, argv[1], &exposure) != TCL_OK) return TCL_ERROR;
 #ifdef USE_FLIR
-  res = configure_exposure(exposure);
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* flirSource = 
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+  if (flirSource) {
+    res = flirSource->configureExposure(exposure);
+  }  
 #endif
   if (res < 0) {
     Tcl_AppendResult(interp, argv[0], ": error configuring exposure", NULL);
@@ -248,7 +255,12 @@ static int configureGainCmd(ClientData clientData, Tcl_Interp *interp,
   }
   if (Tcl_GetDouble(interp, argv[1], &gain) != TCL_OK) return TCL_ERROR;
 #ifdef USE_FLIR
-  res = configure_gain(gain);
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* flirSource = 
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+  if (flirSource) {
+    res = flirSource->configure_gain(gain);
+  }  
 #endif
   if (res < 0) {
     Tcl_AppendResult(interp, argv[0], ": error configuring gain", NULL);
@@ -269,7 +281,12 @@ static int configureFrameRateCmd(ClientData clientData, Tcl_Interp *interp,
   }
   if (Tcl_GetDouble(interp, argv[1], &fr) != TCL_OK) return TCL_ERROR;
 #ifdef USE_FLIR
-  res = configure_framerate(fr);
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* flirSource = 
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+  if (flirSource) {
+    res = flirSource->configure_framerate(fr);
+  }
 #endif
   if (res < 0) {
     Tcl_AppendResult(interp, argv[0], ": error configuring framerate", NULL);
@@ -295,7 +312,12 @@ static int configureROICmd(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetInt(interp, argv[3], &x) != TCL_OK) return TCL_ERROR;
   if (Tcl_GetInt(interp, argv[4], &y) != TCL_OK) return TCL_ERROR;
 #ifdef USE_FLIR
-  res = configure_ROI(w, h, x, y);
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* flirSource = 
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+  if (flirSource) {
+    res = flirSource->configure_ROI(w, h, x, y);
+  }
 #endif
   if (res < 0) {
     Tcl_AppendResult(interp, argv[0], ": error configuring ROI", NULL);
