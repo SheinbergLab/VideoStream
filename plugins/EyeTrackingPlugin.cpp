@@ -1,14 +1,16 @@
 #include <tcl.h>
 #include "opencv2/opencv.hpp"
-#include "SharedQueue.hpp"
-#include "IAnalysisPlugin.h"
-#include "AnalysisPluginRegistry.h"
 
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <iostream>
 #include <cmath>
+
+#include "SharedQueue.hpp"
+#include "IAnalysisPlugin.h"
+#include "AnalysisPluginRegistry.h"
 
 // Forward declare the registry
 extern AnalysisPluginRegistry g_pluginRegistry;
