@@ -1,21 +1,15 @@
-
 #include <tcl.h>
 
 // Use dgz format to store metadata about frames
 #include <df.h>
 #include <dynio.h>
 
-#include <sockpp/tcp_acceptor.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
 
 #include "opencv2/opencv.hpp"
-
-#ifdef USE_FLIR
-#include "Spinnaker.h"
-#include "SpinGenApi/SpinnakerGenApi.h"
-using namespace Spinnaker;
-using namespace Spinnaker::GenApi;
-using namespace Spinnaker::GenICam;
-#endif
 
 #include <iostream>
 #include <sstream> 
@@ -25,8 +19,12 @@ using namespace Spinnaker::GenICam;
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <unordered_map>
 #include <queue>
+#include <atomic>
 #include <csignal>
+#include <cmath>
+
 #include <sys/un.h>
 #include <sys/socket.h>
 
@@ -39,11 +37,25 @@ using namespace Spinnaker::GenICam;
 
 #include "VideoStream.h"
 
+// Frame source abstractions
+#include "IFrameSource.h"
+#include "WebcamSource.h"
+#include "VideoFileSource.h"
+#ifdef USE_FLIR
+#include "FlirCameraSource.h"
+#endif
+
 using namespace std;
 using namespace cv;
 
+// Global frame source pointer (for TCL access)
+IFrameSource* g_frameSource = nullptr;
+
 std::thread processThreadID;
 SharedQueue<int> process_queue;
+
+std::thread analysisThreadID;
+SharedQueue<int> analysis_queue;
 
 std::thread displayThreadID;
 SharedQueue<int> display_queue;
@@ -66,7 +78,6 @@ int displayEvery = 1;   // Determines how often to update display
 
 int ShowChunk = 0;
 
-
 namespace
 {
   volatile std::sig_atomic_t done;
@@ -74,6 +85,7 @@ namespace
 
 void signal_handler(int signal)
 {
+  done = true;
   do_shutdown();
 }
 
@@ -101,23 +113,6 @@ bool WSA_initialized = false;   // Windows Socket startup needs to be called onc
 bool WSA_shutdown = false;  // Windows Socket cleanup only once
 #endif
 
-
-#ifdef USE_FLIR
-INodeMap *nodeMapPtr = NULL;
-
-/* Camera parameters */
-float fps = 100;
-int hpix = 1000;
-int vpix = 500;
-int hoffset = 140;
-int voffset = 264;
-float exposure = 9500.0;
-float gain = 4.0;
-
-#endif
-  
-
-
 class WatchdogThread
 {
   public:
@@ -143,10 +138,17 @@ class WatchdogThread
   }
 };
 
-
-
 class TcpipThread
 {
+private:
+  // Connection limiting
+  static constexpr int MAX_TOTAL_CONNECTIONS = 50;
+  static constexpr int MAX_CONNECTIONS_PER_IP = 5;
+  std::atomic<int> active_connections{0};
+  std::mutex connection_mutex;
+  std::unordered_map<std::string, int> ip_connection_count;
+  std::unordered_map<int, std::string> socket_to_ip;
+  
   std::mutex m_sig_mutex;
   bool m_bDone;
   
@@ -165,90 +167,159 @@ class TcpipThread
   ~TcpipThread()
   {
   }
-
-  static void tcpClientProcess(sockpp::tcp_socket sock) {
+  
+  std::string get_client_ip(const struct sockaddr& client_address) {
+    char ip_str[INET_ADDRSTRLEN];
+    const struct sockaddr_in* addr_in = (const struct sockaddr_in*)&client_address;
+    inet_ntop(AF_INET, &(addr_in->sin_addr), ip_str, INET_ADDRSTRLEN);
+    return std::string(ip_str);
+  }
+  
+  bool accept_new_connection(const std::string& client_ip) {
+    std::lock_guard<std::mutex> lock(connection_mutex);
+    
+    if (active_connections.load() >= MAX_TOTAL_CONNECTIONS) {
+      return false;
+    }
+    
+    auto ip_count_it = ip_connection_count.find(client_ip);
+    int current_ip_connections = (ip_count_it != ip_connection_count.end()) ? ip_count_it->second : 0;
+    
+    return current_ip_connections < MAX_CONNECTIONS_PER_IP;
+  }
+  
+  void register_connection(int socket_fd, const std::string& client_ip) {
+    std::lock_guard<std::mutex> lock(connection_mutex);
+    active_connections++;
+    ip_connection_count[client_ip]++;
+    socket_to_ip[socket_fd] = client_ip;
+  }
+  
+  void unregister_connection(int socket_fd) {
+    std::lock_guard<std::mutex> lock(connection_mutex);
+    
+    auto it = socket_to_ip.find(socket_fd);
+    if (it != socket_to_ip.end()) {
+      const std::string& client_ip = it->second;
+      
+      active_connections--;
+      ip_connection_count[client_ip]--;
+      if (ip_connection_count[client_ip] <= 0) {
+	ip_connection_count.erase(client_ip);
+      }
+      
+      socket_to_ip.erase(it);
+    }
+    
+    close(socket_fd);
+  }
+  
+  static void tcpClientProcess(TcpipThread* server, int sockfd) {
     ssize_t n;
     static char buf[1024];
     
-    while ((n = sock.read(buf, sizeof(buf))) > 0) {
-      /*
-       * Queue up message 
-       */
-
-      /* push command onto Tcl queue */
+    while ((n = recv(sockfd, buf, sizeof(buf), 0)) > 0) {
       cqueue.push_back(std::string(buf, n));
-
-      /* rqueue will be available after command has been processed */
+      
       std::string s(rqueue.front());
       rqueue.pop_front();
       s += "\n";
-      sock.write_n(s.data(), s.size()+1);
+      
+      if (send(sockfd, s.data(), s.size(), 0) != (ssize_t)s.size()) {
+	break;
+      }
     }
+    
+    server->unregister_connection(sockfd);
   }
   
-  void
-  startTcpServer(void) {
-    
+  void startTcpServer(void) {
 #ifdef _WIN32
-    if (!WSA_initialized ) {
-      //! Windows netword DLL init
+    if (!WSA_initialized) {
       WORD version = MAKEWORD(2, 2);
       WSADATA data;
-      
       if (WSAStartup(version, &data) != 0) {
-    std::cerr << "WSAStartup() failure" << std::endl;
-    return;
+	std::cerr << "WSAStartup() failure" << std::endl;
+	return;
       }
       WSA_initialized = true;
     }
-#endif /* _WIN32 */
-
-
-    sockpp::initialize();
+#endif
     
-    sockpp::tcp_acceptor acc(port);
+    struct sockaddr_in address;
+    struct sockaddr client_address;
+    socklen_t client_address_len = sizeof(client_address);
+    int socket_fd;
+    int new_socket_fd;
+    int on = 1;
     
-    if (!acc) {
-      std::cerr << "Error creating the acceptor: " << acc.last_error_str() << std::endl;
-      return;
+    memset(&address, 0, sizeof(struct sockaddr_in));
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = INADDR_ANY;
+    
+    if ((socket_fd = ::socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        perror("socket");
+        return;
     }
-    //cout << "Acceptor bound to address: " << acc.address() << std::endl;
-    //        std::cout << "Awaiting connections on port " << port << "..." << std::endl;
+
+    setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
     
+    if (::bind(socket_fd, (const struct sockaddr*)&address, sizeof(struct sockaddr)) == -1) {
+        perror("bind");
+        close(socket_fd);
+        return;
+    }
+    
+    if (::listen(socket_fd, 20) == -1) {
+        perror("listen");
+        close(socket_fd);
+        return;
+    }
+
     while (!m_bDone) {
-      sockpp::inet_address peer;
-      // Accept a new client connection
-      sockpp::tcp_socket sock = acc.accept(&peer);
-      //            std::cout << "Received a connection request from " << peer << std::endl;
-      
-      if (!sock) {
-    std::cerr << "Error accepting incoming connection: "
-          << acc.last_error_str() << std::endl;
-      }
-      else {
-    // Create a thread and transfer the new stream to it.
-    std::thread thr(tcpClientProcess, std::move(sock));
-    thr.detach();
-      }
+        new_socket_fd = ::accept(socket_fd, &client_address, &client_address_len);
+        if (new_socket_fd == -1) {
+            if (!m_bDone) perror("accept");
+            continue;
+        }
+	
+        std::string client_ip = get_client_ip(client_address);
+        
+        if (!accept_new_connection(client_ip)) {
+	  std::cout << "Connection limit reached, rejecting client from " << client_ip << std::endl;
+	  close(new_socket_fd);
+	  continue;
+        }
+        
+        register_connection(new_socket_fd, client_ip);
+        setsockopt(new_socket_fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+        
+        std::thread thr(tcpClientProcess, this, new_socket_fd);
+        thr.detach();
     }
-
-    std::unique_lock<std::mutex> lock(m_sig_mutex);
-    m_sig_cv.wait(lock);
+    
+    close(socket_fd);
     
 #ifdef _WIN32
     if (!WSA_shutdown) {
       WSACleanup();
       WSA_shutdown = true;
     }
-#endif /* _WIN32 */
-  }
-  
+#endif
+  } 
 };
-
-
 
 class DSTcpipThread
 {
+private:
+  static constexpr int MAX_TOTAL_CONNECTIONS = 50;
+  static constexpr int MAX_CONNECTIONS_PER_IP = 5;
+  std::atomic<int> active_connections{0};
+  std::mutex connection_mutex;
+  std::unordered_map<std::string, int> ip_connection_count;
+  std::unordered_map<int, std::string> socket_to_ip;
+  
   std::mutex m_sig_mutex;
   bool m_bDone;
   
@@ -263,72 +334,378 @@ class DSTcpipThread
     done = false;
   }
 
-  static void dstcpClientProcess(sockpp::tcp_socket sock) {
+  std::string get_client_ip(const struct sockaddr& client_address) {
+    char ip_str[INET_ADDRSTRLEN];
+    const struct sockaddr_in* addr_in = (const struct sockaddr_in*)&client_address;
+    inet_ntop(AF_INET, &(addr_in->sin_addr), ip_str, INET_ADDRSTRLEN);
+    return std::string(ip_str);
+  }
+  
+  bool accept_new_connection(const std::string& client_ip) {
+    std::lock_guard<std::mutex> lock(connection_mutex);
+    
+    if (active_connections.load() >= MAX_TOTAL_CONNECTIONS) {
+      return false;
+    }
+    
+    auto ip_count_it = ip_connection_count.find(client_ip);
+    int current_ip_connections = (ip_count_it != ip_connection_count.end()) ? ip_count_it->second : 0;
+    
+    return current_ip_connections < MAX_CONNECTIONS_PER_IP;
+  }
+  
+  void register_connection(int socket_fd, const std::string& client_ip) {
+    std::lock_guard<std::mutex> lock(connection_mutex);
+    active_connections++;
+    ip_connection_count[client_ip]++;
+    socket_to_ip[socket_fd] = client_ip;
+  }
+  
+  void unregister_connection(int socket_fd) {
+    std::lock_guard<std::mutex> lock(connection_mutex);
+    
+    auto it = socket_to_ip.find(socket_fd);
+    if (it != socket_to_ip.end()) {
+      const std::string& client_ip = it->second;
+      
+      active_connections--;
+      ip_connection_count[client_ip]--;
+      if (ip_connection_count[client_ip] <= 0) {
+	ip_connection_count.erase(client_ip);
+      }
+      
+      socket_to_ip.erase(it);
+    }
+    
+    close(socket_fd);
+  }
+  
+  static void dstcpClientProcess(DSTcpipThread* server, int sockfd) {
     ssize_t n;
     char buf[1024];
     
-    while ((n = sock.read(buf, sizeof(buf))) > 0) {
+    while ((n = recv(sockfd, buf, sizeof(buf), 0)) > 0) {
       ds_queue.push_back(std::string(buf, n));
     }
+    
+    server->unregister_connection(sockfd);
   }
   
-  
-  void
-  startTcpServer(void) {
-    
+  void startTcpServer(void) {
 #ifdef _WIN32
-    if (!WSA_initialized ) {
-      //! Windows netword DLL init
+    if (!WSA_initialized) {
       WORD version = MAKEWORD(2, 2);
       WSADATA data;
-      
       if (WSAStartup(version, &data) != 0) {
-    std::cerr << "WSAStartup() failure" << std::endl;
-    return;
+	std::cerr << "WSAStartup() failure" << std::endl;
+	return;
       }
       WSA_initialized = true;
     }
-#endif /* _WIN32 */
-
-
-    sockpp::initialize();
+#endif
     
-    sockpp::tcp_acceptor acc(port);
+    struct sockaddr_in address;
+    struct sockaddr client_address;
+    socklen_t client_address_len = sizeof(client_address);
+    int socket_fd;
+    int new_socket_fd;
+    int on = 1;
     
-    if (!acc) {
-      std::cerr << "Error creating the acceptor: " << acc.last_error_str() << std::endl;
+    memset(&address, 0, sizeof(struct sockaddr_in));
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = INADDR_ANY;
+    
+    if ((socket_fd = ::socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+      perror("socket");
       return;
     }
-
-    while (!m_bDone) {
-      sockpp::inet_address peer;
-      // Accept a new client connection
-      sockpp::tcp_socket sock = acc.accept(&peer);
-      
-      if (!sock) {
-    std::cerr << "Error accepting incoming connection: "
-          << acc.last_error_str() << std::endl;
-      }
-      else {
-    // Create a thread and transfer the new stream to it.
-    std::thread thr(dstcpClientProcess, std::move(sock));
-    thr.detach();
-      }
+    
+    setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    
+    if (::bind(socket_fd, (const struct sockaddr*)&address, sizeof(struct sockaddr)) == -1) {
+      perror("bind");
+      close(socket_fd);
+      return;
     }
     
-    std::unique_lock<std::mutex> lock(m_sig_mutex);
-    m_sig_cv.wait(lock);
-
+    if (::listen(socket_fd, 20) == -1) {
+      perror("listen");
+      close(socket_fd);
+      return;
+    }
+    
+    while (!m_bDone) {
+      new_socket_fd = ::accept(socket_fd, &client_address, &client_address_len);
+      if (new_socket_fd == -1) {
+	if (!m_bDone) perror("accept");
+	continue;
+      }
+      
+      std::string client_ip = get_client_ip(client_address);
+      
+      if (!accept_new_connection(client_ip)) {
+	std::cout << "Connection limit reached, rejecting client from " << client_ip << std::endl;
+	close(new_socket_fd);
+	continue;
+      }
+      
+      register_connection(new_socket_fd, client_ip);
+      setsockopt(new_socket_fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+      
+      std::thread thr(dstcpClientProcess, this, new_socket_fd);
+      thr.detach();
+    }
+    
+    close(socket_fd);
+    
 #ifdef _WIN32
     if (!WSA_shutdown) {
       WSACleanup();
       WSA_shutdown = true;
     }
-#endif /* _WIN32 */
+#endif
   }
-  
 };
 
+struct PupilData {
+    cv::Point2f center;
+    float radius;
+    bool detected;
+};
+
+struct PurkinjeData {
+    cv::Point2f p1_center;
+    cv::Point2f p4_center;
+    bool p1_detected, p4_detected;
+};
+
+std::mutex analysis_results_mutex;
+struct AnalysisResults {
+    int frame_idx;
+    PupilData pupil;
+    PurkinjeData purkinje;
+    bool valid;
+} latest_analysis_results;
+
+class AnalysisThread {
+private:
+    cv::Rect current_roi;
+    bool roi_enabled = false;
+    int frame_count = 0;
+
+    int pupil_threshold = 65;  // Dark threshold for pupil
+    int pupil_min_area = 5000;
+    int pupil_max_area = 100000;
+    float pupil_min_circularity = 0.65;
+    
+    int purkinje_threshold = 240;  // Bright threshold
+   
+    cv::SimpleBlobDetector::Params blob_params;
+    cv::Ptr<cv::SimpleBlobDetector> detector;
+    
+    void initializeBlobDetector() {
+        blob_params.filterByArea = true;
+        blob_params.minArea = 5;
+        blob_params.maxArea = 200;
+        
+        blob_params.filterByCircularity = true;
+        blob_params.minCircularity = 0.8f;
+        
+        blob_params.filterByConvexity = true;
+        blob_params.minConvexity = 0.8f;
+        
+        blob_params.filterByInertia = true;
+        blob_params.minInertiaRatio = 0.5f;
+        
+        detector = cv::SimpleBlobDetector::create(blob_params);
+    }
+
+public:
+    AnalysisThread() {
+        initializeBlobDetector();
+    }
+
+    void setPupilThreshold(int t) { pupil_threshold = t; }
+    void setPupilMinArea(int a) { pupil_min_area = a; }
+    void setPupilMaxArea(int a) { pupil_max_area = a; }
+    void setPupilMinCircularity(float c) { pupil_min_circularity = c; }
+    void setPurkinjeThreshold(int t) { purkinje_threshold = t; }
+    
+    // Getters
+    int getPupilThreshold() { return pupil_threshold; }
+    int getPupilMinArea() { return pupil_min_area; }
+    int getPupilMaxArea() { return pupil_max_area; }
+    float getPupilMinCircularity() { return pupil_min_circularity; }
+    int getPurkinjeThreshold() { return purkinje_threshold; }
+  
+    PupilData detectPupil(const cv::Mat& frame);
+    PurkinjeData detectPurkinje(const cv::Mat& frame);
+    void startAnalysisThread();
+    void setROI(cv::Rect roi) { current_roi = roi; roi_enabled = true; }
+    void disableROI() { roi_enabled = false; }
+    cv::Rect getROI() { return current_roi; }
+    bool isROIEnabled() { return roi_enabled; }  
+};
+
+PupilData AnalysisThread::detectPupil(const cv::Mat& frame) {
+    PupilData result = {cv::Point2f(-1,-1), -1, false};
+    
+    cv::Mat roi_frame = roi_enabled ? frame(current_roi) : frame;
+    cv::Mat gray;
+    
+    if (roi_frame.channels() > 1) {
+        cv::cvtColor(roi_frame, gray, cv::COLOR_BGR2GRAY);
+    } else {
+        gray = roi_frame;
+    }
+    
+    cv::Mat binary;
+    cv::threshold(gray, binary, pupil_threshold, 255, cv::THRESH_BINARY_INV);
+    
+    // Calculate moments for center of mass
+    cv::Moments m = cv::moments(binary, true);
+    
+    if (m.m00 > 0) {  // m00 is total mass (non-zero pixels)
+        cv::Point2f center;
+        center.x = m.m10 / m.m00;
+        center.y = m.m01 / m.m00;
+        
+        // Estimate radius from area (assuming circular)
+        float area = m.m00;
+        float radius = sqrt(area / M_PI);
+        
+        std::cout << "DEBUG: CoM center=(" << center.x << "," << center.y 
+                  << ") area=" << area << " radius=" << radius << std::endl;
+        
+        if (roi_enabled) {
+            std::cout << "DEBUG: ROI offset=(" << current_roi.x << "," 
+                      << current_roi.y << ")" << std::endl;
+            center.x += current_roi.x;
+            center.y += current_roi.y;
+            std::cout << "DEBUG: After offset=(" << center.x << "," 
+                      << center.y << ")" << std::endl;
+        }
+        
+        result = {center, radius, true};
+    }
+    
+    return result;
+}
+
+PurkinjeData AnalysisThread::detectPurkinje(const cv::Mat& frame) {
+    PurkinjeData result = {{-1,-1}, {-1,-1}, false, false};
+    
+    cv::Mat roi_frame = roi_enabled ? frame(current_roi) : frame;
+    cv::Mat gray;
+    
+    if (roi_frame.channels() > 1) {
+        cv::cvtColor(roi_frame, gray, cv::COLOR_BGR2GRAY);
+    } else {
+        gray = roi_frame;
+    }
+    
+    // Two-pass detection: high threshold for P1, lower for P4
+    
+    // Pass 1: Find bright P1 (corneal reflection)
+    cv::Mat bright_spots;
+    cv::threshold(gray, bright_spots, 240, 255, cv::THRESH_BINARY);  // Very bright
+    
+    std::vector<cv::KeyPoint> bright_keypoints;
+    detector->detect(bright_spots, bright_keypoints);
+    
+    // Pass 2: Find dimmer P4 (lens reflection) 
+    cv::Mat dim_spots;
+    cv::threshold(gray, dim_spots, 180, 255, cv::THRESH_BINARY);  // Lower threshold
+    
+    std::vector<cv::KeyPoint> dim_keypoints;
+    detector->detect(dim_spots, dim_keypoints);
+    
+    // Sort by brightness/response
+    std::sort(bright_keypoints.begin(), bright_keypoints.end(), 
+              [](const cv::KeyPoint& a, const cv::KeyPoint& b) {
+                  return a.response > b.response;
+              });
+    std::sort(dim_keypoints.begin(), dim_keypoints.end(), 
+              [](const cv::KeyPoint& a, const cv::KeyPoint& b) {
+                  return a.response > b.response;
+              });
+    
+    // Take brightest as P1
+    if (bright_keypoints.size() >= 1) {
+        result.p1_center = bright_keypoints[0].pt;
+        if (roi_enabled) {
+            result.p1_center.x += current_roi.x;
+            result.p1_center.y += current_roi.y;
+        }
+        result.p1_detected = true;
+    }
+    
+    // P4 is dimmer, look for it separately
+    if (dim_keypoints.size() >= 1) {
+        // Find keypoint that's NOT the same as P1
+        for (const auto& kp : dim_keypoints) {
+            if (result.p1_detected) {
+                float dist = cv::norm(kp.pt - bright_keypoints[0].pt);
+                if (dist > 10) {  // Different spot from P1
+                    result.p4_center = kp.pt;
+                    if (roi_enabled) {
+                        result.p4_center.x += current_roi.x;
+                        result.p4_center.y += current_roi.y;
+                    }
+                    result.p4_detected = true;
+                    break;
+                }
+            }
+        }
+    }
+    
+    return result;
+}
+
+void AnalysisThread::startAnalysisThread() {
+  while (!done) {
+    try {
+      auto start = std::chrono::high_resolution_clock::now();
+      
+      int frame_idx = analysis_queue.front();
+      analysis_queue.pop_front();
+      
+      if (frame_idx < 0 || frame_idx >= nFrames) {
+	break;
+      }
+      
+      PupilData pupil = detectPupil(Frames[frame_idx]);
+      PurkinjeData purkinje = detectPurkinje(Frames[frame_idx]);
+      
+      {
+	std::lock_guard<std::mutex> lock(analysis_results_mutex);
+	latest_analysis_results.frame_idx = frame_idx;
+	latest_analysis_results.pupil = pupil;
+	latest_analysis_results.purkinje = purkinje;
+	latest_analysis_results.valid = true;
+      }
+      
+	
+      auto end = std::chrono::high_resolution_clock::now();
+      auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+      
+      frame_count++;
+      
+      if (frame_count % 100 == 0) {
+	std::cout << "Analysis time: " << duration.count() << "µs" << std::endl;
+	if (pupil.detected) {
+	  std::cout << "Pupil: (" << pupil.center.x << "," << pupil.center.y 
+		    << ") r=" << pupil.radius << std::endl;
+	}
+      }
+    } catch (...) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+}
+
+AnalysisThread analysisThread;
 
 class ProcessThread
 {
@@ -340,18 +717,15 @@ class ProcessThread
   bool do_open;
   bool just_opened;
   bool annotate;
-  int frame_count;      // keep track of frames output
-  int prev_fr;          // track previous frame id
-  int start_obs;            
-  int end_obs;          
+  int frame_count;
+  int prev_fr;
+  int start_obs;
+  int end_obs;
 
-  int sfd = -1;         // socket file descriptor 
+  int sfd = -1;
   struct sockaddr_un svaddr;
 
-  int push_next_frame = -1;     // control how frames are sent over open domain socket
-                                // -1 means send all frames
-                                // 0 means don't send
-                                // n means send next n frames
+  int push_next_frame = -1;
 
   VideoWriter video;
   DYN_GROUP *dg;
@@ -368,7 +742,7 @@ class ProcessThread
       return true;
     } else {
       return false;
-    }   
+    }
   }
 
 public:
@@ -381,7 +755,7 @@ public:
     do_open = false;
     just_opened = false;
     only_save_in_obs = true;
-    annotate = true;    // add info to each frame
+    annotate = true;
     
     dg = dfuCreateDynGroup(6);
     
@@ -407,22 +781,19 @@ public:
     obs_stops = DYN_GROUP_LIST(dg, j);
 
     fourcc = cv::VideoWriter::fourcc('X','V','I','D');
-    //    ('x','2','6','4');
-    //    ('a','v','c','1');
   }
-
 
   int getFrameCount(void) {
     return frame_count;
   }
-
+  
   void annotate_frame(Mat frame)
   {
     cv::putText(frame,
         std::to_string(frame_count),
-        cv::Point(20,20), // Coordinates
-        cv::FONT_HERSHEY_SIMPLEX, // Font
-        0.7, // Scale. 2.0 = 2x bigger
+        cv::Point(20,20),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.7,
         cv::Scalar(20,20,20));
   }
 
@@ -454,8 +825,8 @@ public:
   {
     if (openfile) return false;
     do_open = true;
-    obs_count = -1;     // reset
-    frame_count = 0;        // reset
+    obs_count = -1;
+    frame_count = 0;
     output_file = std::string(filename);
     return true;
   }
@@ -468,18 +839,10 @@ public:
       std::remove(output_file.c_str());
     }
     
-    // Define the codec and create VideoWriter object
     video = VideoWriter(output_file,
             fourcc,
             frame_rate,
             Size(frame_width,frame_height), is_color);
-    
-
-    /*
-      cout << "Opened " + output_file + " (" +
-      std::to_string(frame_width) + "x" + std::to_string(frame_height) +
-      "@" + std::to_string(frame_rate) + "hz)" << std::endl;
-    */
 
     dfuResetDynList(ids);
     dfuResetDynList(obs_starts);
@@ -511,7 +874,6 @@ public:
   
   bool writeFrameDG(DYN_GROUP *dg, std::string filename)
   {
-
     dgInitBuffer();
     strncpy(DYN_GROUP_NAME(dg),
         getFileName(filename).c_str(),
@@ -528,20 +890,20 @@ public:
   {
     if (sfd >= 0) close(sfd);
 
-    sfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    sfd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if(sfd == -1) return false;
 
     memset(&svaddr,0,sizeof(struct sockaddr_un));
     svaddr.sun_family = AF_UNIX;
     strncpy(svaddr.sun_path, path, strlen(path));
 
-  if (connect(sfd, (struct sockaddr *) &svaddr,
+    if (::connect(sfd, (struct sockaddr *) &svaddr,
                 sizeof(struct sockaddr_un)) == -1) {
       close(sfd);
       sfd = -1;
       return false;
     }
-   return true;
+    return true;
   }
   
   int sendToDomainSocket(Mat *m)
@@ -555,20 +917,17 @@ public:
       header[3] = m->type();
       int msgLen = sizeof(header);
 
-      // send the header info
       if (send(sfd, header, msgLen, 0) != msgLen) {
            fprintf(stderr, "error writing header to domain socket\n");
            return -1;
       }
 
-      // now send the data
       if (send(sfd, m->data, header[0], 0) != header[0]) {
         fprintf(stderr, "error writing frame to domain socket\n");
            return -1;
       }
       
       return 1;
-
     }
     return 0;
   }
@@ -590,7 +949,7 @@ public:
     return last;
   }
 
-  void startProcessThread(void)     
+  void startProcessThread(void)
   {
     while (1) {
       if (do_open) {
@@ -603,7 +962,6 @@ public:
     processFrame = process_queue.front();
     process_queue.pop_front();
 
-    // If we just opened a file, stash away id and timestamp
     if (just_opened) {
       just_opened = false;
       on_frameID = FrameIDs[processFrame];
@@ -616,9 +974,7 @@ public:
     }
     if (push_next_frame > 0) push_next_frame--;
 
-    // Write the frame into the file
     if (openfile) {
-      // Add metadata to frame info file
       if (processFrame)
         prev_fr = (processFrame-1);
       else prev_fr = nFrames-1;
@@ -660,7 +1016,6 @@ public:
     }
       } while (processFrame >= 0 && process_queue.size());
 
-      /* Message to shut down - if file open, then close */
       if (processFrame < 0 || processFrame >= nFrames) {
     if (openfile) {
       video.release();
@@ -730,10 +1085,8 @@ int set_fourCC(char *str)
   return processThread.setFourCC(str);
 }
 
-
 class DisplayThread
 {
-
   int show_frames;
   float scale;
 
@@ -741,7 +1094,6 @@ class DisplayThread
   {
     return;
   }
-  
   
 public:
   DisplayThread()
@@ -772,23 +1124,77 @@ public:
     return old;
   }
 
-
-  static void annotate_frame(Mat frame, bool inobs)
+static void draw_analysis_results(Mat& frame, int frame_idx)
+{
+    // Convert to color if grayscale
+    if (frame.channels() == 1) {
+        cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
+    }
+    
+    std::lock_guard<std::mutex> lock(analysis_results_mutex);
+    
+    if (!latest_analysis_results.valid) return;
+    
+    // REMOVED: Frame matching check - just draw the latest results
+    // The analysis lags behind display, so we always show the most recent detection
+    
+    // Draw pupil
+    if (latest_analysis_results.pupil.detected) {
+        cv::Point2f center = latest_analysis_results.pupil.center;
+        float radius = latest_analysis_results.pupil.radius;
+        
+        // Draw circle around pupil
+        cv::circle(frame, center, (int)radius, cv::Scalar(0, 255, 0), 2);
+        
+        // Draw center crosshair
+        cv::drawMarker(frame, center, cv::Scalar(0, 255, 0), 
+                       cv::MARKER_CROSS, 10, 2);
+        
+        // Label
+        cv::putText(frame, "Pupil", 
+                    cv::Point(center.x + radius + 5, center.y),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, 
+                    cv::Scalar(0, 255, 0), 1);
+    }
+    
+    // Draw Purkinje reflections
+    if (latest_analysis_results.purkinje.p1_detected) {
+        cv::Point2f p1 = latest_analysis_results.purkinje.p1_center;
+        cv::circle(frame, p1, 5, cv::Scalar(255, 0, 0), 2);
+        cv::putText(frame, "P1", 
+                    cv::Point(p1.x + 8, p1.y),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, 
+                    cv::Scalar(255, 0, 0), 1);
+    }
+    
+    if (latest_analysis_results.purkinje.p4_detected) {
+        cv::Point2f p4 = latest_analysis_results.purkinje.p4_center;
+        cv::circle(frame, p4, 5, cv::Scalar(0, 0, 255), 2);
+        cv::putText(frame, "P4", 
+                    cv::Point(p4.x + 8, p4.y),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, 
+                    cv::Scalar(0, 0, 255), 1);
+    }
+}
+  
+  static void annotate_frame(Mat frame, bool inobs, int frame_idx)
   {
+    draw_analysis_results(frame, frame_idx);
+    
     cv::putText(frame,
         "Frame: " + std::to_string(processThread.getFrameCount()),
-        cv::Point(50,50), // Coordinates
-        cv::FONT_HERSHEY_SIMPLEX, // Font
-        1.0, // Scale. 2.0 = 2x bigger
+        cv::Point(50,50),
+        cv::FONT_HERSHEY_SIMPLEX,
+        1.0,
         cv::Scalar(20,20,20));
     
     if (processThread.fileIsOpen()) {
       cv::putText(frame,
           "File: " + processThread.currentFile() + "[" +
           std::to_string(obs_count) + "]",
-          cv::Point(50,85), // Coordinates
-          cv::FONT_HERSHEY_SIMPLEX, // Font
-          0.75, // Scale. 2.0 = 2x bigger
+          cv::Point(50,85),
+          cv::FONT_HERSHEY_SIMPLEX,
+          0.75,
           cv::Scalar(20,20,20));
     }
     if (inobs) {
@@ -796,7 +1202,7 @@ public:
     }
   }
 
-  void startDisplayThread(void)     
+  void startDisplayThread(void)
   {
     while (1) {
       do {
@@ -805,26 +1211,18 @@ public:
       }
       while (displayFrame >= 0 && display_queue.size());
       
-      /* Message to shut down */
       if (displayFrame == -1 || displayFrame >= nFrames) {
-    
-    // Closes all the windows
     destroyAllWindows();
-    
     break;
       }
-      else if (displayFrame == -2) {    // show
+      else if (displayFrame == -2) {
     namedWindow("Frame", WINDOW_AUTOSIZE);
-    //  setMouseCallback("Frame", onMouse, NULL);
       }
-      else if (displayFrame == -3) { // hide
+      else if (displayFrame == -3) {
     destroyWindow("Frame");
       }
       else if (show_frames) {
-    /* See if the window was closed by the wm */
     if (getWindowProperty("Frame", WND_PROP_AUTOSIZE) >= 0) {
-      // Use opencv highgui to display frame
-
       Mat dframe;
       if (scale != 1.0) {
         cv::resize(Frames[displayFrame], dframe,
@@ -836,10 +1234,10 @@ public:
         dframe = Frames[displayFrame].clone();
       }
 
-      annotate_frame(dframe, FrameInObs[displayFrame]);
+      annotate_frame(dframe, FrameInObs[displayFrame], displayFrame);
+      
       imshow( "Frame", dframe );
       
-      // Press  ESC on keyboard to  exit
       char c = (char)waitKey(5);
       switch (c) {
       case 27:
@@ -880,23 +1278,25 @@ int hide_display(proginfo_t *p)
 #endif
   p->display = 0;
   return old;
-
 }
 
 void add_shutdown_command(char *cmd)
 {
-  /* push shutdown command onto Tcl queue */
   shutdown_queue.push_back(std::string(cmd));
   return;
 }
 
-/* shutdown called by Tcl process */
 int do_shutdown(void)
 {
   done = true;
   return 1;
 }
 
+int Tcl_AppInit(Tcl_Interp *interp)
+{
+  if (Tcl_Init(interp) == TCL_ERROR) return TCL_ERROR;
+  return TCL_OK;
+}
 
 int setupTcl(proginfo_t *p)
 {
@@ -908,10 +1308,6 @@ int setupTcl(proginfo_t *p)
   if (!interp) {
     std::cerr << "Error initialializing tcl interpreter" << std::endl;
   }
-  
-  /*
-   * Invoke application-specific initialization.
-   */
   
   if (Tcl_AppInit(interp) != TCL_OK) {
     std::cerr << "application-specific initialization failed: ";
@@ -934,17 +1330,9 @@ int processShutdownCommands(void) {
     int retcode = Tcl_Eval(interp, script);
     if (retcode == TCL_OK) {
       const char *rcstr = Tcl_GetStringResult(interp);
-      if (rcstr) {
-    //rqueue.push_back(std::string(rcstr));
-    //std::cout << std::string(rcstr) << std::endl;
-      }
     }
     else {
       const char *rcstr = Tcl_GetStringResult(interp);
-      if (rcstr) {
-    //rqueue.push_back("!TCL_ERROR "+std::string(rcstr));
-    //std::cout << "Error: " + std::string(rcstr) << std::endl;
-      }
     }
   }
   return n;
@@ -991,14 +1379,7 @@ int processTclCommands(void)
   processTclQueues(&wd_cqueue, &wd_rqueue);
   while (Tcl_DoOneEvent(TCL_DONT_WAIT))
     ;
-
   return 0;
-}
-
-int Tcl_AppInit(Tcl_Interp *interp)
-{
-  if (Tcl_Init(interp) == TCL_ERROR) return TCL_ERROR;
-  return TCL_OK;
 }
 
 int sourceFile(const char *filename)
@@ -1011,18 +1392,12 @@ int sourceFile(const char *filename)
   return Tcl_EvalFile(interp, filename);
 }
 
-
-/***********************************************************************************/
-/*                            DataServer Functions                                 */
-/***********************************************************************************/
-
 static int docmd(const char *dscmd)
 {
   char *p;
   char varname[128];
   const char *cmd;
   
-  /* Parse dataserver string and process */
   p = strchr((char *) dscmd, ' ');
   if (!p) return -1;
   
@@ -1030,7 +1405,6 @@ static int docmd(const char *dscmd)
   varname[p-dscmd] = '\0';
   Tcl_SetVar2(interp, "dsVals", varname, dscmd, TCL_GLOBAL_ONLY);
   
-  /* Dispatch callback if it exists */
   if ((cmd = Tcl_GetVar2(interp, "dsCmds", varname, TCL_GLOBAL_ONLY))) {
     Tcl_VarEval(interp, cmd, " ", varname, (char *) NULL);
     Tcl_ResetResult(interp);
@@ -1038,16 +1412,10 @@ static int docmd(const char *dscmd)
   return 0;
 }
 
-
-/*
- * processDSCommand - process input from dataserver supplying events
- */
 int processDSCommand(const char *dscmd)
 {
   static char buf[1024];
   const char *begin, *end;
-
-  /* Need to handle cases where multiple dataserver messages are concatenated */
 
   if (!strchr((char *) dscmd, '\n')) {
     return docmd(dscmd);
@@ -1079,281 +1447,27 @@ int processDSCommands(void) {
   return n;
 }
 
-
-
-#ifdef USE_FLIR
-
-bool get_linestatus(void)
-{
-  if (!nodeMapPtr) return -1;
-
-  CBooleanPtr lineStatus = nodeMapPtr->GetNode("LineStatus");
-  return lineStatus->GetValue();
-}
-
-int configure_exposure(float exposureTimeToSet)
-{
-  if (!nodeMapPtr) return -1;
-  
-  CEnumerationPtr ptrExposureAuto = nodeMapPtr->GetNode("ExposureAuto");
-  if (!IsAvailable(ptrExposureAuto) || !IsWritable(ptrExposureAuto))
-    return -1;
-  
-  CEnumEntryPtr ptrExposureAutoOff = ptrExposureAuto->GetEntryByName("Off");
-  if (!IsAvailable(ptrExposureAutoOff) || !IsReadable(ptrExposureAutoOff))
-    return -1;
-  ptrExposureAuto->SetIntValue(ptrExposureAutoOff->GetValue());
-  
-  CFloatPtr ptrExposureTime = nodeMapPtr->GetNode("ExposureTime");
-  if (!IsAvailable(ptrExposureTime) || !IsWritable(ptrExposureTime))
-    return -1;
-  
-  ptrExposureTime->SetValue(exposureTimeToSet);
-  return 0;
-}
-
-int configure_ROI(int w, int h, int offsetx, int offsety)
-{
-  if (!nodeMapPtr) return -1;
-  
-  CIntegerPtr ptrWidth = nodeMapPtr->GetNode("Width");
-  if (!IsAvailable(ptrWidth) || !IsWritable(ptrWidth))
-    return -1;
-  ptrWidth->SetValue(w);
-
-  CIntegerPtr ptrHeight = nodeMapPtr->GetNode("Height");
-  if (!IsAvailable(ptrHeight) || !IsWritable(ptrHeight))
-    return -1;
-  ptrHeight->SetValue(h);
-
-  CIntegerPtr ptrOffsetX = nodeMapPtr->GetNode("OffsetX");
-  if (!IsAvailable(ptrOffsetX) || !IsWritable(ptrOffsetX))
-    return -1;
-  ptrOffsetX->SetValue(offsetx);
-
-  CIntegerPtr ptrOffsetY = nodeMapPtr->GetNode("OffsetY");
-  if (!IsAvailable(ptrOffsetY) || !IsWritable(ptrOffsetY))
-    return -1;
-  ptrOffsetY->SetValue(offsety);
-  
-  return 0;
-}
-
-int configure_gain(float gainToSet)
-{
-  if (!nodeMapPtr) return -1;
-  
-  CEnumerationPtr ptrGainAuto = nodeMapPtr->GetNode("GainAuto");
-  if (!IsAvailable(ptrGainAuto) || !IsWritable(ptrGainAuto))
-    return -1;
-  
-  CEnumEntryPtr ptrGainAutoOff = ptrGainAuto->GetEntryByName("Off");
-  if (!IsAvailable(ptrGainAutoOff) || !IsReadable(ptrGainAutoOff))
-    return -1;
-  ptrGainAuto->SetIntValue(ptrGainAutoOff->GetValue());
-  
-  CFloatPtr ptrGain = nodeMapPtr->GetNode("Gain");
-  if (!IsAvailable(ptrGain) || !IsWritable(ptrGain))
-    return -1;
-  
-  ptrGain->SetValue(gainToSet);
-  return 0;
-}
-
-int configure_framerate(float frameRateToSet)
-{
-  if (!nodeMapPtr) return -1;
-  
-  CBooleanPtr ptrFrameRateEnable = nodeMapPtr->GetNode("AcquisitionFrameRateEnable");
-  if (!IsAvailable(ptrFrameRateEnable) || !IsWritable(ptrFrameRateEnable))
-    return -1;
-  ptrFrameRateEnable->SetValue(true);
-  
-  CFloatPtr ptrFrameRate = nodeMapPtr->GetNode("AcquisitionFrameRate");
-  if (!IsAvailable(ptrFrameRate) || !IsWritable(ptrFrameRate))
-    return -1;
-  
-  ptrFrameRate->SetValue(frameRateToSet);
-  return 0;
-}
-
-
-int configure_chunk_data(bool v)
-{
-  int result = 0;
-  if (v) cout << endl << endl << "*** CONFIGURING CHUNK DATA ***" << endl << endl;
-  try
-    {
-      //
-      // Activate chunk mode
-      //
-      // *** NOTES ***
-      // Once enabled, chunk data will be available at the end of the payload
-      // of every image captured until it is disabled. Chunk data can also be 
-      // retrieved from the nodemap.
-      //
-
-      CBooleanPtr ptrChunkModeActive = nodeMapPtr->GetNode("ChunkModeActive");
-      if (!IsAvailable(ptrChunkModeActive) || !IsWritable(ptrChunkModeActive))
-    {
-      cout << "Unable to activate chunk mode. Aborting..." << endl << endl;
-      return -1;
-    }
-      ptrChunkModeActive->SetValue(true);
-      if (v) cout << "Chunk mode activated..." << endl;
-      //
-      // Enable all types of chunk data
-      //
-      // *** NOTES ***
-      // Enabling chunk data requires working with nodes: "ChunkSelector"
-      // is an enumeration selector node and "ChunkEnable" is a boolean. It
-      // requires retrieving the selector node (which is of enumeration node 
-      // type), selecting the entry of the chunk data to be enabled, retrieving 
-      // the corresponding boolean, and setting it to true. 
-      //
-      // In this example, all chunk data is enabled, so these steps are 
-      // performed in a loop. Once this is complete, chunk mode still needs to
-      // be activated.
-      //
-      NodeList_t entries;
-      // Retrieve the selector node
-      CEnumerationPtr ptrChunkSelector = nodeMapPtr->GetNode("ChunkSelector");
-      if (!IsAvailable(ptrChunkSelector) || !IsReadable(ptrChunkSelector))
-    {
-      cout << "Unable to retrieve chunk selector. Aborting..." << endl << endl;
-      return -1;
-    }
-      // Retrieve entries
-      ptrChunkSelector->GetEntries(entries);
-      if (v) cout << "Enabling entries..." << endl;
-      for (int i = 0; i < entries.size(); i++)
-    {
-      // Select entry to be enabled
-      CEnumEntryPtr ptrChunkSelectorEntry = entries.at(i);
-      // Go to next node if problem occurs
-      if (!IsAvailable(ptrChunkSelectorEntry) || !IsReadable(ptrChunkSelectorEntry))
-        {
-          continue;
-        }
-      ptrChunkSelector->SetIntValue(ptrChunkSelectorEntry->GetValue());
-      if (v) cout << "\t" << ptrChunkSelectorEntry->GetSymbolic() << ": ";
-      // Retrieve corresponding boolean
-      CBooleanPtr ptrChunkEnable = nodeMapPtr->GetNode("ChunkEnable");
-      // Enable the boolean, thus enabling the corresponding chunk data
-      if (!IsAvailable(ptrChunkEnable))
-        {
-          if (v) cout << "Node not available" << endl;
-        }
-      else if (ptrChunkEnable->GetValue())
-        {
-          if (v) cout << "Enabled" << endl;
-        }
-      else if (IsWritable(ptrChunkEnable))
-        {
-          ptrChunkEnable->SetValue(true);
-          if (v) cout << "Enabled" << endl;
-        }
-      else
-        {
-          if (v) cout << "Node not writable" << endl;
-        }
-    }
-    }
-  catch (Spinnaker::Exception &e)
-        {
-      cout << "Error: " << e.what() << endl;
-      result = -1;
-        }
-  return result;
-}
-// This function displays a select amount of chunk data from the image. Unlike
-// accessing chunk data via the nodemap, there is no way to loop through all 
-// available data.
-int display_chunk_data(ImagePtr pImage)
-{
-  int result = 0;
-  cout << "Printing chunk data from image..." << endl;
-  try
-    {
-      //
-      // Retrieve chunk data from image
-      //
-      // *** NOTES ***
-      // When retrieving chunk data from an image, the data is stored in a
-      // a ChunkData object and accessed with getter functions.
-      //
-      ChunkData chunkData = pImage->GetChunkData();
-      
-      //
-      // Retrieve exposure time; exposure time recorded in microseconds
-      //
-      // *** NOTES ***
-      // Floating point numbers are returned as a float64_t. This can safely
-      // and easily be statically cast to a double.
-      //
-      double exposureTime = static_cast<double>(chunkData.GetExposureTime());
-      std::cout << "\tExposure time: " << exposureTime << endl;
-      //
-      // Retrieve frame ID
-      //
-      // *** NOTES ***
-      // Integers are returned as an int64_t. As this is the typical integer
-      // data type used in the Spinnaker SDK, there is no need to cast it.
-      //
-      int64_t frameID = chunkData.GetFrameID();
-      cout << "\tFrame ID: " << frameID << endl;
-      // Retrieve gain; gain recorded in decibels
-      double gain = chunkData.GetGain();
-      cout << "\tGain: " << gain << endl;
-      // Retrieve height; height recorded in pixels
-      int64_t height = chunkData.GetHeight();
-      cout << "\tHeight: " << height << endl;
-      // Retrieve offset X; offset X recorded in pixels
-      int64_t offsetX = chunkData.GetOffsetX();
-      cout << "\tOffset X: " << offsetX << endl;
-      // Retrieve offset Y; offset Y recorded in pixels
-      int64_t offsetY = chunkData.GetOffsetY();
-      cout << "\tOffset Y: " << offsetY << endl;
-      // Retrieve sequencer set active
-      int64_t sequencerSetActive = chunkData.GetSequencerSetActive();
-      cout << "\tSequencer set active: " << sequencerSetActive << endl;
-      // Retrieve timestamp
-      int64_t timestamp = chunkData.GetTimestamp();
-      cout << "\tTimestamp: " << timestamp << endl;
-      // Retrieve width; width recorded in pixels
-      int64_t width = chunkData.GetWidth();
-      cout << "\tWidth: " << width << endl;
-    }
-  catch (Spinnaker::Exception &e)
-    {
-      cout << "Error: " << e.what() << endl;
-      result = -1;
-    }
-  
-  return result;
-
-}
-#endif
-
 int main(int argc, char **argv)
 {
   int camera_id = 0;
   bool verbose = false;
-  bool use_webcam = false;  // even if FLIR defined, use webcam
+  bool use_webcam = false;
   int display_every = 1;
   bool help = false;
   bool init_display = false;
   bool flip_view = true;
-  int  flip_code = -2;
+  int flip_code = -2;
   float scale = 1.0;
   const char *startup_file = NULL;
   int port = 4610;
 
-  int64_t frameID = 0;
-  int64_t timestamp = 0;
-  bool linestatus = false;
-
-  // structure to hold program info to share with other threads and Tcl
+  // Playback mode options
+  std::string playback_file = "";
+  std::string metadata_file = "";
+  float playback_speed = 1.0;
+  bool playback_mode = false;
+  bool playback_loop = true;
+  
   proginfo_t programInfo;
   
   cxxopts::Options options("videostream","video streaming example program");
@@ -1367,149 +1481,114 @@ int main(int argc, char **argv)
     ("o,overwrite", "Overwrite file", cxxopts::value<bool>(overwrite))
     ("s,scale", "Scale factor", cxxopts::value<float>(scale))
     ("n,showevery", "Show every n frames", cxxopts::value<int>(display_every))
-    ("f,file", "File name", cxxopts::value<std::string>())
+    ("f,file", "Startup file name", cxxopts::value<std::string>())
     ("e,flipcode", "Flip code (OpenCV)", cxxopts::value<int>(flip_code))
     ("l,flip", "Flip video(OpenCV)", cxxopts::value<bool>(flip_view))
+    ("playback", "Playback mode (video file)", cxxopts::value<std::string>())
+    ("metadata", "Metadata file (.dgz) for playback", cxxopts::value<std::string>())
+    ("speed", "Playback speed multiplier", cxxopts::value<float>()->default_value("1.0"))
+    ("noloop", "Disable playback looping", cxxopts::value<bool>())     
     ("help", "Print help", cxxopts::value<bool>(help))
     ;
 
   try {
     auto result = options.parse(argc, argv);
+    
     if (result.count("file")) {
       startup_file = strdup((result["file"].as<std::string>()).c_str());
     }
-    else if (result.count("f")) {
-      startup_file = strdup((result["f"].as<std::string>()).c_str());
+    
+    if (result.count("playback")) {
+      playback_mode = true;
+      playback_file = result["playback"].as<std::string>();
+      
+      if (result.count("metadata")) {
+        metadata_file = result["metadata"].as<std::string>();
+      }
+      
+      playback_speed = result["speed"].as<float>();
+
+      if (result.count("noloop")) {
+        playback_loop = false;  // Disable looping if flag set
+      }
+      
     }
   }
   catch (const std::exception& e) {
     std::cout << "error parsing options: " << e.what() << std::endl;
     exit(1);
-  }    
+  }
 
   if (help) {
     std::cout << options.help({"", "Group"}) << std::endl;
     exit(0);
   }
 
-  // Connect to Tcl variable
   displayEvery = display_every;
   programInfo.name = argv[0];
   programInfo.display = init_display;
   
-#ifdef USE_FLIR
-  CameraPtr pCam;
-  VideoCapture cap; 
-  SystemPtr system;
-  CameraList camList;
+  // Initialize frame source based on mode
+  std::unique_ptr<IFrameSource> frameSource;
   
-  if (!use_webcam) {
-    useWebcam = 0;      // linked to Tcl
-    
-    // Retrieve singleton reference to system object
-    system = System::GetInstance();
-    // Retrieve list of cameras from the system
-    camList = system->GetCameras();
-    unsigned int numCameras = camList.GetSize();
-    
-    // Finish if there are no cameras
-    if (numCameras <= camera_id) {
-      // Clear camera list before releasing system
-      camList.Clear();
-      // Release system
-      system->ReleaseInstance();
-      cout << "Camera not found" << endl;
-      return -1;
-    }
-    
-    pCam = camList.GetByIndex(camera_id);
-    INodeMap & nodeMapTLDevice = pCam->GetTLDeviceNodeMap();
-    
-    // Initialize camera
-    pCam->Init();
-    
-    // Retrieve GenICam nodemap
-    INodeMap & nodeMap = pCam->GetNodeMap();
-    nodeMapPtr = &nodeMap;
-
-
-    // Configure Chunk Data
-    configure_chunk_data(verbose);
-    
-    CEnumerationPtr ptrAcquisitionMode = nodeMap.GetNode("AcquisitionMode");
-    if (!IsAvailable(ptrAcquisitionMode) || !IsWritable(ptrAcquisitionMode))
-      {
-    cout << "Unable to set acquisition mode to continuous (enum retrieval). Aborting..." << endl << endl;
-      return -1;
-    }
-                
-    // Retrieve entry node from enumeration node
-    CEnumEntryPtr ptrAcquisitionModeContinuous =
-      ptrAcquisitionMode->GetEntryByName("Continuous");
-    if (!IsAvailable(ptrAcquisitionModeContinuous) ||
-    !IsReadable(ptrAcquisitionModeContinuous))
-      {
-    cout << "Unable to set acquisition mode to continuous (entry retrieval). Aborting..." << endl << endl;
-    return -1;
+  try {
+    if (playback_mode) {
+      // Playback mode
+      std::cout << "Playback mode: " << playback_file;
+      if (!metadata_file.empty()) {
+        std::cout << " (with metadata: " << metadata_file << ")";
       }
-    
-    // Retrieve integer value from entry node
-    int64_t acquisitionModeContinuous =
-      ptrAcquisitionModeContinuous->GetValue();
-    
-    // Set integer value from entry node as new value of enumeration node
-    ptrAcquisitionMode->SetIntValue(acquisitionModeContinuous);
-    
-    
-    CFloatPtr ptrAcquisitionFrameRate = nodeMap.GetNode("AcquisitionFrameRate");
-    frame_rate = static_cast<float>(ptrAcquisitionFrameRate->GetValue());
-  }
-  else {
-    // Create a VideoCapture object and use camera to capture the video
-    cap = VideoCapture(camera_id); 
-    
-    // Check if camera opened successfully
-    if(!cap.isOpened())
-      {
-    cout << "Error opening video stream" << endl; 
-    return -1; 
-      } 
-    
-    frame_width = cap.get(CAP_PROP_FRAME_WIDTH); 
-    frame_height = cap.get(CAP_PROP_FRAME_HEIGHT); 
-    frame_rate = cap.get(CAP_PROP_FPS);
-    if (frame_rate == 0.0) frame_rate = 30.0; // Some cameras don't supply
-  }
+      std::cout << " @ " << playback_speed << "x speed" << std::endl;
+      if (playback_loop) {
+	std::cout << " (looping)";
+      }  
+      frameSource = std::make_unique<VideoFileSource>(
+        playback_file, metadata_file, playback_speed, true);
+      useWebcam = 0;
+      
+    } else if (use_webcam) {
+      // Webcam mode
+      std::cout << "Webcam mode (camera " << camera_id << ")" << std::endl;
+      frameSource = std::make_unique<WebcamSource>(camera_id);
+      useWebcam = 1;
+      
+    } else {
+      // FLIR camera mode
+#ifdef USE_FLIR
+      std::cout << "FLIR camera mode (camera " << camera_id << ")" << std::endl;
+      frameSource = std::make_unique<FlirCameraSource>(
+        camera_id, flip_view, flip_code);
+      useWebcam = 0;
 #else
-  use_webcam = true;
-  useWebcam = 1;
-  
-  // Create a VideoCapture object and use camera to capture the video
-  VideoCapture cap(camera_id); 
- 
-  // Check if camera opened successfully
-  if(!cap.isOpened())
-  {
-    cout << "Error opening video stream" << endl; 
-    return -1; 
-  } 
- 
-  frame_width = cap.get(CAP_PROP_FRAME_WIDTH); 
-  frame_height = cap.get(CAP_PROP_FRAME_HEIGHT);
-  frame_rate = cap.get(CAP_PROP_FPS);
-  if (frame_rate == 0.0) frame_rate = 30.0; // Some cameras don't supply
+      std::cerr << "FLIR support not compiled. Use --webcam or recompile with USE_FLIR" << std::endl;
+      return -1;
 #endif
+    }
+  }
+  catch (const std::exception& e) {
+    std::cerr << "Error initializing frame source: " << e.what() << std::endl;
+    return -1;
+  }
   
-  int curFrame = 0;
+  // Store global pointer for TCL access
+  g_frameSource = frameSource.get();
+  
+  // Get properties from source
+  frame_rate = frameSource->getFrameRate();
+  frame_width = frameSource->getWidth();
+  frame_height = frameSource->getHeight();
+  is_color = frameSource->isColor();
+  
+  std::cout << "Frame source: " << frame_width << "x" << frame_height 
+            << " @ " << frame_rate << " fps, " 
+            << (is_color ? "color" : "grayscale") << std::endl;
 
+  int curFrame = 0;
   done = false;
 
-  // Install a signal handler
   std::signal(SIGINT, signal_handler);
   
   setupTcl(&programInfo);
-
-  // Start a watchdog thread
 
   WatchdogThread watchdogTimer;
   std::thread watchdog_thread(&WatchdogThread::startWatchdog, &watchdogTimer);
@@ -1518,146 +1597,76 @@ int main(int argc, char **argv)
   tcpServer.port = port;
   if (verbose)
     cout << "Starting cmd server on port " << tcpServer.port << std::endl;
-
   std::thread net_thread(&TcpipThread::startTcpServer, &tcpServer);
 
   DSTcpipThread dstcpServer;
   dstcpServer.port = port+1;
-  dsPort = dstcpServer.port;    // shared in tcl thread
+  dsPort = dstcpServer.port;
   
   if (verbose)
     cout << "Starting ds server on port " << dstcpServer.port << std::endl;
-
   std::thread ds_thread(&DSTcpipThread::startTcpServer, &dstcpServer);
 
-  // Source configuration file after TCP/IP threads are initialized
   if (startup_file) {
     if (sourceFile(startup_file) != TCL_OK) {
       std::cerr << Tcl_GetStringResult(interp) << std::endl;
     }
   }
   
-  // Fire up processing thread
-  std::thread process_thread(&ProcessThread::startProcessThread,
-                 &processThread);
+  std::thread process_thread(&ProcessThread::startProcessThread, &processThread);
+  std::thread analysis_thread(&AnalysisThread::startAnalysisThread, &analysisThread);
+
 #if !defined(__APPLE__)
-  // Fire up display thread
-  std::thread display_thread(&DisplayThread::startDisplayThread,
-                 &displayThread);
+  std::thread display_thread(&DisplayThread::startDisplayThread, &displayThread);
 #endif
   
-#ifdef USE_FLIR  
-  ImageProcessor processor;
-
-  processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
-      
-  if (!use_webcam) pCam->BeginAcquisition();
-#endif
-
 #if !defined(__APPLE__)
   if (init_display) displayThread.show();
   displayThread.setScale(scale);
 #endif
   
+  // Main acquisition loop
   while(!done)
-  { 
-    Mat frame; 
+  {
+    FrameMetadata metadata;
+    Mat frame;
     
-#ifdef USE_FLIR
-    if (!use_webcam) {
-      ImagePtr pResultImage = pCam->GetNextImage();
-
-      // If the image isn't complete don't process
-      if (pResultImage->IsIncomplete()) {
-    if (verbose) {
-      cout << "Image incomplete with image status " << pResultImage->GetImageStatus() << endl;
-    }
-    continue;
+    if (!frameSource->getNextFrame(frame, metadata)) {
+      if (playback_mode && !playback_loop) {
+        std::cout << "End of playback file" << std::endl;
+	do_shutdown();
+        break;
       }
-
-      linestatus = get_linestatus();
-      
-      // set in_obs based on digital line
-      set_inObs(linestatus);
-
-          ImagePtr convertedImage =
-	    processor.Convert(pResultImage, PixelFormat_Mono8);
-      unsigned int XPadding =
-    static_cast<unsigned int>(convertedImage->GetXPadding());
-      unsigned int YPadding =
-    static_cast<unsigned int>(convertedImage->GetYPadding());
-      unsigned int rowsize =
-    static_cast<unsigned int>(convertedImage->GetWidth());
-      unsigned int colsize =
-    static_cast<unsigned int>(convertedImage->GetHeight());
-      
-      // image data contains padding. When allocating Mat container size,
-      // you need to account for the X,Y image data padding. 
-      is_color = false;
-      Mat cvimg = cv::Mat(colsize + YPadding, rowsize + XPadding,
-              CV_8UC1, convertedImage->GetData(),
-              convertedImage->GetStride());
-
-      if ( flip_view ) {
-    Mat flipped = cv::Mat(cvimg.rows, cvimg.cols, CV_8UC1);
-    cv::flip(cvimg, flipped, flip_code);
-    
-    frame = flipped.clone();
+      if (verbose) {
+        std::cerr << "Frame acquisition error, retrying..." << std::endl;
       }
-      else {
-    frame = cvimg.clone();
-      }
-
-      if (ShowChunk) {
-    display_chunk_data(pResultImage);
-    ShowChunk = 0;
-      }
-
-      ChunkData chunkData = pResultImage->GetChunkData();
-      
-      frameID = chunkData.GetFrameID();
-      timestamp = chunkData.GetTimestamp();
-      
-      pResultImage->Release();
+      continue;
     }
-    else {
-      cap >> frame;
-    }
-#else    
 
-    // Capture frame-by-frame 
-    cap >> frame;
-
-    if (ShowChunk) {
-      cout << "ShowChunk" << std::endl;
-      ShowChunk = 0; // no chunks with web cam
-    }
-    
-#endif
-
-    // this will allow dataserver notification of obs on/off to be processed
     processDSCommands();
 
     frame_width = frame.cols;
     frame_height = frame.rows;
 
+    // Update observation status based on line status
+    set_inObs(metadata.lineStatus);
+
+    // Store in circular buffer
     Frames[curFrame] = frame;
     FrameInObs[curFrame] = in_obs;
-    FrameLinestatus[curFrame] = linestatus;
-      
-    FrameIDs[curFrame] = frameID;
-    FrameTimestamps[curFrame] = timestamp;
-    SystemTimestamps[curFrame] = std::chrono::high_resolution_clock::now();
-      
+    FrameLinestatus[curFrame] = metadata.lineStatus;
+    FrameIDs[curFrame] = metadata.frameID;
+    FrameTimestamps[curFrame] = metadata.timestamp;
+    SystemTimestamps[curFrame] = metadata.systemTime;
 
-    // wake up write thread to add to potentially add to output file
+    // Wake up analysis thread
+    analysis_queue.push_back(curFrame);
+    
+    // Wake up processing thread
     process_queue.push_back(curFrame);
 
     if (curFrame % displayEvery == 0) {
-    // For OSX, the display code cannot be in a separate thread.
-    // For other platforms, we just queue up the frame
 #if !defined(__APPLE__)
-      // wake up display thread to show this thread (if visible)
       display_queue.push_back(curFrame);
 #else
       if (programInfo.display) {
@@ -1671,10 +1680,9 @@ int main(int argc, char **argv)
 	  dframe = frame.clone();
 	}
 	
-	DisplayThread::annotate_frame(dframe, FrameInObs[curFrame]);
+	DisplayThread::annotate_frame(dframe, FrameInObs[curFrame], curFrame);
 	imshow( "Frame", dframe );
 	
-	// Press  ESC on keyboard to  exit
 	char c = (char)waitKey(1);
 	switch (c) {
 	case 27:
@@ -1687,63 +1695,40 @@ int main(int argc, char **argv)
 #endif
     }
     
-    // If the frame is empty, break because we have a problem!
     if (Frames[curFrame].empty())
       break;
 
-    // Update write frame circular index
     curFrame = (curFrame+1)%nFrames;
 
-    // If there are any pending Tcl commands, process
     processTclCommands();
   }
 
-  /* We're done, close down helper threads */
-  process_queue.push_back(-1); // signal shutdown
+  // Cleanup
+  frameSource->close();
+
+  analysis_queue.push_back(-1);
+  analysis_thread.join();
+
+  process_queue.push_back(-1);
   process_thread.join();
 
 #if !defined(__APPLE__)
-  display_queue.push_back(-1); // signal shutdown
+  display_queue.push_back(-1);
   display_thread.join();
 #endif
 
-  /* shutdown the watchdog timer */
   watchdogTimer.m_bDone = true;
   watchdog_thread.join();
 
-  /* send event to TCP/IP threads to close */
   tcpServer.m_sig_cv.notify_all();
   dstcpServer.m_sig_cv.notify_all();
 
-  /* don't leave until TCP/IP threads are finished */
   net_thread.detach();
   ds_thread.detach();
 
   if (verbose) std::cout << "Shutting down" << std::endl;
 
-  /* If the user has added shutdown commands, execute those scripts here */
   processShutdownCommands();
-  
-#ifdef USE_FLIR
-  if (!use_webcam) {
-    pCam->EndAcquisition();
-    
-    // Deinitialize camera
-    pCam->DeInit();
-    pCam = NULL;
-    
-    // Clear camera list before releasing system
-    camList.Clear();
-    // Release system
-    system->ReleaseInstance();
-  }
-  else {
-    cap.release();
-  }
-#else
-  // When everything done, release the video capture and write object
-  cap.release();
-#endif
   
   return 0;
 }
