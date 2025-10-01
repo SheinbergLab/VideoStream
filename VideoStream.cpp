@@ -956,7 +956,7 @@ public:
           cv::Scalar(20,20,20));
     }
     if (inobs) {
-      cv::circle(frame, cv::Point(40,80), 6, cv::Scalar(10,10,200));
+      cv::circle(frame, cv::Point(40,80), 6, cv::Scalar(255,255,255), -1);
     }
   }
 
