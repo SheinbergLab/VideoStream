@@ -917,9 +917,11 @@ public:
   static void draw_plugin_overlays(Mat& frame, int frame_idx)
   {
     // Convert to color if grayscale (plugins may want color)
+#if 0
     if (frame.channels() == 1) {
       cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
     }
+#endif
     
     // Let each plugin draw its own overlay
     extern AnalysisPluginRegistry g_pluginRegistry;
