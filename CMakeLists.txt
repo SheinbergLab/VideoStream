@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.11)
+cmake_minimum_required(VERSION 3.13)
 set(CMAKE_CXX_STANDARD 14)
 
 set(CMAKE_BUILD_TYPE Release)
@@ -91,6 +91,11 @@ target_link_libraries( VideoStream
     ${LZ4_LIBRARY}    # Use the found lz4 library
     z 
 )
+
+# For the host executable on Linux
+if(UNIX AND NOT APPLE)
+    target_link_options(VideoStream PRIVATE -rdynamic)
+endif()
 
 # For static linking of lz4, you might need to set this
 if(LZ4_USE_STATIC_LIBS)
