@@ -78,7 +78,7 @@ endif()
 
 include_directories( ${OpenCV_INCLUDE_DIRS} ${TCL_INCLUDE_DIR} ${FLIR_INCLUDE_DIR} )
 
-add_executable( VideoStream VideoStream.cpp WebcamSource.cpp FlirCameraSource.cpp VideoFileSource.cpp AnalysisPluginRegistry.cpp tclproc.cpp tclcode.cpp )
+add_executable( VideoStream VideoStream.cpp WebcamSource.cpp FlirCameraSource.cpp VideoFileSource.cpp AnalysisPluginRegistry.cpp tclproc.cpp )
 
 # Link with found libraries
 target_link_libraries( VideoStream 
