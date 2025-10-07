@@ -62,6 +62,8 @@ SharedQueue<int> process_queue;
 std::thread displayThreadID;
 SharedQueue<int> display_queue;
 
+SharedQueue<std::string> mouse_queue;
+
 SharedQueue<std::string> cqueue;
 SharedQueue<std::string> rqueue;
 
@@ -880,12 +882,52 @@ class DisplayThread
   int show_frames;
   float scale;
 
+public:
   static void onMouse(int event, int x, int y, int flags, void* userdata)
   {
-    return;
+    float* scale_ptr = static_cast<float*>(userdata);
+    float scale = scale_ptr ? *scale_ptr : 1.0f;
+    
+    // Convert display coordinates back to original frame coordinates
+    int orig_x = x / scale;
+    int orig_y = y / scale;
+    
+    // Build Tcl command string based on event
+    std::string tcl_cmd;
+    
+    if (event == cv::EVENT_LBUTTONDOWN) {
+        // Determine modifier
+        std::string modifier = "none";
+        if (flags & cv::EVENT_FLAG_CTRLKEY) {
+            modifier = "ctrl";
+        } else if (flags & cv::EVENT_FLAG_SHIFTKEY) {
+            modifier = "shift";
+        } else if (flags & cv::EVENT_FLAG_ALTKEY) {
+            modifier = "alt";
+        }
+        
+        // Call Tcl proc: onMouseClick x y modifier
+        tcl_cmd = "if {[info procs onMouseClick] ne \"\"} { onMouseClick " 
+                  + std::to_string(orig_x) + " " 
+                  + std::to_string(orig_y) + " " 
+                  + modifier + " }";
+                  
+    } else if (event == cv::EVENT_RBUTTONDOWN) {
+        tcl_cmd = "if {[info procs onMouseRightClick] ne \"\"} { onMouseRightClick " 
+                  + std::to_string(orig_x) + " " 
+                  + std::to_string(orig_y) + " }";
+                  
+    } else if (event == cv::EVENT_MBUTTONDOWN) {
+      tcl_cmd = "if {[info procs onMouseMiddleClick] ne \"\"} { onMouseMiddleClick " 
+	+ std::to_string(orig_x) + " " 
+	+ std::to_string(orig_y) + " }";
+    }
+    
+    if (!tcl_cmd.empty()) {
+      mouse_queue.push_back(tcl_cmd);
+    }
   }
   
-public:
   DisplayThread()
   {
     show_frames = false;
@@ -964,53 +1006,55 @@ public:
   {
     while (1) {
       do {
-    displayFrame = display_queue.front();
-    display_queue.pop_front();
+	displayFrame = display_queue.front();
+	display_queue.pop_front();
       }
       while (displayFrame >= 0 && display_queue.size());
       
       if (displayFrame == -1 || displayFrame >= nFrames) {
-    destroyAllWindows();
-    break;
+	destroyAllWindows();
+	break;
       }
       else if (displayFrame == -2) {
-    namedWindow("Frame", WINDOW_AUTOSIZE);
+	namedWindow("Frame", WINDOW_AUTOSIZE);
+	static float display_scale = scale;    
+	cv::setMouseCallback("Frame", onMouse, &display_scale);
       }
       else if (displayFrame == -3) {
-    destroyWindow("Frame");
+	destroyWindow("Frame");
       }
       else if (show_frames) {
-    if (getWindowProperty("Frame", WND_PROP_AUTOSIZE) >= 0) {
-      Mat dframe;
-      if (scale != 1.0) {
-        cv::resize(Frames[displayFrame], dframe,
-               cv::Size(Frames[displayFrame].cols * scale,
-                Frames[displayFrame].rows * scale),
-               0, 0, cv::INTER_LINEAR);
-      }
-      else {
-        dframe = Frames[displayFrame].clone();
-      }
-
-      annotate_frame(dframe, FrameInObs[displayFrame], displayFrame);
-      
-      imshow( "Frame", dframe );
-      
-      char c = (char)waitKey(5);
-      switch (c) {
-      case 27:
-        do_shutdown();
-        break;
-      case 'h':
-        hide();
-        break;
-      default:
-        break;
-      }
-    }
-    else {
-      show_frames = false;
-    }
+	if (getWindowProperty("Frame", WND_PROP_AUTOSIZE) >= 0) {
+	  Mat dframe;
+	  if (scale != 1.0) {
+	    cv::resize(Frames[displayFrame], dframe,
+		       cv::Size(Frames[displayFrame].cols * scale,
+				Frames[displayFrame].rows * scale),
+		       0, 0, cv::INTER_LINEAR);
+	  }
+	  else {
+	    dframe = Frames[displayFrame].clone();
+	  }
+	  
+	  annotate_frame(dframe, FrameInObs[displayFrame], displayFrame);
+	  
+	  imshow( "Frame", dframe );
+	  
+	  char c = (char)waitKey(5);
+	  switch (c) {
+	  case 27:
+	    do_shutdown();
+	    break;
+	  case 'h':
+	    hide();
+	    break;
+	  default:
+	    break;
+	  }
+	}
+	else {
+	  show_frames = false;
+	}
       }
     }
   }
@@ -1094,6 +1138,25 @@ int processShutdownCommands(void) {
     }
   }
   return n;
+}
+
+int processMouseEvents(void)
+{
+  int count = 0;
+  while (mouse_queue.size()) {
+    std::string cmd = mouse_queue.front();
+    mouse_queue.pop_front();
+    
+    int retcode = Tcl_Eval(interp, cmd.c_str());
+    if (retcode != TCL_OK) {
+      const char *err = Tcl_GetStringResult(interp);
+      if (err) {
+	std::cerr << "Mouse event Tcl error: " << err << std::endl;
+      }
+    }
+    count++;
+  }
+  return count;
 }
 
 static void processTclQueues(SharedQueue<std::string> *cmdqueue, SharedQueue<std::string> *respqueue)
@@ -1442,6 +1505,9 @@ int main(int argc, char **argv)
 	  dframe = frame.clone();
 	}
 	
+	static float display_scale = scale;
+	cv::setMouseCallback("Frame", DisplayThread::onMouse, &display_scale);
+	
 	DisplayThread::annotate_frame(dframe, FrameInObs[curFrame], curFrame);
 	imshow( "Frame", dframe );
 	
@@ -1463,6 +1529,7 @@ int main(int argc, char **argv)
     curFrame = (curFrame+1)%nFrames;
 
     processTclCommands();
+    processMouseEvents();
   }
 
   g_pluginRegistry.shutdownAll();
