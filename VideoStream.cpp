@@ -34,23 +34,26 @@
 
 #include "cxxopts.hpp"
 #include "SharedQueue.hpp"
-
-#include "VideoStream.h"
-
+#include "SourceManager.h"
 // Frame source abstractions
+#include "FrameBufferManager.h"
 #include "IFrameSource.h"
 #include "WebcamSource.h"
 #include "VideoFileSource.h"
+#include "ReviewModeSource.h"
 #ifdef USE_FLIR
 #include "FlirCameraSource.h"
 #endif
 
+#include "VideoStream.h"
+
 using namespace std;
 using namespace cv;
 
-// Global frame source pointer (for TCL access)
-IFrameSource* g_frameSource = nullptr;
+SourceManager g_sourceManager;
 
+// Global frame source pointer
+IFrameSource* g_frameSource = nullptr;
 
 // Analysis registry support for plugins
 #include "AnalysisPluginRegistry.h"
@@ -77,8 +80,6 @@ Tcl_Interp *interp = NULL;
 
 /* Shared with tcl */
 int dsPort;
-int useWebcam = 1;
-int useFlir = 0;
 int displayEvery = 1;   // Determines how often to update display
 
 int ShowChunk = 0;
@@ -96,12 +97,7 @@ void signal_handler(int signal)
 
 /* Buffer to hold video frames */
 int nFrames = 50;
-std::vector<Mat> Frames(nFrames);
-std::vector<bool> FrameInObs(nFrames);
-std::vector<bool> FrameLinestatus(nFrames);
-std::vector<int64_t> FrameIDs(nFrames); // supplied by camera
-std::vector<int64_t> FrameTimestamps(nFrames);
-std::vector<std::chrono::high_resolution_clock::time_point> SystemTimestamps(nFrames);
+FrameBufferManager frameBufferManager(nFrames);
 
 int processFrame, displayFrame;
 int frame_width, frame_height;
@@ -582,11 +578,11 @@ public:
   void annotate_frame(Mat frame)
   {
     cv::putText(frame,
-        std::to_string(frame_count),
-        cv::Point(20,20),
-        cv::FONT_HERSHEY_SIMPLEX,
-        0.7,
-        cv::Scalar(20,20,20));
+		std::to_string(frame_count),
+		cv::Point(20,20),
+		cv::FONT_HERSHEY_SIMPLEX,
+		0.7,
+		cv::Scalar(20,20,20));
   }
 
   bool fileIsOpen(void) {
@@ -632,9 +628,9 @@ public:
     }
     
     video = VideoWriter(output_file,
-            fourcc,
-            frame_rate,
-            Size(frame_width,frame_height), is_color);
+			fourcc,
+			frame_rate,
+			Size(frame_width,frame_height), is_color);
 
     dfuResetDynList(ids);
     dfuResetDynList(obs_starts);
@@ -650,26 +646,26 @@ public:
 
   string getFileName(const string& s) {
     
-   char sep = '/';
+    char sep = '/';
    
 #ifdef _WIN32
-   sep = '\\';
+    sep = '\\';
 #endif
    
-   size_t i = s.rfind(sep, s.length());
-   if (i != string::npos) {
-     return(s.substr(i+1, s.length() - i));
-   }
+    size_t i = s.rfind(sep, s.length());
+    if (i != string::npos) {
+      return(s.substr(i+1, s.length() - i));
+    }
    
-   return(s);
+    return(s);
   }
   
   bool writeFrameDG(DYN_GROUP *dg, std::string filename)
   {
     dgInitBuffer();
     strncpy(DYN_GROUP_NAME(dg),
-        getFileName(filename).c_str(),
-        DYN_GROUP_NAME_SIZE); 
+	    getFileName(filename).c_str(),
+	    DYN_GROUP_NAME_SIZE); 
     dgRecordDynGroup(dg);
     if (!dgWriteBufferCompressed((char *) (output_file+".dgz").c_str())) {
       return false;
@@ -690,7 +686,7 @@ public:
     strncpy(svaddr.sun_path, path, strlen(path));
 
     if (::connect(sfd, (struct sockaddr *) &svaddr,
-                sizeof(struct sockaddr_un)) == -1) {
+		  sizeof(struct sockaddr_un)) == -1) {
       close(sfd);
       sfd = -1;
       return false;
@@ -710,13 +706,13 @@ public:
       int msgLen = sizeof(header);
 
       if (send(sfd, header, msgLen, 0) != msgLen) {
-           fprintf(stderr, "error writing header to domain socket\n");
-           return -1;
+	fprintf(stderr, "error writing header to domain socket\n");
+	return -1;
       }
 
       if (send(sfd, m->data, header[0], 0) != header[0]) {
         fprintf(stderr, "error writing frame to domain socket\n");
-           return -1;
+	return -1;
       }
       
       return 1;
@@ -745,87 +741,109 @@ public:
   {
     while (1) {
       if (do_open) {
-    doOpenFile();
-    do_open = false;
-    just_opened = true;
+	doOpenFile();
+	do_open = false;
+	just_opened = true;
       }
-
+      
       do {
-    processFrame = process_queue.front();
-    process_queue.pop_front();
-
-    if (just_opened) {
-      just_opened = false;
-      on_frameID = FrameIDs[processFrame];
-      on_frameTimestamp = FrameTimestamps[processFrame];
-      on_systemTimestamp = SystemTimestamps[processFrame];
-    }
-    
-    if (push_next_frame != 0) {
-       sendToDomainSocket(&Frames[processFrame]);
-    }
-    if (push_next_frame > 0) push_next_frame--;
-
-    if (openfile) {
-      if (processFrame)
-        prev_fr = (processFrame-1);
-      else prev_fr = nFrames-1;
-      
-      if (FrameInObs[processFrame] && !FrameInObs[prev_fr]) {
-        start_obs = true;
-        dfuAddDynListLong(obs_starts, frame_count);
-      }
-      else start_obs = false;
-      
-      if (!FrameInObs[processFrame] && FrameInObs[prev_fr]) {
-        end_obs = true;
-        dfuAddDynListLong(obs_stops, frame_count-1);
-      }
-      else end_obs = false;
-
-      if (!only_save_in_obs ||
-          (only_save_in_obs && FrameInObs[processFrame])) {
-
-        if (annotate) annotate_frame(Frames[processFrame]);
-        
-        video.write(Frames[processFrame]);
-
-        dfuAddDynListLong(ids, frame_count);
-        dfuAddDynListLong(frame_ids,
-                  (int) (FrameIDs[processFrame]-on_frameID));
-
-        int64_t ns = FrameTimestamps[processFrame]-on_frameTimestamp; 
-        dfuAddDynListLong(frame_timestamps, (int) (ns/1000));
-
-        int elapsed = chrono::duration_cast<chrono::microseconds>(SystemTimestamps[processFrame] - on_systemTimestamp).count();
-        dfuAddDynListLong(frame_systemtimes, elapsed);
-
-        dfuAddDynListChar(frame_linestatus,
-                  (unsigned char) FrameLinestatus[processFrame]);
-        
-        frame_count++;
-      }
-    }
+	processFrame = process_queue.front();
+	process_queue.pop_front();
+	
+	if (just_opened) {
+	  just_opened = false;
+	  // Get initial frame metadata
+	  FrameMetadata init_metadata;
+	  bool init_in_obs;
+	  cv::Mat temp_frame;
+	  if (frameBufferManager.copyFrame(processFrame, temp_frame, init_metadata, init_in_obs)) {
+	    on_frameID = init_metadata.frameID;
+	    on_frameTimestamp = init_metadata.timestamp;
+	    on_systemTimestamp = init_metadata.systemTime;
+	  }
+	}
+	
+	if (push_next_frame != 0) {
+	  auto access = frameBufferManager.accessFrame(processFrame);
+	  if (access.isValid()) {
+	    sendToDomainSocket(const_cast<Mat*>(access.frame));
+	  }
+	}
+	if (push_next_frame > 0) push_next_frame--;
+	
+	if (openfile) {
+	  if (processFrame)
+	    prev_fr = (processFrame-1);
+	  else prev_fr = nFrames-1;
+	  
+	  // Check observation boundaries
+	  auto curr_access = frameBufferManager.accessFrame(processFrame);
+	  auto prev_access = frameBufferManager.accessFrame(prev_fr);
+	  
+	  if (curr_access.isValid() && prev_access.isValid()) {
+	    if (curr_access.in_obs && !prev_access.in_obs) {
+	      start_obs = true;
+	      dfuAddDynListLong(obs_starts, frame_count);
+	    }
+	    else start_obs = false;
+	    
+	    if (!curr_access.in_obs && prev_access.in_obs) {
+	      end_obs = true;
+	      dfuAddDynListLong(obs_stops, frame_count-1);
+	    }
+	    else end_obs = false;
+	  }
+	  
+	  // Copy frame for processing
+	  cv::Mat frame_copy;
+	  FrameMetadata frame_metadata;
+	  bool frame_in_obs;
+	  
+	  if (frameBufferManager.copyFrame(processFrame, frame_copy, frame_metadata, frame_in_obs)) {
+	    if (!only_save_in_obs || (only_save_in_obs && frame_in_obs)) {
+	      
+	      if (annotate) annotate_frame(frame_copy);
+	      
+	      video.write(frame_copy);
+	      
+	      dfuAddDynListLong(ids, frame_count);
+	      dfuAddDynListLong(frame_ids,
+				(int) (frame_metadata.frameID - on_frameID));
+	      
+	      int64_t ns = frame_metadata.timestamp - on_frameTimestamp; 
+	      dfuAddDynListLong(frame_timestamps, (int) (ns/1000));
+	      
+	      int elapsed = chrono::duration_cast<chrono::microseconds>(
+									frame_metadata.systemTime - on_systemTimestamp).count();
+	      dfuAddDynListLong(frame_systemtimes, elapsed);
+	      
+	      dfuAddDynListChar(frame_linestatus,
+				(unsigned char) frame_metadata.lineStatus);
+	      
+	      frame_count++;
+	    }
+	  }
+	}
       } while (processFrame >= 0 && process_queue.size());
-
+      
       if (processFrame < 0 || processFrame >= nFrames) {
-    if (openfile) {
-      video.release();
-      writeFrameDG(dg, output_file);
-    }
-    break;
+	if (openfile) {
+	  video.release();
+	  writeFrameDG(dg, output_file);
+	}
+	break;
       }
       
       if (closefile) {
-    video.release();
-    openfile = false;
-    closefile = false;
-    writeFrameDG(dg, output_file);
+	video.release();
+	openfile = false;
+	closefile = false;
+	writeFrameDG(dg, output_file);
       }
     }
-  }
+  }  
 };
-
+  
 ProcessThread processThread;
 
 int open_videoFile(char *filename)
@@ -850,7 +868,7 @@ int close_domainSocket(void)
 
 int sendn_domainSocket(int n)
 {
-    return processThread.setNSendDomainSocket(n);
+  return processThread.setNSendDomainSocket(n);
 }
 
 int set_inObs(int status)
@@ -1025,22 +1043,26 @@ public:
       }
       else if (show_frames) {
 	if (getWindowProperty("Frame", WND_PROP_AUTOSIZE) >= 0) {
-	  Mat dframe;
-	  if (scale != 1.0) {
-	    cv::resize(Frames[displayFrame], dframe,
-		       cv::Size(Frames[displayFrame].cols * scale,
-				Frames[displayFrame].rows * scale),
-		       0, 0, cv::INTER_LINEAR);
+	  auto access = frameBufferManager.accessFrame(displayFrame);
+	  if (access.isValid()) {
+	    Mat dframe;
+	    if (scale != 1.0) {
+	      cv::resize(*access.frame, dframe,
+			 cv::Size(access.frame->cols * scale,
+				  access.frame->rows * scale),
+			 0, 0, cv::INTER_LINEAR);
+	    }
+	    else {
+	      dframe = access.frame->clone();
+	    }
+	    // Lock released here when access goes out of scope
+	    
+	    annotate_frame(dframe, access.in_obs, displayFrame);
+	    
+	    imshow( "Frame", dframe );
 	  }
-	  else {
-	    dframe = Frames[displayFrame].clone();
-	  }
 	  
-	  annotate_frame(dframe, FrameInObs[displayFrame], displayFrame);
-	  
-	  imshow( "Frame", dframe );
-	  
-	  char c = (char)waitKey(5);
+	  char c = (char) waitKey(5);
 	  switch (c) {
 	  case 27:
 	    do_shutdown();
@@ -1268,14 +1290,121 @@ int processDSCommands(void) {
   return n;
 }
 
+
+#ifdef __APPLE__
+
+void handle_keyboard(char c)
+{
+  switch (c) {
+  case 27:
+    do_shutdown();
+    break;
+  default:
+    break;
+  }
+}
+
+void processMacOSEvents(proginfo_t* p, float scale = 1.0, Mat* frame_to_display = nullptr) {
+  static bool macos_window_initialized = false;
+ 
+  // Create window on first frame (when we know the size)
+  if (!macos_window_initialized) {
+    if (frame_to_display && !frame_to_display->empty()) {
+      // We have a real frame with known dimensions
+      namedWindow("Frame", WINDOW_AUTOSIZE);
+      static float display_scale = scale;
+      cv::setMouseCallback("Frame", DisplayThread::onMouse, &display_scale);
+      macos_window_initialized = true;
+    } else if (frame_width > 0 && frame_height > 0) {
+      // We know dimensions but don't have a frame yet - create with idle screen
+      namedWindow("Frame", WINDOW_AUTOSIZE);
+      static float display_scale = scale;
+      cv::setMouseCallback("Frame", DisplayThread::onMouse, &display_scale);
+      macos_window_initialized = true;
+    } else {
+      return;
+    }
+  }
+  
+  if (frame_to_display) {
+    imshow("Frame", *frame_to_display);
+  } else {
+    // Display idle screen with status
+    static Mat idle_frame;
+    
+    int width = (frame_width > 0) ? frame_width : 640;
+    int height = (frame_height > 0) ? frame_height : 480;
+    
+    // Recreate idle frame each time to show current status
+    idle_frame = Mat(height, width, CV_8UC3, Scalar(40, 40, 40));
+    
+    // Title
+    cv::putText(idle_frame, "No Source Active",
+		cv::Point(width/4, height/2 - 80),
+		cv::FONT_HERSHEY_SIMPLEX,
+		1.0,
+		cv::Scalar(200, 200, 200), 2);
+    
+    // Show source state
+    std::string state_msg = "State: ";
+    switch (g_sourceManager.getState()) {
+    case SOURCE_IDLE: state_msg += "Idle"; break;
+    case SOURCE_ERROR: state_msg += "Error"; break;
+    case SOURCE_STOPPING: state_msg += "Stopping..."; break;
+    default: state_msg += "Unknown"; break;
+    }
+    
+    cv::putText(idle_frame, state_msg,
+		cv::Point(width/4, height/2 - 20),
+		cv::FONT_HERSHEY_SIMPLEX,
+		0.7,
+		cv::Scalar(150, 150, 150), 1);
+    
+    // Instructions
+    cv::putText(idle_frame, "Commands:",
+		cv::Point(width/4, height/2 + 30),
+		cv::FONT_HERSHEY_SIMPLEX,
+		0.6,
+		cv::Scalar(100, 200, 100), 1);
+    
+    cv::putText(idle_frame, "startSource webcam id 0",
+		cv::Point(width/4, height/2 + 60),
+		cv::FONT_HERSHEY_SIMPLEX,
+		0.5,
+		cv::Scalar(100, 150, 100), 1);
+    
+    cv::putText(idle_frame, "startSource playback file \"video.avi\"",
+		cv::Point(width/4, height/2 + 85),
+		cv::FONT_HERSHEY_SIMPLEX,
+		0.5,
+		cv::Scalar(100, 150, 100), 1);
+    
+    cv::putText(idle_frame, "[ESC] Quit",
+		cv::Point(width/4, height/2 + 120),
+		cv::FONT_HERSHEY_SIMPLEX,
+		0.5,
+		cv::Scalar(200, 100, 100), 1);
+    
+    imshow("Frame", idle_frame);
+  }
+  
+  char c = (char)waitKey(1);
+  if (c != -1) {
+    handle_keyboard(c);
+  }
+}
+#endif
+
 int main(int argc, char **argv)
 {
   int camera_id = 0;
   bool verbose = false;
   bool use_webcam = false;
+  bool use_flir = false;
   int display_every = 1;
   bool help = false;
   bool init_display = false;
+  bool no_source = true;
   bool flip_view = true;
   int flip_code = -2;
   float scale = 1.0;
@@ -1288,8 +1417,6 @@ int main(int argc, char **argv)
   float playback_speed = 1.0;
   bool playback_mode = false;
   bool playback_loop = true;
-  
-  proginfo_t programInfo;
   
   cxxopts::Options options("videostream","video streaming example program");
 
@@ -1330,9 +1457,8 @@ int main(int argc, char **argv)
       playback_speed = result["speed"].as<float>();
 
       if (result.count("noloop")) {
-        playback_loop = false;  // Disable looping if flag set
+        playback_loop = false;  
       }
-      
     }
   }
   catch (const std::exception& e) {
@@ -1345,74 +1471,87 @@ int main(int argc, char **argv)
     exit(0);
   }
 
+  proginfo_t programInfo;
+  ReviewModeSource reviewModeSource;
+  
   displayEvery = display_every;
   programInfo.name = argv[0];
   programInfo.display = init_display;
+  programInfo.sourceManager = &g_sourceManager;
+  programInfo.frameBuffer = &frameBufferManager;
+  programInfo.displayFrame = &displayFrame;
+  programInfo.frameSource = &g_frameSource;
+  programInfo.frame_rate = &frame_rate;
+  programInfo.frame_width = &frame_width;
+  programInfo.frame_height = &frame_height;
+  programInfo.is_color = &is_color;
+ 
+  std::string source_type;
+  std::map<std::string, std::string> source_params;
   
-  // Initialize frame source based on mode
-  std::unique_ptr<IFrameSource> frameSource;
-  
-  try {
-    if (playback_mode) {
-      // Playback mode
-      std::cout << "Playback mode: " << playback_file;
-      if (!metadata_file.empty()) {
-        std::cout << " (with metadata: " << metadata_file << ")";
-      }
-      std::cout << " @ " << playback_speed << "x speed" << std::endl;
-      if (playback_loop) {
-	std::cout << " (looping)";
-      }  
-      frameSource = std::make_unique<VideoFileSource>(
-        playback_file, metadata_file, playback_speed, true);
-      useWebcam = 0;
-      useFlir = 0;
-      
-    } else if (use_webcam) {
-      // Webcam mode
-      std::cout << "Webcam mode (camera " << camera_id << ")" << std::endl;
-      frameSource = std::make_unique<WebcamSource>(camera_id);
-      useWebcam = 1;
-      useFlir = 0;
-    } else {
-      // FLIR camera mode
-#ifdef USE_FLIR
-      std::cout << "FLIR camera mode (camera " << camera_id << ")" << std::endl;
-      frameSource = std::make_unique<FlirCameraSource>(
-        camera_id, flip_view, flip_code);
-      useWebcam = 0;
-      useFlir = 1;
-#else
-      std::cerr << "FLIR support not compiled. Use --webcam or recompile with USE_FLIR" << std::endl;
-      return -1;
-#endif
+  if (playback_mode) {
+    source_type = "playback";
+    source_params["file"] = playback_file;
+    if (!metadata_file.empty()) {
+      source_params["metadata"] = metadata_file;
     }
-  }
-  catch (const std::exception& e) {
-    std::cerr << "Error initializing frame source: " << e.what() << std::endl;
+    source_params["speed"] = std::to_string(playback_speed);
+    source_params["loop"] = playback_loop ? "1" : "0";
+    use_webcam = false;
+    use_flir = false;
+    no_source = false;
+  } else if (use_webcam) {
+    source_type = "webcam";
+    source_params["id"] = std::to_string(camera_id);
+    use_webcam = true;
+    use_flir = false;
+    no_source = false;
+  } else if (use_flir) {
+#ifdef USE_FLIR
+    source_type = "flir";
+    source_params["id"] = std::to_string(camera_id);
+    source_params["flip"] = flip_view ? "1" : "0";
+    source_params["flip_code"] = std::to_string(flip_code);
+    use_webcam = false;
+    use_flir = true;
+    no_source = false;
+#else
+    std::cerr << "FLIR support not compiled. Use --webcam or recompile with USE_FLIR" << std::endl;
     return -1;
+#endif
+  }
+
+  if (!no_source) {
+    if (!g_sourceManager.startSource(source_type, source_params)) {
+      std::cerr << "Failed to start source" << std::endl;
+      return -1;
+    }
+    
+    g_frameSource = g_sourceManager.getCurrentSource();
+    
+    if (!g_frameSource) {
+      std::cerr << "No frame source available" << std::endl;
+      return -1;
+    }
+    
+    // Get properties from source 
+    frame_rate = g_frameSource->getFrameRate();
+    frame_width = g_frameSource->getWidth();
+    frame_height = g_frameSource->getHeight();
+    is_color = g_frameSource->isColor();
+    
+    std::cout << "Frame source: " << frame_width << "x" << frame_height 
+	      << " @ " << frame_rate << " fps, " 
+	      << (is_color ? "color" : "grayscale") << std::endl;
   }
   
-  // Store global pointer for TCL access
-  g_frameSource = frameSource.get();
-  
-  // Get properties from source
-  frame_rate = frameSource->getFrameRate();
-  frame_width = frameSource->getWidth();
-  frame_height = frameSource->getHeight();
-  is_color = frameSource->isColor();
-  
-  std::cout << "Frame source: " << frame_width << "x" << frame_height 
-            << " @ " << frame_rate << " fps, " 
-            << (is_color ? "color" : "grayscale") << std::endl;
-
   int curFrame = 0;
   done = false;
-
+  
   std::signal(SIGINT, signal_handler);
   
   setupTcl(&programInfo);
-
+  
   WatchdogThread watchdogTimer;
   std::thread watchdog_thread(&WatchdogThread::startWatchdog, &watchdogTimer);
 
@@ -1447,96 +1586,114 @@ int main(int argc, char **argv)
   displayThread.setScale(scale);
 #endif
   
-  // Main acquisition loop
   while(!done)
-  {
-    FrameMetadata metadata;
-    Mat frame;
-    
-    if (!frameSource->getNextFrame(frame, metadata)) {
-      if (playback_mode && !playback_loop) {
-        std::cout << "End of playback file" << std::endl;
-	do_shutdown();
-        break;
-      }
-      if (verbose) {
-        std::cerr << "Frame acquisition error, retrying..." << std::endl;
-      }
-      continue;
-    }
+    {
+      SourceState state = g_sourceManager.getState();
+      switch (state) {
+      case SOURCE_IDLE:
+      case SOURCE_ERROR:
+	
+        processTclCommands();
+        processMouseEvents();
+        processDSCommands();
 
-    processDSCommands();
-
-    frame_width = frame.cols;
-    frame_height = frame.rows;
-
-    // Update observation status based on line status
-    if (useFlir) {
-      set_inObs(metadata.lineStatus);
-    }
-
-    // Store in circular buffer
-    Frames[curFrame] = frame;
-    FrameInObs[curFrame] = in_obs;
-    FrameLinestatus[curFrame] = metadata.lineStatus;
-    FrameIDs[curFrame] = metadata.frameID;
-    FrameTimestamps[curFrame] = metadata.timestamp;
-    SystemTimestamps[curFrame] = metadata.systemTime;
-
-    if (g_pluginRegistry.hasPlugins()) {
-      g_pluginRegistry.processFrame(Frames[curFrame], curFrame, metadata);
-    }
-    
-    // Wake up processing thread
-    process_queue.push_back(curFrame);
-
-    if (curFrame % displayEvery == 0) {
-#if !defined(__APPLE__)
-      display_queue.push_back(curFrame);
+#ifdef __APPLE__
+        processMacOSEvents(&programInfo);  // Process events even when idle
 #else
-      if (programInfo.display) {
-	Mat dframe;
-	if (scale != 1.0) {
-	  cv::resize(frame, dframe,
-		     cv::Size(frame.cols * scale,frame.rows * scale),
-		     0, 0, cv::INTER_LINEAR);
-	}
-	else {
-	  dframe = frame.clone();
-	}
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+#endif	
+      
+        break;
 	
-	static float display_scale = scale;
-	cv::setMouseCallback("Frame", DisplayThread::onMouse, &display_scale);
-	
-	DisplayThread::annotate_frame(dframe, FrameInObs[curFrame], curFrame);
-	imshow( "Frame", dframe );
-	
-	char c = (char)waitKey(1);
-	switch (c) {
-	case 27:
-	  do_shutdown();
-	  break;
-	default:
-	  break;
-	}
-      }
+      case SOURCE_RUNNING:
+	if (g_frameSource) {
+	  FrameMetadata metadata;
+	  Mat frame;
+	  
+	  if (!g_frameSource->getNextFrame(frame, metadata)) {
+	    if (playback_mode && !playback_loop) {
+	      std::cout << "End of playback file" << std::endl;
+	      // Don't shutdown, just stop the source
+	      g_sourceManager.stopSource();
+	      g_frameSource = nullptr;
+	      continue;
+	    }
+	    if (verbose) {
+	      std::cerr << "Frame acquisition error, retrying..." << std::endl;
+	    }
+	    continue;
+	  }
+	  
+	  processDSCommands();
+	  
+	  frame_width = frame.cols;
+	  frame_height = frame.rows;
+	  
+	  // Update observation status based on line status
+	  if (use_flir) {
+	    set_inObs(metadata.lineStatus);
+	  }
+	  
+	  // Store in circular buffer (thread-safe)
+	  frameBufferManager.storeFrame(curFrame, frame, metadata, in_obs);	  
+	  
+	  if (g_pluginRegistry.hasPlugins()) {
+	    auto access = frameBufferManager.accessFrame(curFrame);
+	    if (access.isValid()) {
+	      g_pluginRegistry.processFrame(const_cast<cv::Mat&>(*access.frame), curFrame, metadata);
+	    }	    
+	  }
+
+	  process_queue.push_back(curFrame);
+	  
+	  if (curFrame % displayEvery == 0) {
+#if !defined(__APPLE__)
+	    display_queue.push_back(curFrame);
+#else
+	    if (programInfo.display) {
+	      Mat dframe;
+	      if (scale != 1.0) {
+		cv::resize(frame, dframe,
+			   cv::Size(frame.cols * scale,frame.rows * scale),
+			   0, 0, cv::INTER_LINEAR);
+	      }
+	      else {
+		dframe = frame.clone();
+	      }
+	      
+	      DisplayThread::annotate_frame(dframe, in_obs, curFrame);
+	      processMacOSEvents(&programInfo, scale, &dframe);
+	    }
 #endif
+	  }
+	  
+	  if (!frameBufferManager.hasFrame(curFrame))
+	    break;
+	  
+	  curFrame = (curFrame+1)%nFrames;
+	  
+	  processTclCommands();
+	  processMouseEvents();
+	}
+	break;
+      case SOURCE_PAUSED:
+	processTclCommands();
+	processMouseEvents();
+	processDSCommands();
+	std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	break;
+	
+      case SOURCE_STOPPING:
+	std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	break;
+      }
     }
-    
-    if (Frames[curFrame].empty())
-      break;
-
-    curFrame = (curFrame+1)%nFrames;
-
-    processTclCommands();
-    processMouseEvents();
-  }
-
+  
   g_pluginRegistry.shutdownAll();
- 
+  
   process_queue.push_back(-1);
   process_thread.join();
-
+  
 #if !defined(__APPLE__)
   display_queue.push_back(-1);
   display_thread.join();
@@ -1546,12 +1703,9 @@ int main(int argc, char **argv)
   watchdog_thread.join();
 
   // Cleanup
-  if (frameSource) {
-    frameSource->close();
-    frameSource.reset();
-    frameSource = nullptr;
-  }
-
+  g_sourceManager.stopSource();
+  g_frameSource = nullptr;
+  
   // Give CoreMediaIO time to settle
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 

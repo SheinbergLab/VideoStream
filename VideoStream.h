@@ -1,9 +1,21 @@
-// Declarations for VideoStream.cpp and tclproc.c
+// Declarations for VideoStream.cpp and tclproc.cpp
 
 typedef struct _proginfo_t {
   char *name;
   Tcl_Interp *interp;
   int display;
+
+  SourceManager* sourceManager;
+  ReviewModeSource* reviewSource;
+  FrameBufferManager *frameBuffer;
+  int *displayFrame;
+  IFrameSource** frameSource;  // Pointer to pointer so we can update it
+  
+  // Frame properties
+  float* frame_rate;
+  int* frame_width;
+  int* frame_height;
+  bool* is_color;  
 } proginfo_t;
 
 
