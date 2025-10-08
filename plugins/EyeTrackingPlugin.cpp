@@ -48,34 +48,34 @@ struct PurkinjeValidator {
     p1_initialized = true;
   }
 
-    bool isValidP4(const cv::Point2f& new_pos, const cv::Point2f& pupil_center, 
-                   float max_jump_pixels = 10.0f) {
-        if (!p4_initialized) return true;
-        
-        float p4_movement = cv::norm(new_pos - p4_last);
-        
-        // If pupil also moved, allow more P4 movement
-        if (pupil_initialized) {
-            float pupil_movement = cv::norm(pupil_center - pupil_last);
-            
-            // P4 can move up to: base threshold + pupil movement
-            float adjusted_max = max_jump_pixels + pupil_movement;
-            
-            if (p4_movement > adjusted_max) {
-                std::cout << "P4 rejected: moved " << p4_movement 
-                          << " (pupil moved " << pupil_movement 
-                          << ", allowed " << adjusted_max << ")" << std::endl;
-                return false;
-            }
-        } else {
-            // First frame with pupil
-            if (p4_movement > max_jump_pixels) {
-                return false;
-            }
-        }
-        
-        return true;
+  bool isValidP4(const cv::Point2f& new_pos, const cv::Point2f& pupil_center, 
+		 float max_jump_pixels = 10.0f) {
+    if (!p4_initialized) return true;
+    
+    float p4_movement = cv::norm(new_pos - p4_last);
+    
+    // If pupil also moved, allow more P4 movement
+    if (pupil_initialized) {
+      float pupil_movement = cv::norm(pupil_center - pupil_last);
+      
+      // P4 can move up to: base threshold + pupil movement
+      float adjusted_max = max_jump_pixels + pupil_movement;
+      
+      if (p4_movement > adjusted_max) {
+	std::cout << "P4 rejected: moved " << p4_movement 
+		  << " (pupil moved " << pupil_movement 
+		  << ", allowed " << adjusted_max << ")" << std::endl;
+	return false;
+      }
+    } else {
+      // First frame with pupil
+      if (p4_movement > max_jump_pixels) {
+	return false;
+      }
     }
+    
+    return true;
+  }
   
   void updateP4(const cv::Point2f& pos, const cv::Point2f& pupil_center) {
     p4_last = pos;
@@ -159,8 +159,8 @@ private:
   float p4_min_separation_ratio_;     // Minimum P1-P4 separation as ratio of pupil radius (default 0.3)
   int p4_min_brightness_;             // Minimum brightness threshold for P4 (default 160)
   float p4_angular_bonus_;            // Bonus weight for opposite-side P4 (default 1.0)
-  int p4_max_area_;                   // Maximum area for P4 blob (default 100)
-  int p4_min_area_;                   // Minimum area for P4 blob (default 2)
+  int p4_max_area_;
+  int p4_min_area_;
 
   std::vector<std::pair<float, cv::Point2f>> last_p4_candidates_;
 
@@ -176,28 +176,7 @@ private:
   cv::Rect p1_seed_roi_;
   bool use_p1_seed_;
   
-  // Blob detector
-  cv::SimpleBlobDetector::Params blob_params_;
-  cv::Ptr<cv::SimpleBlobDetector> detector_;
-    
     int frame_count_;
-    
-    void initializeBlobDetector() {
-        blob_params_.filterByArea = true;
-        blob_params_.minArea = 5;
-        blob_params_.maxArea = 200;
-        
-        blob_params_.filterByCircularity = true;
-        blob_params_.minCircularity = 0.8f;
-        
-        blob_params_.filterByConvexity = true;
-        blob_params_.minConvexity = 0.8f;
-        
-        blob_params_.filterByInertia = true;
-        blob_params_.minInertiaRatio = 0.5f;
-        
-        detector_ = cv::SimpleBlobDetector::create(blob_params_);
-    }
     
     void ensureBuffersAllocated(const cv::Mat& frame) {
         cv::Size current_size(frame.cols, frame.rows);
@@ -401,7 +380,7 @@ private:
     if (gray_buffer_.empty()) return;
     
     // Get ROI around click
-    int template_size = 11;
+    int template_size = 7;
     cv::Rect template_roi(
 			  click_pos.x - template_size/2,
 			  click_pos.y - template_size/2,
@@ -629,7 +608,8 @@ private:
       // Apply mask and normalize
       cv::Mat p4_enhanced;
       p4_search.copyTo(p4_enhanced, p4_mask);
-      cv::normalize(p4_enhanced, p4_enhanced, 0, 255, cv::NORM_MINMAX, CV_8UC1, p4_mask);
+      cv::normalize(p4_enhanced, p4_enhanced, 0, 255,
+		    cv::NORM_MINMAX, CV_8UC1, p4_mask);
       
       // Collect ALL candidates with scoring function
       std::vector<std::pair<float, cv::Point2f>> p4_candidates;
@@ -1136,7 +1116,6 @@ public:
     }
     
     bool initialize(Tcl_Interp* interp) override {
-        initializeBlobDetector();
         running_ = true;
         analysis_thread_ = std::thread(&EyeTrackingPlugin::analysisThreadFunc, this);
         return true;
