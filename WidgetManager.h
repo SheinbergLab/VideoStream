@@ -2,6 +2,9 @@
 
 #include <tcl.h>
 #include "SharedQueue.hpp"
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
 
 #pragma once
 class WidgetManager {
