@@ -1117,7 +1117,7 @@ public:
 	    imshow( "Frame", dframe );
 	  }
 
-	  int key = waitKey(5);
+	  int key = waitKeyEx(5);
 	  if (key != -1) {
 	    std::string callback = g_keyboardCallbacks.getCallback(key);
 	    if (!callback.empty()) {
@@ -1418,14 +1418,14 @@ void handle_keyboard(int key)
     do_shutdown();
     break;
   default:
-    std::string generic = g_keyboardCallbacks.getCallback(-1);  // Changed from 0
+    std::string generic = g_keyboardCallbacks.getCallback(-1);
     if (!generic.empty()) {
       std::ostringstream cmd;
       cmd << generic << " " << key;
       mouse_queue.push_back(cmd.str());
     }
     break;
-  }
+  }  
 }
 
 void processMacOSEvents(proginfo_t* p, float scale = 1.0, Mat* frame_to_display = nullptr) {
@@ -1512,7 +1512,7 @@ void processMacOSEvents(proginfo_t* p, float scale = 1.0, Mat* frame_to_display 
     imshow("Frame", idle_frame);
   }
   
-  int key = waitKey(1);
+  int key = waitKeyEx(1);
   if (key != -1) {
     handle_keyboard(key);
   }
