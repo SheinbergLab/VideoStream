@@ -26,7 +26,7 @@
 #include "ReviewModeSource.h"
 #include "SamplingManager.h"
 #include "FrameBufferManager.h"
-
+#include "KeyboardCallbackRegistry.h"
 #include "Widget.h"
 #include "WidgetManager.h"
 
@@ -181,6 +181,133 @@ static int getSourceStatusCmd(ClientData clientData, Tcl_Interp *interp,
     Tcl_SetObjResult(interp, statusDict);
     return TCL_OK;
 }
+
+/*********************************************************************/
+/*                       Keyboard bindings                           */
+/*********************************************************************/
+
+// tclproc.cpp
+
+// bind_key key callback
+// supports special keys like arrows, function keys, etc.
+// In tclproc.cpp
+
+int TclCmd_BindKey(ClientData clientData, Tcl_Interp *interp, 
+                   int objc, Tcl_Obj *objv[]) {
+    if (objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "key callback");
+        return TCL_ERROR;
+    }
+    
+    const char* keyStr = Tcl_GetString(objv[1]);
+    std::string callback = Tcl_GetString(objv[2]);
+    
+    int key;
+    size_t len = strlen(keyStr);
+    
+    if (len == 0) {
+        // Empty string means catch-all handler
+        key = -1;
+    } else if (keyStr[0] == '<' && keyStr[len-1] == '>' && len > 2) {
+        // Angle bracket syntax: <keycode>
+        std::string codeStr(keyStr + 1, len - 2);  // Extract between < and >
+        
+        char* endptr;
+        key = strtol(codeStr.c_str(), &endptr, 10);
+        if (*endptr != '\0') {
+            Tcl_SetObjResult(interp, 
+                Tcl_NewStringObj("invalid keycode in angle brackets", -1));
+            return TCL_ERROR;
+        }
+    } else if (len == 1) {
+        // Single character - use its ASCII value
+        key = static_cast<int>(keyStr[0]);
+    } else {
+        Tcl_SetObjResult(interp, 
+            Tcl_NewStringObj("key must be single character, <keycode>, or empty string", -1));
+        return TCL_ERROR;
+    }
+    
+    g_keyboardCallbacks.registerCallback(key, callback);
+    return TCL_OK;
+}
+
+int TclCmd_UnbindKey(ClientData clientData, Tcl_Interp *interp, 
+                     int objc, Tcl_Obj *objv[]) {
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "key");
+        return TCL_ERROR;
+    }
+    
+    const char* keyStr = Tcl_GetString(objv[1]);
+    
+    int key;
+    size_t len = strlen(keyStr);
+    
+    if (len == 0) {
+        key = -1;
+    } else if (keyStr[0] == '<' && keyStr[len-1] == '>' && len > 2) {
+        // Angle bracket syntax
+        std::string codeStr(keyStr + 1, len - 2);
+        
+        char* endptr;
+        key = strtol(codeStr.c_str(), &endptr, 10);
+        if (*endptr != '\0') {
+            Tcl_SetObjResult(interp, 
+                Tcl_NewStringObj("invalid keycode in angle brackets", -1));
+            return TCL_ERROR;
+        }
+    } else if (len == 1) {
+        key = static_cast<int>(keyStr[0]);
+    } else {
+        Tcl_SetObjResult(interp, 
+            Tcl_NewStringObj("key must be single character, <keycode>, or empty string", -1));
+        return TCL_ERROR;
+    }
+    
+    g_keyboardCallbacks.unregisterCallback(key);
+    return TCL_OK;
+}
+
+int TclCmd_ListKeyBindings(ClientData clientData, Tcl_Interp *interp, 
+                           int objc, Tcl_Obj *objv[]) {
+    auto keys = g_keyboardCallbacks.getRegisteredKeys();
+    
+    Tcl_Obj* resultDict = Tcl_NewDictObj();
+    
+    for (int key : keys) {
+        Tcl_Obj* keyObj;
+        
+        if (key == -1) {
+            // Catch-all handler
+            keyObj = Tcl_NewStringObj("<catch-all>", -1);
+        } else if (key >= 32 && key < 127) {
+            // Printable ASCII - show as character
+            char keyStr[2] = {static_cast<char>(key), '\0'};
+            keyObj = Tcl_NewStringObj(keyStr, 1);
+        } else {
+            // Special key - show as <keycode>
+            std::string keycode = "<" + std::to_string(key) + ">";
+            keyObj = Tcl_NewStringObj(keycode.c_str(), -1);
+        }
+        
+        // Get the callback for this key
+        std::string callback = g_keyboardCallbacks.getCallback(key);
+        Tcl_Obj* callbackObj = Tcl_NewStringObj(callback.c_str(), -1);
+        
+        Tcl_DictObjPut(interp, resultDict, keyObj, callbackObj);
+    }
+    
+    Tcl_SetObjResult(interp, resultDict);
+    return TCL_OK;
+}
+
+int TclCmd_ClearKeyBindings(ClientData clientData, Tcl_Interp *interp, 
+                            int objc, Tcl_Obj *objv[]) {
+    g_keyboardCallbacks.clearAll();
+    return TCL_OK;
+}
+
 
 /*********************************************************************/
 /*                          UI/UX Commands                           */
@@ -525,6 +652,45 @@ int TclCmd_ClearWidgets(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+int TclCmd_SetVariable(ClientData clientData, Tcl_Interp *interp, 
+                       int objc, Tcl_Obj *objv[]) {
+    if (objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "name value");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    std::string name = Tcl_GetString(objv[1]);
+    std::string value = Tcl_GetString(objv[2]);
+    
+    mgr->setVariable(name, value);
+    return TCL_OK;
+}
+
+// get_variable name
+int TclCmd_GetVariable(ClientData clientData, Tcl_Interp *interp, 
+                       int objc, Tcl_Obj *objv[]) {
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "name");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    std::string name = Tcl_GetString(objv[1]);
+    std::string value = mgr->getVariable(name);
+    
+    Tcl_SetObjResult(interp, Tcl_NewStringObj(value.c_str(), -1));
+    return TCL_OK;
+}
+
+// clear_variables
+int TclCmd_ClearVariables(ClientData clientData, Tcl_Interp *interp, 
+                          int objc, Tcl_Obj *objv[]) {
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    mgr->clearVariables();
+    return TCL_OK;
+}
+
 void registerWidgetCommands(Tcl_Interp* interp, WidgetManager* mgr) {
   Tcl_CreateObjCommand(interp, "add_button",
 		       (Tcl_ObjCmdProc *) TclCmd_AddButton, mgr, NULL);
@@ -541,6 +707,13 @@ void registerWidgetCommands(Tcl_Interp* interp, WidgetManager* mgr) {
   Tcl_CreateObjCommand(interp, "add_slider",
 		       (Tcl_ObjCmdProc *) TclCmd_AddSlider, mgr, NULL);
 
+  Tcl_CreateObjCommand(interp, "set_variable",
+		       (Tcl_ObjCmdProc *) TclCmd_SetVariable, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "get_variable",
+		       (Tcl_ObjCmdProc *) TclCmd_GetVariable, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "clear_variables",
+		       (Tcl_ObjCmdProc *) TclCmd_ClearVariables, mgr, NULL);
+    
   Tcl_CreateObjCommand(interp, "update_widget",
 		       (Tcl_ObjCmdProc *) TclCmd_UpdateWidget, mgr, NULL);
   Tcl_CreateObjCommand(interp, "update_widgetText",
@@ -549,6 +722,9 @@ void registerWidgetCommands(Tcl_Interp* interp, WidgetManager* mgr) {
 		       (Tcl_ObjCmdProc *) TclCmd_RemoveWidget, mgr, NULL);
   Tcl_CreateObjCommand(interp, "clear_widgets",
 		       (Tcl_ObjCmdProc *) TclCmd_ClearWidgets, mgr, NULL);
+
+
+  
 }
 
 /*********************************************************************/
@@ -1083,6 +1259,19 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
 
+  Tcl_CreateObjCommand(interp, "bind_key",
+		       (Tcl_ObjCmdProc *) TclCmd_BindKey, 
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateObjCommand(interp, "unbind_key",
+		       (Tcl_ObjCmdProc *) TclCmd_UnbindKey, 
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateObjCommand(interp, "clear_key_bindings",
+		       (Tcl_ObjCmdProc *) TclCmd_ClearKeyBindings, 
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateObjCommand(interp, "list_key_bindings",
+		       (Tcl_ObjCmdProc *) TclCmd_ListKeyBindings, 
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+    
   registerWidgetCommands(interp, p->widgetManager);
 
   // access to frame info
@@ -1102,6 +1291,86 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_LinkVar(interp, "vstream::displayEvery", 
           (char *) &displayEvery, TCL_LINK_INT);
 
+
+const char *key_constants = R"TCL(
+namespace eval keys {
+    # Detect platform
+    variable platform [string tolower $::tcl_platform(os)]
+    
+    # Arrow keys - macOS uses 0,1,2,3
+    if {[string match "*darwin*" $platform] || [string match "*mac*" $platform]} {
+        variable UP      "<0>"
+        variable DOWN    "<1>"
+        variable LEFT    "<2>"
+        variable RIGHT   "<3>"
+    } else {
+        # Linux/Windows
+        variable UP      "<2490368>"
+        variable DOWN    "<2621440>"
+        variable LEFT    "<2424832>"
+        variable RIGHT   "<2555904>"
+    }
+    
+    # Common keys
+    variable ESC     "<27>"
+    variable ENTER   "<13>"
+    variable TAB     "<9>"
+    variable SPACE   " "
+    variable BACKSPACE "<8>"
+    variable DELETE  "<127>"
+    
+    # Helper to detect key at runtime
+    proc detect {} {
+        puts "Press keys to see their codes (ESC to quit)..."
+        bind_key "" keys::show_code
+    }
+    
+    proc show_code {keycode} {
+        if {$keycode == 27} {
+            puts "Detection stopped"
+            unbind_key ""
+            return
+        }
+        
+        set keyname ""
+        set binding ""
+        
+        switch $keycode {
+            0 { set keyname "UP (macOS)"; set binding "<0>" }
+            1 { set keyname "DOWN (macOS)"; set binding "<1>" }
+            2 { set keyname "LEFT (macOS)"; set binding "<2>" }
+            3 { set keyname "RIGHT (macOS)"; set binding "<3>" }
+            27 { set keyname "ESC"; set binding "<27>" }
+            13 { set keyname "ENTER"; set binding "<13>" }
+            9 { set keyname "TAB"; set binding "<9>" }
+            32 { set keyname "SPACE"; set binding "\" \"" }
+            8 { set keyname "BACKSPACE"; set binding "<8>" }
+            127 { set keyname "DELETE"; set binding "<127>" }
+            2490368 { set keyname "UP (Linux/Win)"; set binding "<2490368>" }
+            2621440 { set keyname "DOWN (Linux/Win)"; set binding "<2621440>" }
+            2424832 { set keyname "LEFT (Linux/Win)"; set binding "<2424832>" }
+            2555904 { set keyname "RIGHT (Linux/Win)"; set binding "<2555904>" }
+            default {
+                if {$keycode >= 32 && $keycode < 127} {
+                    set keyname "[format %c $keycode]"
+                    set binding "\"[format %c $keycode]\""
+                } else {
+                    set binding "<$keycode>"
+                }
+            }
+        }
+        
+        if {$keyname ne ""} {
+            puts "Key code: $keycode ($keyname) - bind with: bind_key $binding <callback>"
+        } else {
+            puts "Key code: $keycode - bind with: bind_key $binding <callback>"
+        }
+    }
+}
+)TCL";  
+
+Tcl_Eval(interp, key_constants);  
+  
 const char *ds_str = R"V0G0N(
   proc vstream::dsRegister { server { port 4620 } } {
 	set s [socket $server $port]
