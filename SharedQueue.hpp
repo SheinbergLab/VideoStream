@@ -1,5 +1,7 @@
 #pragma once
 
+#include <condition_variable>
+
 template <typename T>
 class SharedQueue
 {
