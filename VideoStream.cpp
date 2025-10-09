@@ -35,8 +35,8 @@
 
 #include "cxxopts.hpp"
 #include "SharedQueue.hpp"
+#include "KeyboardCallbackRegistry.h"
 #include "SourceManager.h"
-// Frame source abstractions
 #include "FrameBufferManager.h"
 #include "IFrameSource.h"
 #include "WebcamSource.h"
@@ -904,6 +904,32 @@ int set_fourCC(char *str)
   return processThread.setFourCC(str);
 }
 
+
+static void updateWidgetVariables(int frame_idx)
+{
+  g_widgetManager.setVariable("frame_count", 
+			      std::to_string(processThread.getFrameCount()));
+  g_widgetManager.setVariable("obs_count", 
+			      std::to_string(obs_count));
+  g_widgetManager.setVariable("file", 
+			      processThread.currentFile());
+  g_widgetManager.setVariable("cur_frame", 
+			      std::to_string(frame_idx));
+  g_widgetManager.setVariable("fps", 
+			      std::to_string(static_cast<int>(frame_rate)));
+  g_widgetManager.setVariable("resolution", 
+			      std::to_string(frame_width) + "x" + 
+			      std::to_string(frame_height));
+  
+  // Add more variables as needed
+  if (processThread.fileIsOpen()) {
+    g_widgetManager.setVariable("recording", "1");
+  } else {
+    g_widgetManager.setVariable("recording", "0");
+  }
+}
+
+
 class DisplayThread
 {
   int show_frames;
@@ -1018,11 +1044,15 @@ public:
   
   static void annotate_frame(Mat frame, bool inobs, int frame_idx)
   {
+    // Update widget variables that might be used in UI
+    updateWidgetVariables(frame_idx);
+    
     // draw widgets that have been added to widget manager
     g_widgetManager.drawAll(frame);
     
     draw_plugin_overlays(frame, frame_idx);    
     
+#if 0
     cv::putText(frame,
         "Frame: " + std::to_string(processThread.getFrameCount()),
         cv::Point(50,50),
@@ -1042,6 +1072,7 @@ public:
     if (inobs) {
       cv::circle(frame, cv::Point(40,80), 6, cv::Scalar(255,255,255), -1);
     }
+#endif    
   }
 
   void startDisplayThread(void)
@@ -1085,18 +1116,34 @@ public:
 	    
 	    imshow( "Frame", dframe );
 	  }
-	  
-	  char c = (char) waitKey(5);
-	  switch (c) {
-	  case 27:
-	    do_shutdown();
-	    break;
-	  case 'h':
-	    hide();
-	    break;
-	  default:
-	    break;
-	  }
+
+	  int key = waitKey(5);
+	  if (key != -1) {
+	    std::string callback = g_keyboardCallbacks.getCallback(key);
+	    if (!callback.empty()) {
+	      std::ostringstream cmd;
+	      cmd << callback << " " << key;
+	      mouse_queue.push_back(cmd.str());
+	    } else {
+	      // Handle built-in keys
+	      switch (key) {
+	      case 27:  // ESC
+		do_shutdown();
+		break;
+	      case 'h':
+		hide();
+		break;
+	      default:
+		std::string generic = g_keyboardCallbacks.getCallback(-1);
+		if (!generic.empty()) {
+		  std::ostringstream cmd;
+		  cmd << generic << " " << key;
+		  mouse_queue.push_back(cmd.str());
+		}
+		break;
+	      }
+	    }
+	  }	  
 	}
 	else {
 	  show_frames = false;
@@ -1356,13 +1403,27 @@ int processDSCommands(void) {
 
 #ifdef __APPLE__
 
-void handle_keyboard(char c)
+void handle_keyboard(int key)
 {
-  switch (c) {
-  case 27:
+  std::string callback = g_keyboardCallbacks.getCallback(key);
+  if (!callback.empty()) {
+    std::ostringstream cmd;
+    cmd << callback << " " << key;
+    mouse_queue.push_back(cmd.str());
+    return;
+  }
+  
+  switch (key) {
+  case 27:  // ESC
     do_shutdown();
     break;
   default:
+    std::string generic = g_keyboardCallbacks.getCallback(-1);  // Changed from 0
+    if (!generic.empty()) {
+      std::ostringstream cmd;
+      cmd << generic << " " << key;
+      mouse_queue.push_back(cmd.str());
+    }
     break;
   }
 }
@@ -1451,9 +1512,9 @@ void processMacOSEvents(proginfo_t* p, float scale = 1.0, Mat* frame_to_display 
     imshow("Frame", idle_frame);
   }
   
-  char c = (char)waitKey(1);
-  if (c != -1) {
-    handle_keyboard(c);
+  int key = waitKey(1);
+  if (key != -1) {
+    handle_keyboard(key);
   }
 }
 #endif
@@ -1592,6 +1653,9 @@ int main(int argc, char **argv)
     }
     
     g_frameSource = g_sourceManager.getCurrentSource();
+
+    // give sourceManager access to clear widgets
+    g_sourceManager.setWidgetManager(&g_widgetManager);
     
     if (!g_frameSource) {
       std::cerr << "No frame source available" << std::endl;
@@ -1727,7 +1791,8 @@ int main(int argc, char **argv)
 	      else {
 		dframe = frame.clone();
 	      }
-	      
+
+	      updateWidgetVariables(curFrame);
 	      DisplayThread::annotate_frame(dframe, in_obs, curFrame);
 	      processMacOSEvents(&programInfo, scale, &dframe);
 	    }
