@@ -67,28 +67,67 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
 bool SourceManager::startSource(const std::string& type, 
                                 const std::map<std::string, std::string>& params)
 {
-    std::lock_guard<std::mutex> lock(state_mutex_);
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  
+  if (state_ == SOURCE_RUNNING) {
+    std::cerr << "Source already running" << std::endl;
+    return false;
+  }
+  
+  try {
+    current_source_ = createSourceFromParams(type, params);
+    current_source_type_ = type;
+    current_params_ = params;
     
-    if (state_ == SOURCE_RUNNING) {
-        std::cerr << "Source already running" << std::endl;
-        return false;
+    state_ = SOURCE_RUNNING;
+    
+    int new_width = current_source_->getWidth();
+    int new_height = current_source_->getHeight();
+    bool new_is_color = current_source_->isColor();
+    
+    bool properties_changed = (last_width_ != -1 && 
+			       (last_width_ != new_width || 
+				last_height_ != new_height ||
+				last_is_color_ != new_is_color));
+    
+    if (properties_changed) {
+      if (review_source_ && review_source_->getFrameCount()) {
+	review_source_->clearFrames();
+      }
     }
     
-    try {
-        current_source_ = createSourceFromParams(type, params);
-        current_source_type_ = type;
-        current_params_ = params;
-        
-        state_ = SOURCE_RUNNING;
-        
-        std::cout << "Source started: " << type << std::endl;
-        return true;
-        
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to start source: " << e.what() << std::endl;
-        state_ = SOURCE_ERROR;
-        return false;
+    // Update tracked properties
+    last_width_ = new_width;
+    last_height_ = new_height;
+    last_is_color_ = new_is_color;
+    
+    if (widget_manager_) {
+      widget_manager_->clearAll();
     }
+    
+    //       std::cout << "Source started: " << type << std::endl;
+    return true;
+    
+  } catch (const std::exception& e) {
+    std::cerr << "Failed to start source: " << e.what() << std::endl;
+    state_ = SOURCE_ERROR;
+    return false;
+  }
+}
+
+bool SourceManager::isCompatibleWithReview() const
+{
+  if (!review_source_ || review_source_->getFrameCount() == 0) {
+    return true;  // Empty review buffer is compatible with anything
+  }
+  
+  if (!current_source_) {
+    return false;
+  }
+  
+  return (current_source_->getWidth() == review_source_->getWidth() &&
+	  current_source_->getHeight() == review_source_->getHeight() &&
+	  current_source_->isColor() == review_source_->isColor());
 }
 
 bool SourceManager::stopSource()
