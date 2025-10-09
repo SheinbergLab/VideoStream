@@ -1291,12 +1291,7 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_LinkVar(interp, "vstream::displayEvery", 
           (char *) &displayEvery, TCL_LINK_INT);
 
-// In tclproc.cpp - add to addTclCommands function
-
 const char *key_constants = R"TCL(
-# OpenCV key codes for special keys with waitKeyEx()
-# Platform-specific values detected automatically
-
 namespace eval keys {
     # Detect platform
     variable platform [string tolower $::tcl_platform(os)]
@@ -1322,21 +1317,26 @@ namespace eval keys {
         variable HOME     "<63273>"
         variable END      "<63275>"
     } elseif {[string match "*linux*" $platform]} {
-        # Linux - depends on OpenCV build
-        # With basic X11: arrows = Q/R/S/T (81-84)
-        # With proper Qt/GTK: arrows = 2490368-2555904
-        variable UP      "<82>"   ;# R
-        variable DOWN    "<84>"   ;# T
-        variable LEFT    "<81>"   ;# Q
-        variable RIGHT   "<83>"   ;# S
+        # Linux with Qt/GTK - proper X11 keysym values
+        variable UP      "<65362>"
+        variable DOWN    "<65364>"
+        variable LEFT    "<65361>"
+        variable RIGHT   "<65363>"
         
-        # Alternate codes if you have Qt/GTK build
-        # variable UP      "<2490368>"
-        # variable DOWN    "<2621440>"
-        # variable LEFT    "<2424832>"
-        # variable RIGHT   "<2555904>"
+        # Function keys (X11 keysyms)
+        variable F1      "<65470>"
+        variable F2      "<65471>"
+        variable F3      "<65472>"
+        variable F4      "<65473>"
+        variable F5      "<65474>"
+        
+        # Navigation keys
+        variable PAGEUP   "<65365>"
+        variable PAGEDOWN "<65366>"
+        variable HOME     "<65360>"
+        variable END      "<65367>"
     } else {
-        # Windows
+        # Windows (may vary)
         variable UP      "<2490368>"
         variable DOWN    "<2621440>"
         variable LEFT    "<2424832>"
@@ -1437,6 +1437,7 @@ namespace eval keys {
         
         # Identify common keys
         switch $keycode {
+            # macOS NSEvent codes
             63232 { set keyname "UP (macOS)"; set binding "<63232>" }
             63233 { set keyname "DOWN (macOS)"; set binding "<63233>" }
             63234 { set keyname "LEFT (macOS)"; set binding "<63234>" }
@@ -1450,10 +1451,29 @@ namespace eval keys {
             63275 { set keyname "END (macOS)"; set binding "<63275>" }
             63276 { set keyname "PAGEUP (macOS)"; set binding "<63276>" }
             63277 { set keyname "PAGEDOWN (macOS)"; set binding "<63277>" }
-            82 { set keyname "UP (Linux Q/R/S/T mode) or 'R'"; set binding "<82>" }
-            84 { set keyname "DOWN (Linux Q/R/S/T mode) or 'T'"; set binding "<84>" }
-            81 { set keyname "LEFT (Linux Q/R/S/T mode) or 'Q'"; set binding "<81>" }
-            83 { set keyname "RIGHT (Linux Q/R/S/T mode) or 'S'"; set binding "<83>" }
+            
+            # Linux X11 keysym codes (with Qt/GTK)
+            65362 { set keyname "UP (Linux)"; set binding "<65362>" }
+            65364 { set keyname "DOWN (Linux)"; set binding "<65364>" }
+            65361 { set keyname "LEFT (Linux)"; set binding "<65361>" }
+            65363 { set keyname "RIGHT (Linux)"; set binding "<65363>" }
+            65470 { set keyname "F1 (Linux)"; set binding "<65470>" }
+            65471 { set keyname "F2 (Linux)"; set binding "<65471>" }
+            65472 { set keyname "F3 (Linux)"; set binding "<65472>" }
+            65473 { set keyname "F4 (Linux)"; set binding "<65473>" }
+            65474 { set keyname "F5 (Linux)"; set binding "<65474>" }
+            65360 { set keyname "HOME (Linux)"; set binding "<65360>" }
+            65367 { set keyname "END (Linux)"; set binding "<65367>" }
+            65365 { set keyname "PAGEUP (Linux)"; set binding "<65365>" }
+            65366 { set keyname "PAGEDOWN (Linux)"; set binding "<65366>" }
+            
+            # Fallback Linux codes (basic X11, no Qt/GTK)
+            82 { set keyname "UP (Linux basic) or 'R'"; set binding "<82>" }
+            84 { set keyname "DOWN (Linux basic) or 'T'"; set binding "<84>" }
+            81 { set keyname "LEFT (Linux basic) or 'Q'"; set binding "<81>" }
+            83 { set keyname "RIGHT (Linux basic) or 'S'"; set binding "<83>" }
+            
+            # Common keys
             27 { set keyname "ESC"; set binding "<27>" }
             13 { set keyname "ENTER"; set binding "<13>" }
             10 { set keyname "ENTER (Linux variant)"; set binding "<10>" }
@@ -1461,10 +1481,13 @@ namespace eval keys {
             32 { set keyname "SPACE"; set binding "\" \"" }
             8 { set keyname "BACKSPACE"; set binding "<8>" }
             127 { set keyname "DELETE"; set binding "<127>" }
-            2490368 { set keyname "UP (Linux/Win with Qt/GTK)"; set binding "<2490368>" }
-            2621440 { set keyname "DOWN (Linux/Win with Qt/GTK)"; set binding "<2621440>" }
-            2424832 { set keyname "LEFT (Linux/Win with Qt/GTK)"; set binding "<2424832>" }
-            2555904 { set keyname "RIGHT (Linux/Win with Qt/GTK)"; set binding "<2555904>" }
+            
+            # Windows codes (if applicable)
+            2490368 { set keyname "UP (Windows)"; set binding "<2490368>" }
+            2621440 { set keyname "DOWN (Windows)"; set binding "<2621440>" }
+            2424832 { set keyname "LEFT (Windows)"; set binding "<2424832>" }
+            2555904 { set keyname "RIGHT (Windows)"; set binding "<2555904>" }
+            
             default {
                 if {$keycode >= 32 && $keycode < 127} {
                     set keyname "character '[format %c $keycode]'"
@@ -1486,7 +1509,7 @@ namespace eval keys {
 }
 )TCL";
 
-Tcl_Eval(interp, key_constants);
+Tcl_Eval(interp, key_constants);  
   
 const char *ds_str = R"V0G0N(
   proc vstream::dsRegister { server { port 4620 } } {
