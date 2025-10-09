@@ -141,12 +141,9 @@ public:
     }
 
     
-    void draw(cv::Mat& frame) override {
-        cv::putText(frame, text, position, cv::FONT_HERSHEY_SIMPLEX,
-                    scale, color, thickness);
-    }
-    
-    // Optional: make text clickable with bounding box
+    void draw(cv::Mat& frame) override;
+
+    // make text clickable with bounding box
     bool contains(int x, int y) override { return false; }
 };
 

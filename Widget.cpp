@@ -75,6 +75,13 @@ void Button::onRelease() {
   mouse_down_inside = false;
 }
 
+void TextWidget::draw(cv::Mat& frame) {
+  std::string displayText = g_widgetManager.substituteVariables(text);
+  
+  cv::putText(frame, displayText, position, cv::FONT_HERSHEY_SIMPLEX,
+	      scale, color, thickness);
+}
+
 
 // SliderWidget implementation
 SliderWidget::SliderWidget(int x, int y, int width, int height,
@@ -107,7 +114,10 @@ void SliderWidget::updateHandlePosition() {
 }
 
 void SliderWidget::draw(cv::Mat& frame) {
-    cv::putText(frame, label, 
+    extern WidgetManager g_widgetManager;
+    std::string displayLabel = g_widgetManager.substituteVariables(label);
+    
+    cv::putText(frame, displayLabel, 
                cv::Point(bounds.x, bounds.y - 5),
                cv::FONT_HERSHEY_SIMPLEX, 0.4,
                cv::Scalar(200, 200, 200), 1);
@@ -131,6 +141,7 @@ void SliderWidget::draw(cv::Mat& frame) {
                cv::FONT_HERSHEY_SIMPLEX, 0.4,
                cv::Scalar(200, 200, 200), 1);
 }
+
 
 bool SliderWidget::contains(int x, int y) {
     return handle.contains(cv::Point(x, y)) || 
