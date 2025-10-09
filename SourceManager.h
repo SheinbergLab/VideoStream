@@ -10,6 +10,8 @@
 #include <condition_variable>
 
 #include "IFrameSource.h"
+#include "Widget.h"
+#include "WidgetManager.h"
 
 class ReviewModeSource;
 
@@ -22,14 +24,28 @@ enum SourceState {
 };
 
 class SourceManager {
+private:
+  WidgetManager* widget_manager_ = nullptr;
+
+  // Track previous source properties
+  int last_width_ = -1;
+  int last_height_ = -1;
+  bool last_is_color_ = true;
+  
 public:
   SourceManager();
   ~SourceManager();
-  
+
   // Basic lifecycle
   bool startSource(const std::string& type, const std::map<std::string, std::string>& params);
   bool stopSource();
-  
+
+  // Check if current source is compatible with review frames
+  bool isCompatibleWithReview() const;
+
+  // Provide access to current widget manager to allow clearing
+  void setWidgetManager(WidgetManager* wm) { widget_manager_ = wm; }
+    
   // Status
   SourceState getState() const { return state_; }
   std::string getSourceType() const { return current_source_type_; }
