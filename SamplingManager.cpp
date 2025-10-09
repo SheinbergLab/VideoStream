@@ -17,8 +17,14 @@
 // SampleManager implementation
 
 void SamplingManager::start(int n_frames, int interval_ms, bool random) {
-  if (m_bActive) return;
-  
+  if (m_bActive) {
+    stop();
+  }
+
+  if (m_thread.joinable()) {
+    m_thread.join();
+  }
+    
   n_frames_ = n_frames;
   interval_ms_ = interval_ms;
   random_intervals_ = random;
@@ -34,6 +40,7 @@ void SamplingManager::stop() {
     m_thread.join();
   }
   m_bActive = false;
+  m_bDone = false;
 }
 
 bool SamplingManager::isActive() { return m_bActive; }
