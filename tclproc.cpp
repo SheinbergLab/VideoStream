@@ -1291,27 +1291,59 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_LinkVar(interp, "vstream::displayEvery", 
           (char *) &displayEvery, TCL_LINK_INT);
 
+// In tclproc.cpp - add to addTclCommands function
 
 const char *key_constants = R"TCL(
+# OpenCV key codes for special keys with waitKeyEx()
+# Platform-specific values detected automatically
+
 namespace eval keys {
     # Detect platform
     variable platform [string tolower $::tcl_platform(os)]
     
-    # Arrow keys - macOS uses 0,1,2,3
+    # Arrow keys - waitKeyEx() returns different codes per platform
     if {[string match "*darwin*" $platform] || [string match "*mac*" $platform]} {
-        variable UP      "<0>"
-        variable DOWN    "<1>"
-        variable LEFT    "<2>"
-        variable RIGHT   "<3>"
+        # macOS NSEvent codes (with waitKeyEx)
+        variable UP      "<63232>"
+        variable DOWN    "<63233>"
+        variable LEFT    "<63234>"
+        variable RIGHT   "<63235>"
+        
+        # Function keys on macOS
+        variable F1      "<63236>"
+        variable F2      "<63237>"
+        variable F3      "<63238>"
+        variable F4      "<63239>"
+        variable F5      "<63240>"
+        
+        # Navigation keys
+        variable PAGEUP   "<63276>"
+        variable PAGEDOWN "<63277>"
+        variable HOME     "<63273>"
+        variable END      "<63275>"
+    } elseif {[string match "*linux*" $platform]} {
+        # Linux - depends on OpenCV build
+        # With basic X11: arrows = Q/R/S/T (81-84)
+        # With proper Qt/GTK: arrows = 2490368-2555904
+        variable UP      "<82>"   ;# R
+        variable DOWN    "<84>"   ;# T
+        variable LEFT    "<81>"   ;# Q
+        variable RIGHT   "<83>"   ;# S
+        
+        # Alternate codes if you have Qt/GTK build
+        # variable UP      "<2490368>"
+        # variable DOWN    "<2621440>"
+        # variable LEFT    "<2424832>"
+        # variable RIGHT   "<2555904>"
     } else {
-        # Linux/Windows
+        # Windows
         variable UP      "<2490368>"
         variable DOWN    "<2621440>"
         variable LEFT    "<2424832>"
         variable RIGHT   "<2555904>"
     }
     
-    # Common keys
+    # Common keys (same across platforms)
     variable ESC     "<27>"
     variable ENTER   "<13>"
     variable TAB     "<9>"
@@ -1319,9 +1351,77 @@ namespace eval keys {
     variable BACKSPACE "<8>"
     variable DELETE  "<127>"
     
-    # Helper to detect key at runtime
+    # Storage for detected arrow codes
+    variable arrow_codes [dict create]
+    
+    # Auto-detect and set arrow keys for the current platform
+    proc auto_detect_arrows {} {
+        variable arrow_codes
+        variable UP
+        variable DOWN
+        variable LEFT
+        variable RIGHT
+        
+        puts "Press arrow keys in order: UP, DOWN, LEFT, RIGHT"
+        puts "(Press ESC to cancel)"
+        set ::keys::_detect_step 0
+        set ::keys::_detected [list]
+        bind_key "" keys::_arrow_detect_callback
+    }
+    
+    proc _arrow_detect_callback {keycode} {
+        variable _detect_step
+        variable _detected
+        variable UP
+        variable DOWN
+        variable LEFT
+        variable RIGHT
+        variable arrow_codes
+        
+        if {$keycode == 27} {
+            puts "Arrow detection cancelled"
+            unbind_key ""
+            return
+        }
+        
+        lappend _detected $keycode
+        incr _detect_step
+        
+        switch $_detect_step {
+            1 { 
+                set UP "<$keycode>"
+                dict set arrow_codes "up" $keycode
+                puts "UP: $keycode (bind with: bind_key <$keycode> <callback>)" 
+            }
+            2 { 
+                set DOWN "<$keycode>"
+                dict set arrow_codes "down" $keycode
+                puts "DOWN: $keycode (bind with: bind_key <$keycode> <callback>)" 
+            }
+            3 { 
+                set LEFT "<$keycode>"
+                dict set arrow_codes "left" $keycode
+                puts "LEFT: $keycode (bind with: bind_key <$keycode> <callback>)" 
+            }
+            4 { 
+                set RIGHT "<$keycode>"
+                dict set arrow_codes "right" $keycode
+                puts "RIGHT: $keycode (bind with: bind_key <$keycode> <callback>)"
+                puts ""
+                puts "Arrow keys detected and updated!"
+                puts "  keys::UP = $UP"
+                puts "  keys::DOWN = $DOWN"
+                puts "  keys::LEFT = $LEFT"
+                puts "  keys::RIGHT = $RIGHT"
+                unbind_key ""
+            }
+        }
+    }
+    
+    # General key detection - shows code for any key pressed
     proc detect {} {
-        puts "Press keys to see their codes (ESC to quit)..."
+        puts "Key detection mode - press any key to see its code"
+        puts "(Press ESC to quit)"
         bind_key "" keys::show_code
     }
     
@@ -1335,24 +1435,39 @@ namespace eval keys {
         set keyname ""
         set binding ""
         
+        # Identify common keys
         switch $keycode {
-            0 { set keyname "UP (macOS)"; set binding "<0>" }
-            1 { set keyname "DOWN (macOS)"; set binding "<1>" }
-            2 { set keyname "LEFT (macOS)"; set binding "<2>" }
-            3 { set keyname "RIGHT (macOS)"; set binding "<3>" }
+            63232 { set keyname "UP (macOS)"; set binding "<63232>" }
+            63233 { set keyname "DOWN (macOS)"; set binding "<63233>" }
+            63234 { set keyname "LEFT (macOS)"; set binding "<63234>" }
+            63235 { set keyname "RIGHT (macOS)"; set binding "<63235>" }
+            63236 { set keyname "F1 (macOS)"; set binding "<63236>" }
+            63237 { set keyname "F2 (macOS)"; set binding "<63237>" }
+            63238 { set keyname "F3 (macOS)"; set binding "<63238>" }
+            63239 { set keyname "F4 (macOS)"; set binding "<63239>" }
+            63240 { set keyname "F5 (macOS)"; set binding "<63240>" }
+            63273 { set keyname "HOME (macOS)"; set binding "<63273>" }
+            63275 { set keyname "END (macOS)"; set binding "<63275>" }
+            63276 { set keyname "PAGEUP (macOS)"; set binding "<63276>" }
+            63277 { set keyname "PAGEDOWN (macOS)"; set binding "<63277>" }
+            82 { set keyname "UP (Linux Q/R/S/T mode) or 'R'"; set binding "<82>" }
+            84 { set keyname "DOWN (Linux Q/R/S/T mode) or 'T'"; set binding "<84>" }
+            81 { set keyname "LEFT (Linux Q/R/S/T mode) or 'Q'"; set binding "<81>" }
+            83 { set keyname "RIGHT (Linux Q/R/S/T mode) or 'S'"; set binding "<83>" }
             27 { set keyname "ESC"; set binding "<27>" }
             13 { set keyname "ENTER"; set binding "<13>" }
+            10 { set keyname "ENTER (Linux variant)"; set binding "<10>" }
             9 { set keyname "TAB"; set binding "<9>" }
             32 { set keyname "SPACE"; set binding "\" \"" }
             8 { set keyname "BACKSPACE"; set binding "<8>" }
             127 { set keyname "DELETE"; set binding "<127>" }
-            2490368 { set keyname "UP (Linux/Win)"; set binding "<2490368>" }
-            2621440 { set keyname "DOWN (Linux/Win)"; set binding "<2621440>" }
-            2424832 { set keyname "LEFT (Linux/Win)"; set binding "<2424832>" }
-            2555904 { set keyname "RIGHT (Linux/Win)"; set binding "<2555904>" }
+            2490368 { set keyname "UP (Linux/Win with Qt/GTK)"; set binding "<2490368>" }
+            2621440 { set keyname "DOWN (Linux/Win with Qt/GTK)"; set binding "<2621440>" }
+            2424832 { set keyname "LEFT (Linux/Win with Qt/GTK)"; set binding "<2424832>" }
+            2555904 { set keyname "RIGHT (Linux/Win with Qt/GTK)"; set binding "<2555904>" }
             default {
                 if {$keycode >= 32 && $keycode < 127} {
-                    set keyname "[format %c $keycode]"
+                    set keyname "character '[format %c $keycode]'"
                     set binding "\"[format %c $keycode]\""
                 } else {
                     set binding "<$keycode>"
@@ -1361,15 +1476,17 @@ namespace eval keys {
         }
         
         if {$keyname ne ""} {
-            puts "Key code: $keycode ($keyname) - bind with: bind_key $binding <callback>"
+            puts "Key: $keyname (code: $keycode)"
+            puts "  Bind with: bind_key $binding <callback>"
         } else {
-            puts "Key code: $keycode - bind with: bind_key $binding <callback>"
+            puts "Key code: $keycode"
+            puts "  Bind with: bind_key $binding <callback>"
         }
     }
 }
-)TCL";  
+)TCL";
 
-Tcl_Eval(interp, key_constants);  
+Tcl_Eval(interp, key_constants);
   
 const char *ds_str = R"V0G0N(
   proc vstream::dsRegister { server { port 4620 } } {
