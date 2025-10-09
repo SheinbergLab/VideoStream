@@ -6,8 +6,11 @@ typedef struct _proginfo_t {
   int display;
 
   SourceManager* sourceManager;
+  SamplingManager *samplingManager;
   ReviewModeSource* reviewSource;
-  FrameBufferManager *frameBuffer;
+  FrameBufferManager* frameBuffer;
+  WidgetManager* widgetManager;
+  
   int *displayFrame;
   IFrameSource** frameSource;  // Pointer to pointer so we can update it
   
@@ -18,6 +21,10 @@ typedef struct _proginfo_t {
   bool* is_color;  
 } proginfo_t;
 
+
+// thread safe tcl command evals
+int tcl_eval(const std::string& cmd);
+int tcl_eval(const std::string& cmd, std::string& response);
 
 #ifdef __cplusplus
 extern "C" {

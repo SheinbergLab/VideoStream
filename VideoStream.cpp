@@ -19,6 +19,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <random>
 #include <unordered_map>
 #include <queue>
 #include <atomic>
@@ -45,12 +46,17 @@
 #include "FlirCameraSource.h"
 #endif
 
+#include "Widget.h"
+#include "WidgetManager.h"
+#include "SamplingManager.h"
+
 #include "VideoStream.h"
 
 using namespace std;
 using namespace cv;
 
 SourceManager g_sourceManager;
+WidgetManager g_widgetManager;
 
 // Global frame source pointer
 IFrameSource* g_frameSource = nullptr;
@@ -72,6 +78,9 @@ SharedQueue<std::string> rqueue;
 
 SharedQueue<std::string> wd_cqueue;
 SharedQueue<std::string> wd_rqueue;
+
+SharedQueue<std::string> disp_cqueue;
+SharedQueue<std::string> disp_rqueue;
 
 SharedQueue<std::string> ds_queue;
 SharedQueue<std::string> shutdown_queue;
@@ -914,6 +923,10 @@ public:
     std::string tcl_cmd;
     
     if (event == cv::EVENT_LBUTTONDOWN) {
+        if (g_widgetManager.handleMouseDown(orig_x, orig_y)) {
+            return;  // Widget handled it
+        }
+	
         // Determine modifier
         std::string modifier = "none";
         if (flags & cv::EVENT_FLAG_CTRLKEY) {
@@ -929,8 +942,14 @@ public:
                   + std::to_string(orig_x) + " " 
                   + std::to_string(orig_y) + " " 
                   + modifier + " }";
-                  
-    } else if (event == cv::EVENT_RBUTTONDOWN) {
+    }                  
+    else if (event == cv::EVENT_MOUSEMOVE) {
+      g_widgetManager.handleMouseDrag(orig_x, orig_y);
+    }
+    else if (event == cv::EVENT_LBUTTONUP) {
+      g_widgetManager.handleMouseUp(orig_x, orig_y);
+    }
+    else if (event == cv::EVENT_RBUTTONDOWN) {
         tcl_cmd = "if {[info procs onMouseRightClick] ne \"\"} { onMouseRightClick " 
                   + std::to_string(orig_x) + " " 
                   + std::to_string(orig_y) + " }";
@@ -940,7 +959,9 @@ public:
 	+ std::to_string(orig_x) + " " 
 	+ std::to_string(orig_y) + " }";
     }
-    
+
+    g_widgetManager.processPendingCallbacks();
+ 
     if (!tcl_cmd.empty()) {
       mouse_queue.push_back(tcl_cmd);
     }
@@ -997,6 +1018,9 @@ public:
   
   static void annotate_frame(Mat frame, bool inobs, int frame_idx)
   {
+    // draw widgets that have been added to widget manager
+    g_widgetManager.drawAll(frame);
+    
     draw_plugin_overlays(frame, frame_idx);    
     
     cv::putText(frame,
@@ -1178,6 +1202,9 @@ int processMouseEvents(void)
     }
     count++;
   }
+
+  g_widgetManager.processPendingCallbacks();
+ 
   return count;
 }
 
@@ -1220,6 +1247,7 @@ int processTclCommands(void)
 {
   processTclQueues(&cqueue, &rqueue);
   processTclQueues(&wd_cqueue, &wd_rqueue);
+  processTclQueues(&disp_cqueue, &disp_rqueue);
   while (Tcl_DoOneEvent(TCL_DONT_WAIT))
     ;
   return 0;
@@ -1233,6 +1261,41 @@ int sourceFile(const char *filename)
   }
   
   return Tcl_EvalFile(interp, filename);
+}
+
+// thread safe command eval using "disp" shared queues
+int tcl_eval(const std::string& cmd, std::string &response)
+{
+  disp_cqueue.push_back(cmd);
+  std::string s(disp_rqueue.front());
+  disp_rqueue.pop_front();
+
+  const std::string error_prefix = "!TCL_ERROR ";
+  if (s.compare(0, error_prefix.size(), error_prefix) == 0) {
+    response = s.substr(error_prefix.size());
+    return TCL_ERROR;
+  }
+  else
+  {
+    response = s;
+    return TCL_OK;
+  }
+}
+
+int tcl_eval(const std::string& cmd)
+{
+  disp_cqueue.push_back(cmd);
+  std::string s(disp_rqueue.front());
+  disp_rqueue.pop_front();
+
+  const std::string error_prefix = "!TCL_ERROR ";
+  if (s.compare(0, error_prefix.size(), error_prefix) == 0) {
+    return TCL_ERROR;
+  }
+  else
+  {
+    return TCL_OK;
+  }
 }
 
 static int docmd(const char *dscmd)
@@ -1478,6 +1541,7 @@ int main(int argc, char **argv)
   programInfo.name = argv[0];
   programInfo.display = init_display;
   programInfo.sourceManager = &g_sourceManager;
+  programInfo.widgetManager = &g_widgetManager;
   programInfo.frameBuffer = &frameBufferManager;
   programInfo.displayFrame = &displayFrame;
   programInfo.frameSource = &g_frameSource;
@@ -1547,6 +1611,9 @@ int main(int argc, char **argv)
   
   int curFrame = 0;
   done = false;
+
+  // Used to take video samples and store in review source
+  programInfo.samplingManager = new SamplingManager(&programInfo);
   
   std::signal(SIGINT, signal_handler);
   
@@ -1688,6 +1755,13 @@ int main(int argc, char **argv)
 	break;
       }
     }
+
+  // stop and cleanup sampling thread manager
+  if (programInfo.samplingManager) {
+    programInfo.samplingManager->stop();
+    delete programInfo.samplingManager;
+    programInfo.samplingManager = nullptr;
+  }
   
   g_pluginRegistry.shutdownAll();
   
@@ -1702,6 +1776,7 @@ int main(int argc, char **argv)
   watchdogTimer.m_bDone = true;
   watchdog_thread.join();
 
+  
   // Cleanup
   g_sourceManager.stopSource();
   g_frameSource = nullptr;
