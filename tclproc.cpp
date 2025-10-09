@@ -24,7 +24,12 @@
 #include "SourceManager.h"
 #include "FlirCameraSource.h"
 #include "ReviewModeSource.h"
+#include "SamplingManager.h"
 #include "FrameBufferManager.h"
+
+#include "Widget.h"
+#include "WidgetManager.h"
+
 #include "VideoStream.h"
 
 #ifdef WIN32
@@ -178,6 +183,375 @@ static int getSourceStatusCmd(ClientData clientData, Tcl_Interp *interp,
 }
 
 /*********************************************************************/
+/*                          UI/UX Commands                           */
+/*********************************************************************/
+
+// Helper to parse color from Tcl list {r g b}
+cv::Scalar parseTclColor(Tcl_Interp* interp, Tcl_Obj* colorObj) {
+    Tcl_Size listLen;
+    Tcl_Obj** listObjs;
+    Tcl_ListObjGetElements(interp, colorObj, &listLen, &listObjs);
+    
+    int r = 0, g = 0, b = 0;
+    if (listLen >= 3) {
+        Tcl_GetIntFromObj(interp, listObjs[0], &r);
+        Tcl_GetIntFromObj(interp, listObjs[1], &g);
+        Tcl_GetIntFromObj(interp, listObjs[2], &b);
+    }
+    return cv::Scalar(b, g, r);
+}
+
+// add_toggle x y width height label callback
+int TclCmd_AddToggle(ClientData clientData, Tcl_Interp *interp, 
+                     int objc, Tcl_Obj *objv[]) {
+    if (objc < 7) {
+        Tcl_WrongNumArgs(interp, 1, objv, "x y width height label callback");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    int x, y, w, h;
+    
+    if (Tcl_GetIntFromObj(interp, objv[1], &x) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &y) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[3], &w) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[4], &h) != TCL_OK) return TCL_ERROR;
+    
+    std::string label = Tcl_GetString(objv[5]);
+    std::string callback = Tcl_GetString(objv[6]);
+    bool toggle = true;
+    
+    auto btn = std::make_unique<Button>(x, y, w, h, label, callback, toggle);
+    int id = mgr->addWidget(std::move(btn));
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(id));
+    return TCL_OK;
+}
+
+// add_button x y width height label callback
+int TclCmd_AddButton(ClientData clientData, Tcl_Interp *interp, 
+                     int objc, Tcl_Obj *objv[]) {
+    if (objc < 7) {
+        Tcl_WrongNumArgs(interp, 1, objv, "x y width height label callback");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    int x, y, w, h;
+    
+    if (Tcl_GetIntFromObj(interp, objv[1], &x) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &y) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[3], &w) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[4], &h) != TCL_OK) return TCL_ERROR;
+
+    std::string label = Tcl_GetString(objv[5]);
+    std::string callback = Tcl_GetString(objv[6]);
+    bool toggle = false;
+
+    auto btn = std::make_unique<Button>(x, y, w, h, label, callback, toggle);
+    int id = mgr->addWidget(std::move(btn));
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(id));
+    return TCL_OK;
+}
+
+// add_circle x y radius {r g b} ?thickness? ?callback? ?draggable?
+int TclCmd_AddCircle(ClientData clientData, Tcl_Interp *interp, 
+                     int objc, Tcl_Obj *objv[]) {
+    if (objc < 5) {
+        Tcl_WrongNumArgs(interp, 1, objv, 
+                        "x y radius color ?thickness? ?callback? ?draggable?");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    int x, y, radius;
+    
+    if (Tcl_GetIntFromObj(interp, objv[1], &x) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &y) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[3], &radius) != TCL_OK) return TCL_ERROR;
+    
+    cv::Scalar color = parseTclColor(interp, objv[4]);
+    
+    int thickness = 2;
+    std::string callback = "";
+    bool draggable = false;
+    
+    if (objc > 5) {
+        if (Tcl_GetIntFromObj(interp, objv[5], &thickness) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    if (objc > 6) callback = Tcl_GetString(objv[6]);
+    if (objc > 7) {
+        int drag_val;
+        if (Tcl_GetBooleanFromObj(interp, objv[7], &drag_val) != TCL_OK) {
+            return TCL_ERROR;
+        }
+        draggable = (drag_val != 0);
+    }
+    
+    auto circle = std::make_unique<CircleWidget>(x, y, radius, color, 
+                                                  thickness, callback,
+                                                  draggable);
+    int id = mgr->addWidget(std::move(circle));
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(id));
+    return TCL_OK;
+}
+
+// add_rect x y width height {r g b} ?thickness? ?callback?
+int TclCmd_AddRect(ClientData clientData, Tcl_Interp *interp, 
+                   int objc, Tcl_Obj *objv[]) {
+    if (objc < 6) {
+        Tcl_WrongNumArgs(interp, 1, objv, 
+                        "x y width height color ?thickness? ?callback?");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    int x, y, w, h;
+    
+    if (Tcl_GetIntFromObj(interp, objv[1], &x) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &y) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[3], &w) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[4], &h) != TCL_OK) return TCL_ERROR;
+    
+    cv::Scalar color = parseTclColor(interp, objv[5]);
+    
+    int thickness = 2;
+    std::string callback = "";
+    
+    if (objc > 6) {
+        if (Tcl_GetIntFromObj(interp, objv[6], &thickness) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    if (objc > 7) callback = Tcl_GetString(objv[7]);
+    
+    auto rect = std::make_unique<RectWidget>(x, y, w, h, color, 
+                                              thickness, callback);
+    int id = mgr->addWidget(std::move(rect));
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(id));
+    return TCL_OK;
+}
+
+// add_text x y text {r g b} ?scale? ?thickness?
+int TclCmd_AddText(ClientData clientData, Tcl_Interp *interp, 
+                   int objc, Tcl_Obj *objv[]) {
+    if (objc < 5) {
+        Tcl_WrongNumArgs(interp, 1, objv, 
+                        "x y text color ?scale? ?thickness?");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    int x, y;
+    
+    if (Tcl_GetIntFromObj(interp, objv[1], &x) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &y) != TCL_OK) return TCL_ERROR;
+    
+    std::string text = Tcl_GetString(objv[3]);
+    cv::Scalar color = parseTclColor(interp, objv[4]);
+    
+    double scale = 0.5;
+    int thickness = 1;
+    
+    if (objc > 5) {
+        if (Tcl_GetDoubleFromObj(interp, objv[5], &scale) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    if (objc > 6) {
+        if (Tcl_GetIntFromObj(interp, objv[6], &thickness) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    
+    auto txt = std::make_unique<TextWidget>(x, y, text, color, 
+                                            scale, thickness);
+    int id = mgr->addWidget(std::move(txt));
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(id));
+    return TCL_OK;
+}
+
+// add_line x1 y1 x2 y2 {r g b} ?thickness?
+int TclCmd_AddLine(ClientData clientData, Tcl_Interp *interp, 
+                   int objc, Tcl_Obj *objv[]) {
+    if (objc < 6) {
+        Tcl_WrongNumArgs(interp, 1, objv, "x1 y1 x2 y2 color ?thickness?");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    int x1, y1, x2, y2;
+    
+    if (Tcl_GetIntFromObj(interp, objv[1], &x1) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &y1) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[3], &x2) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[4], &y2) != TCL_OK) return TCL_ERROR;
+    
+    cv::Scalar color = parseTclColor(interp, objv[5]);
+    
+    int thickness = 2;
+    if (objc > 6) {
+        if (Tcl_GetIntFromObj(interp, objv[6], &thickness) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    
+    auto line = std::make_unique<LineWidget>(x1, y1, x2, y2, color, thickness);
+    int id = mgr->addWidget(std::move(line));
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(id));
+    return TCL_OK;
+}
+
+// add_slider x y width height label min max initial ?callback?
+int TclCmd_AddSlider(ClientData clientData, Tcl_Interp *interp, 
+                     int objc, Tcl_Obj *objv[]) {
+    if (objc < 9) {
+        Tcl_WrongNumArgs(interp, 1, objv, 
+                        "x y width height label min max initial ?callback?");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    int x, y, width, height;
+    double min_val, max_val, initial;
+    
+    if (Tcl_GetIntFromObj(interp, objv[1], &x) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &y) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[3], &width) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[4], &height) != TCL_OK) return TCL_ERROR;
+    
+    std::string label = Tcl_GetString(objv[5]);
+    
+    if (Tcl_GetDoubleFromObj(interp, objv[6], &min_val) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    if (Tcl_GetDoubleFromObj(interp, objv[7], &max_val) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    if (Tcl_GetDoubleFromObj(interp, objv[8], &initial) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    std::string callback = "";
+    if (objc > 9) callback = Tcl_GetString(objv[9]);
+    
+    auto slider = std::make_unique<SliderWidget>(x, y, width, height, 
+                                                  label, min_val, max_val, 
+                                                  initial, callback);
+    int id = mgr->addWidget(std::move(slider));
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(id));
+    return TCL_OK;
+}
+
+// update_widget id x y ?w? ?h?
+int TclCmd_UpdateWidget(ClientData clientData, Tcl_Interp *interp, 
+                        int objc, Tcl_Obj *objv[]) {
+    if (objc < 4) {
+        Tcl_WrongNumArgs(interp, 1, objv, "widget_id x y ?w? ?h?");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    int id, x, y, w = -1, h = -1;
+    
+    if (Tcl_GetIntFromObj(interp, objv[1], &id) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[2], &x) != TCL_OK) return TCL_ERROR;
+    if (Tcl_GetIntFromObj(interp, objv[3], &y) != TCL_OK) return TCL_ERROR;
+
+    if (objc > 4) {
+        if (Tcl_GetIntFromObj(interp, objv[4], &w) != TCL_OK) return TCL_ERROR;
+    }
+    
+    if (objc > 5) {
+        if (Tcl_GetIntFromObj(interp, objv[5], &h) != TCL_OK) return TCL_ERROR;
+    }
+    
+    bool success = mgr->updateWidget(id, x, y, w, h);
+    
+    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(success));
+    return TCL_OK;
+}
+
+// update_widget_text id txt?
+int TclCmd_UpdateWidgetText(ClientData clientData, Tcl_Interp *interp, 
+                        int objc, Tcl_Obj *objv[]) {
+  if (objc < 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "widget_id string");
+    return TCL_ERROR;
+  }
+  
+  auto* mgr = static_cast<WidgetManager*>(clientData);
+  int id;
+  
+  if (Tcl_GetIntFromObj(interp, objv[1], &id) != TCL_OK) return TCL_ERROR;
+
+  bool success = mgr->updateWidgetText(id, Tcl_GetString(objv[2]));
+  
+  Tcl_SetObjResult(interp, Tcl_NewBooleanObj(success));
+  return TCL_OK;
+}
+
+// remove_widget id
+int TclCmd_RemoveWidget(ClientData clientData, Tcl_Interp *interp, 
+                        int objc, Tcl_Obj *objv[]) {
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "widget_id");
+        return TCL_ERROR;
+    }
+    
+    auto* mgr = static_cast<WidgetManager*>(clientData);
+    int id;
+    
+    if (Tcl_GetIntFromObj(interp, objv[1], &id) != TCL_OK) return TCL_ERROR;
+    
+    mgr->removeWidget(id);
+    
+    return TCL_OK;
+}
+
+// clear_widgets
+int TclCmd_ClearWidgets(ClientData clientData, Tcl_Interp *interp, 
+                        int objc, Tcl_Obj *objv[]) {
+  auto* mgr = static_cast<WidgetManager*>(clientData);
+  mgr->clearAll();
+  return TCL_OK;
+}
+
+void registerWidgetCommands(Tcl_Interp* interp, WidgetManager* mgr) {
+  Tcl_CreateObjCommand(interp, "add_button",
+		       (Tcl_ObjCmdProc *) TclCmd_AddButton, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "add_toggle",
+		       (Tcl_ObjCmdProc *) TclCmd_AddToggle, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "add_circle",
+		       (Tcl_ObjCmdProc *) TclCmd_AddCircle, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "add_rect",
+		       (Tcl_ObjCmdProc *) TclCmd_AddRect, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "add_text",
+		       (Tcl_ObjCmdProc *) TclCmd_AddText, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "add_line",
+		       (Tcl_ObjCmdProc *) TclCmd_AddLine, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "add_slider",
+		       (Tcl_ObjCmdProc *) TclCmd_AddSlider, mgr, NULL);
+
+  Tcl_CreateObjCommand(interp, "update_widget",
+		       (Tcl_ObjCmdProc *) TclCmd_UpdateWidget, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "update_widgetText",
+		       (Tcl_ObjCmdProc *) TclCmd_UpdateWidgetText, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "remove_widget",
+		       (Tcl_ObjCmdProc *) TclCmd_RemoveWidget, mgr, NULL);
+  Tcl_CreateObjCommand(interp, "clear_widgets",
+		       (Tcl_ObjCmdProc *) TclCmd_ClearWidgets, mgr, NULL);
+}
+
+/*********************************************************************/
 /*                         Review Commands                           */
 /*********************************************************************/
 
@@ -209,6 +583,48 @@ int reviewSampleCmd(ClientData data, Tcl_Interp *interp,
   }
   
   Tcl_SetObjResult(interp, Tcl_NewIntObj(0));
+  return TCL_OK;
+}
+
+
+int reviewSampleMultipleCmd(ClientData data, Tcl_Interp *interp,
+                            int objc, Tcl_Obj *const objv[])
+{
+  proginfo_t *p = (proginfo_t *)data;
+    
+  if (objc < 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "n_frames interval_ms ?random?");
+    return TCL_ERROR;
+  }
+    
+  int n_frames, interval_ms;
+  if (Tcl_GetIntFromObj(interp, objv[1], &n_frames) != TCL_OK ||
+      Tcl_GetIntFromObj(interp, objv[2], &interval_ms) != TCL_OK) {
+    return TCL_ERROR;
+  }
+  
+  int random = 0;
+  if (objc > 3 && strcmp(Tcl_GetString(objv[3]), "-random") == 0) random = 1;
+  else if (objc > 3) {
+    if (Tcl_GetIntFromObj(interp, objv[1], &random) != TCL_OK) {
+      return TCL_ERROR;
+    }
+  }
+    
+  if (p->samplingManager->isActive()) {
+    Tcl_SetObjResult(interp, Tcl_NewStringObj("Sampling already in progress", -1));
+    return TCL_ERROR;
+  }
+  
+  p->samplingManager->start(n_frames, interval_ms, random);
+  return TCL_OK;
+}
+
+int reviewSampleStopCmd(ClientData data, Tcl_Interp *interp,
+                        int objc, Tcl_Obj *const objv[])
+{
+  proginfo_t *p = (proginfo_t *)data;
+  p->samplingManager->stop();
   return TCL_OK;
 }
 
@@ -596,6 +1012,11 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
   Tcl_CreateObjCommand(interp, "::vstream::reviewSample", reviewSampleCmd,
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::reviewSampleMultiple",
+		       reviewSampleMultipleCmd,
+		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::reviewSampleStop", reviewSampleStopCmd,
+		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
   Tcl_CreateObjCommand(interp, "::vstream::reviewRemove", reviewRemoveCmd,
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
   Tcl_CreateObjCommand(interp, "::vstream::reviewNext", reviewNextCmd,
@@ -661,6 +1082,19 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateCommand(interp, "vstream::exit", (Tcl_CmdProc *) shutdownCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
+
+  registerWidgetCommands(interp, p->widgetManager);
+
+  // access to frame info
+  Tcl_LinkVar(interp, "vstream::frame_width", (char *) p->frame_width,
+	      TCL_LINK_INT | TCL_LINK_READ_ONLY);
+  Tcl_LinkVar(interp, "vstream::frame_height", (char *) p->frame_height,
+	      TCL_LINK_INT | TCL_LINK_READ_ONLY);
+  Tcl_LinkVar(interp, "vstream::frame_rate", (char*)p->frame_rate, 
+	      TCL_LINK_FLOAT | TCL_LINK_READ_ONLY);
+  Tcl_LinkVar(interp, "vstream::is_color", (char*)p->is_color, 
+	      TCL_LINK_BOOLEAN | TCL_LINK_READ_ONLY);
+  
   extern int dsPort;
   Tcl_LinkVar(interp, "vstream::dsPort", (char *) &dsPort, TCL_LINK_INT);
 
