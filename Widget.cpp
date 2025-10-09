@@ -3,6 +3,9 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
 
 extern WidgetManager g_widgetManager;
 
