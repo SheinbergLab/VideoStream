@@ -55,7 +55,8 @@ public:
   void ensureReviewSource();
   
   bool sampleCurrentFrame(const cv::Mat& frame, const FrameMetadata& metadata);  
-
+  void clearSampleFrames();
+  
   // For main loop compatibility
   bool isRunning() const { return state_ == SOURCE_RUNNING; }
   

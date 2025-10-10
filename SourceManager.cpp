@@ -64,6 +64,27 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
     throw std::runtime_error("Unknown source type: " + type);
 }
 
+void SourceManager::clearSampleFrames()
+{
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  
+  // If review source is currently active, stop it
+  if (current_source_.get() == review_source_.get() && 
+      (state_ == SOURCE_RUNNING || state_ == SOURCE_PAUSED)) {
+    
+    std::cout << "Stopping review source before clearing frames" << std::endl;
+    
+    // Don't call current_source_->close() since we're using shared_ptr
+    current_source_.release();
+    state_ = SOURCE_IDLE;
+  }
+  
+  // Now safe to clear the frames
+  if (review_source_) {
+    review_source_->clearFrames();
+  }
+}
+
 bool SourceManager::startSource(const std::string& type, 
                                 const std::map<std::string, std::string>& params)
 {
