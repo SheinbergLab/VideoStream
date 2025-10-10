@@ -1130,9 +1130,6 @@ public:
 	      case 27:  // ESC
 		do_shutdown();
 		break;
-	      case 'h':
-		hide();
-		break;
 	      default:
 		std::string generic = g_keyboardCallbacks.getCallback(-1);
 		if (!generic.empty()) {
@@ -1547,6 +1544,7 @@ int main(int argc, char **argv)
   options.add_options()
     ("v,verbose", "Verbose mode", cxxopts::value<bool>(verbose))
     ("w,webcam", "Use webcam", cxxopts::value<bool>(use_webcam))
+    ("R,fliR", "Use flir", cxxopts::value<bool>(use_flir))
     ("d,display", "Start with display", cxxopts::value<bool>(init_display))
     ("p,port", "TCP/IP server port", cxxopts::value<int>(port))
     ("c,camera_id", "Camera ID", cxxopts::value<int>(camera_id))
