@@ -74,5 +74,16 @@ void SamplingManager::samplingLoop() {
   }
   
   m_bActive = false;
-  std::cout << "Sampling complete: " << sampled << " frames collected" << std::endl;
+  
+  // Thread-safe read of callback
+  std::string callback_copy;
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    callback_copy = completion_callback_;
+  }
+  
+  if (!callback_copy.empty()) {
+    extern SharedQueue<std::string> mouse_queue;
+    mouse_queue.push_back(callback_copy);
+  }  
 }
