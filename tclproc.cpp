@@ -731,16 +731,16 @@ void registerWidgetCommands(Tcl_Interp* interp, WidgetManager* mgr) {
 /*                         Review Commands                           */
 /*********************************************************************/
 
-int reviewClearCmd(ClientData data, Tcl_Interp *interp, 
-                    int objc, Tcl_Obj *const objv[])
+static int reviewClearCmd(ClientData data, Tcl_Interp *interp, 
+			  int objc, Tcl_Obj *const objv[])
 {
   proginfo_t *p = (proginfo_t *)data;
-  p->sourceManager->getReviewSource()->clearFrames();
+  p->sourceManager->clearSampleFrames();
   return TCL_OK;
 }
 
-int reviewSampleCmd(ClientData data, Tcl_Interp *interp,
-		 int objc, Tcl_Obj *const objv[])
+static int reviewSampleCmd(ClientData data, Tcl_Interp *interp,
+			   int objc, Tcl_Obj *const objv[])
 {
   proginfo_t *p = (proginfo_t *)data;
   
@@ -763,8 +763,8 @@ int reviewSampleCmd(ClientData data, Tcl_Interp *interp,
 }
 
 
-int reviewSampleMultipleCmd(ClientData data, Tcl_Interp *interp,
-                            int objc, Tcl_Obj *const objv[])
+static int reviewSampleMultipleCmd(ClientData data, Tcl_Interp *interp,
+				   int objc, Tcl_Obj *const objv[])
 {
   proginfo_t *p = (proginfo_t *)data;
     
@@ -796,16 +796,30 @@ int reviewSampleMultipleCmd(ClientData data, Tcl_Interp *interp,
   return TCL_OK;
 }
 
-int reviewSampleStopCmd(ClientData data, Tcl_Interp *interp,
-                        int objc, Tcl_Obj *const objv[])
+static int reviewSampleStopCmd(ClientData data, Tcl_Interp *interp,
+			       int objc, Tcl_Obj *const objv[])
 {
   proginfo_t *p = (proginfo_t *)data;
   p->samplingManager->stop();
   return TCL_OK;
 }
 
-int reviewRemoveCmd(ClientData data, Tcl_Interp *interp,
-                     int objc, Tcl_Obj *const objv[])
+static int reviewSampleCallbackCmd(ClientData clientData, Tcl_Interp *interp,
+				   int objc, Tcl_Obj *const objv[]) {
+  proginfo_t *p = (proginfo_t *) clientData;
+  if (objc != 2) {
+    Tcl_WrongNumArgs(interp, 1, objv, "callbackProc");
+    return TCL_ERROR;
+  }
+  
+  std::string callback = Tcl_GetString(objv[1]);
+  p->samplingManager->setCompletionCallback(callback);
+  return TCL_OK;
+}
+
+
+static int reviewRemoveCmd(ClientData data, Tcl_Interp *interp,
+			   int objc, Tcl_Obj *const objv[])
 {
   proginfo_t *p = (proginfo_t *)data;
   if (!p->reviewSource) return TCL_OK;
@@ -823,24 +837,24 @@ int reviewRemoveCmd(ClientData data, Tcl_Interp *interp,
   return TCL_OK;
 }
 
-int reviewNextCmd(ClientData data, Tcl_Interp *interp,
-		  int objc, Tcl_Obj *const objv[])
+static int reviewNextCmd(ClientData data, Tcl_Interp *interp,
+			 int objc, Tcl_Obj *const objv[])
 {
   proginfo_t *p = (proginfo_t *)data;
   p->sourceManager->getReviewSource()->nextFrame();
   return TCL_OK;
 }
 
-int reviewPreviousCmd(ClientData data, Tcl_Interp *interp,
-                       int objc, Tcl_Obj *const objv[])
+static int reviewPreviousCmd(ClientData data, Tcl_Interp *interp,
+			     int objc, Tcl_Obj *const objv[])
 {
   proginfo_t *p = (proginfo_t *)data;
   p->sourceManager->getReviewSource()->previousFrame();
   return TCL_OK;
 }
 
-int reviewJumpToCmd(ClientData data, Tcl_Interp *interp,
-		    int objc, Tcl_Obj *const objv[])
+static int reviewJumpToCmd(ClientData data, Tcl_Interp *interp,
+			   int objc, Tcl_Obj *const objv[])
 {
   proginfo_t *p = (proginfo_t *)data;
   if (objc != 2) {
@@ -865,8 +879,8 @@ int reviewJumpToCmd(ClientData data, Tcl_Interp *interp,
   return TCL_OK;
 }
 
-int reviewCountCmd(ClientData data, Tcl_Interp *interp,
-                    int objc, Tcl_Obj *const objv[])
+static int reviewCountCmd(ClientData data, Tcl_Interp *interp,
+			  int objc, Tcl_Obj *const objv[])
 {
   proginfo_t *p = (proginfo_t *)data;
 
@@ -876,8 +890,8 @@ int reviewCountCmd(ClientData data, Tcl_Interp *interp,
   return TCL_OK;
 }
 
-int reviewIndexCmd(ClientData data, Tcl_Interp *interp,
-                    int objc, Tcl_Obj *const objv[])
+static int reviewIndexCmd(ClientData data, Tcl_Interp *interp,
+			  int objc, Tcl_Obj *const objv[])
 {
   proginfo_t *p = (proginfo_t *)data;
   Tcl_SetObjResult(interp,
@@ -1192,6 +1206,9 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 		       reviewSampleMultipleCmd,
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
   Tcl_CreateObjCommand(interp, "::vstream::reviewSampleStop", reviewSampleStopCmd,
+		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::reviewSampleCallback",
+		       reviewSampleCallbackCmd,
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
   Tcl_CreateObjCommand(interp, "::vstream::reviewRemove", reviewRemoveCmd,
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
