@@ -8,84 +8,332 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include "SharedQueue.hpp"
 #include "IAnalysisPlugin.h"
 #include "AnalysisPluginRegistry.h"
 
-// Forward declare the registry
 extern AnalysisPluginRegistry g_pluginRegistry;
 
-// Add to class private members:
-struct PurkinjeValidator {
-  bool pupil_initialized;
-  cv::Point2f pupil_last;  
-  
-  bool p1_initialized;
-  cv::Point2f p1_last;
+// ============================================================================
+// P1 VALIDATOR
+// ============================================================================
 
-  bool p4_initialized;
-  cv::Point2f p4_last;
-  
-  int p4_confidence_count;  
-  
-  PurkinjeValidator() : p1_initialized(false), p4_initialized(false) {}
-  
-  void reset() {
-    p1_initialized = false;
-    p4_initialized = false;
-  }
-  
-  
-  bool isValidP1(const cv::Point2f& new_pos, float max_jump_pixels = 15.0f) {
-    if (!p1_initialized) return true;
-    float dist = cv::norm(new_pos - p1_last);
-    return dist < max_jump_pixels;
-  }
-  
-  void updateP1(const cv::Point2f& pos) {
-    p1_last = pos;
-    p1_initialized = true;
-  }
+class P1Validator {
+private:
+    bool initialized_;
+    cv::Point2f last_position_;
+    float max_jump_pixels_;
 
-  bool isValidP4(const cv::Point2f& new_pos, const cv::Point2f& pupil_center, 
-		 float max_jump_pixels = 10.0f) {
-    if (!p4_initialized) return true;
-    
-    float p4_movement = cv::norm(new_pos - p4_last);
-    
-    // If pupil also moved, allow more P4 movement
-    if (pupil_initialized) {
-      float pupil_movement = cv::norm(pupil_center - pupil_last);
-      
-      // P4 can move up to: base threshold + pupil movement
-      float adjusted_max = max_jump_pixels + pupil_movement;
-      
-      if (p4_movement > adjusted_max) {
-	std::cout << "P4 rejected: moved " << p4_movement 
-		  << " (pupil moved " << pupil_movement 
-		  << ", allowed " << adjusted_max << ")" << std::endl;
-	return false;
-      }
-    } else {
-      // First frame with pupil
-      if (p4_movement > max_jump_pixels) {
-	return false;
-      }
+public:
+    P1Validator(float max_jump = 15.0f) 
+        : initialized_(false), max_jump_pixels_(max_jump) {}
+
+    bool isValid(const cv::Point2f& new_pos) {
+        if (!initialized_) return true;
+        float dist = cv::norm(new_pos - last_position_);
+        bool valid = dist < max_jump_pixels_;        
+        return valid;
     }
-    
-    return true;
-  }
-  
-  void updateP4(const cv::Point2f& pos, const cv::Point2f& pupil_center) {
-    p4_last = pos;
-    p4_initialized = true;
-    pupil_last = pupil_center;
-    pupil_initialized = true;    
-  }
+
+    void update(const cv::Point2f& pos) {
+        last_position_ = pos;
+        initialized_ = true;
+    }
+
+    void reset() {
+        initialized_ = false;
+    }
+
+    void setMaxJump(float max_jump) {
+        max_jump_pixels_ = max_jump;
+    }
 };
 
-// Analysis result structures
+// ============================================================================
+// P4 VALIDATOR
+// ============================================================================
+
+class P4Validator {
+private:
+    bool initialized_;
+    cv::Point2f last_p4_position_;
+    cv::Point2f last_pupil_center_;
+    float max_jump_pixels_;
+
+public:
+    P4Validator(float max_jump = 10.0f) 
+        : initialized_(false), max_jump_pixels_(max_jump) {}
+
+    bool isValid(const cv::Point2f& new_p4, const cv::Point2f& pupil_center) {
+        if (!initialized_) return true;
+
+        float p4_movement = cv::norm(new_p4 - last_p4_position_);
+        float pupil_movement = cv::norm(pupil_center - last_pupil_center_);
+
+        // Allow P4 to move more if pupil also moved
+        float adjusted_max = max_jump_pixels_ + pupil_movement;
+        return p4_movement < adjusted_max;
+    }
+
+    void update(const cv::Point2f& p4_pos, const cv::Point2f& pupil_center) {
+        last_p4_position_ = p4_pos;
+        last_pupil_center_ = pupil_center;
+        initialized_ = true;
+    }
+
+    void reset() {
+        initialized_ = false;
+    }
+
+    void setMaxJump(float max_jump) {
+        max_jump_pixels_ = max_jump;
+    }
+};
+
+// ============================================================================
+// P1-P4 ROTATIONAL MODEL
+// ============================================================================
+
+class P1P4RotationalModel {
+private:
+    bool initialized_;
+    bool frozen_;
+    float magnitude_ratio_;
+    float angle_offset_;
+    float learning_rate_;
+    
+    std::vector<cv::Point2f> calibration_pupil_centers_;
+    std::vector<cv::Point2f> calibration_p1_centers_;
+    std::vector<cv::Point2f> calibration_p4_centers_;
+    int target_samples_;
+
+    static float wrapAngle(float angle) {
+        angle = std::fmod(angle + M_PI, 2.0f * M_PI);
+        if (angle < 0) angle += 2.0f * M_PI;
+        return angle - M_PI;
+    }
+
+public:
+    P1P4RotationalModel(int target_samples = 50) 
+        : initialized_(false),
+          frozen_(false),
+          magnitude_ratio_(0.0f),
+          angle_offset_(0.0f),
+          learning_rate_(0.1f),
+          target_samples_(target_samples) {}
+
+    cv::Point2f predict(const cv::Point2f& pupil_center, const cv::Point2f& p1_center) const {
+        if (!initialized_) return cv::Point2f(-1, -1);
+
+        cv::Point2f v_pc_p1 = p1_center - pupil_center;
+        float mag_p1 = cv::norm(v_pc_p1);
+        
+        if (mag_p1 < 1e-6) return cv::Point2f(-1, -1);
+
+        float angle_p1 = std::atan2(v_pc_p1.y, v_pc_p1.x);
+        float predicted_mag_p4 = mag_p1 * magnitude_ratio_;
+        float predicted_angle_p4 = angle_p1 + angle_offset_;
+
+        cv::Point2f predicted_v_p4(
+            predicted_mag_p4 * std::cos(predicted_angle_p4),
+            predicted_mag_p4 * std::sin(predicted_angle_p4)
+        );
+
+        return pupil_center + predicted_v_p4;
+    }
+
+    void updateModel(const cv::Point2f& pupil_center, 
+                    const cv::Point2f& p1_center, 
+                    const cv::Point2f& p4_center) {
+        if (frozen_ || !initialized_) return;
+
+        cv::Point2f v_pc_p1 = p1_center - pupil_center;
+        cv::Point2f v_pc_p4 = p4_center - pupil_center;
+        
+        float mag_p1 = cv::norm(v_pc_p1);
+        if (mag_p1 < 1e-6) return;
+
+        float obs_mag_ratio = cv::norm(v_pc_p4) / mag_p1;
+        float obs_angle_p1 = std::atan2(v_pc_p1.y, v_pc_p1.x);
+        float obs_angle_p4 = std::atan2(v_pc_p4.y, v_pc_p4.x);
+        float obs_angle_offset = wrapAngle(obs_angle_p4 - obs_angle_p1);
+
+        magnitude_ratio_ = learning_rate_ * obs_mag_ratio + 
+                          (1.0f - learning_rate_) * magnitude_ratio_;
+
+        float old_x = std::cos(angle_offset_);
+        float old_y = std::sin(angle_offset_);
+        float new_x = std::cos(obs_angle_offset);
+        float new_y = std::sin(obs_angle_offset);
+        
+        float avg_x = learning_rate_ * new_x + (1.0f - learning_rate_) * old_x;
+        float avg_y = learning_rate_ * new_y + (1.0f - learning_rate_) * old_y;
+        
+        angle_offset_ = std::atan2(avg_y, avg_x);
+    }
+
+    void addCalibrationSample(const cv::Point2f& pupil_center,
+                             const cv::Point2f& p1_center,
+                             const cv::Point2f& p4_center) {
+        calibration_pupil_centers_.push_back(pupil_center);
+        calibration_p1_centers_.push_back(p1_center);
+        calibration_p4_centers_.push_back(p4_center);
+    }
+
+    bool calibrateFromSamples() {
+        if (calibration_pupil_centers_.size() < 10) {
+            return false;
+        }
+
+        std::vector<float> mag_ratios;
+        std::vector<float> angle_offsets;
+
+        for (size_t i = 0; i < calibration_pupil_centers_.size(); ++i) {
+            cv::Point2f v_pc_p1 = calibration_p1_centers_[i] - calibration_pupil_centers_[i];
+            cv::Point2f v_pc_p4 = calibration_p4_centers_[i] - calibration_pupil_centers_[i];
+            
+            float mag_p1 = cv::norm(v_pc_p1);
+            if (mag_p1 < 1e-6) continue;
+
+            mag_ratios.push_back(cv::norm(v_pc_p4) / mag_p1);
+            
+            float angle_p1 = std::atan2(v_pc_p1.y, v_pc_p1.x);
+            float angle_p4 = std::atan2(v_pc_p4.y, v_pc_p4.x);
+            angle_offsets.push_back(wrapAngle(angle_p4 - angle_p1));
+        }
+
+        if (mag_ratios.empty()) return false;
+
+        float sum = 0;
+        for (float r : mag_ratios) sum += r;
+        magnitude_ratio_ = sum / mag_ratios.size();
+
+        float sum_sin = 0, sum_cos = 0;
+        for (float a : angle_offsets) {
+            sum_cos += std::cos(a);
+            sum_sin += std::sin(a);
+        }
+        angle_offset_ = std::atan2(sum_sin / angle_offsets.size(), 
+                                   sum_cos / angle_offsets.size());
+
+        initialized_ = true;
+        calibration_pupil_centers_.clear();
+        calibration_p1_centers_.clear();
+        calibration_p4_centers_.clear();
+
+        return true;
+    }
+
+    bool isInitialized() const { return initialized_; }
+    bool isFrozen() const { return frozen_; }
+    void freeze() { frozen_ = true; }
+    void unfreeze() { frozen_ = false; }
+    void reset() { 
+        initialized_ = false; 
+        frozen_ = false;
+        calibration_pupil_centers_.clear();
+        calibration_p1_centers_.clear();
+        calibration_p4_centers_.clear();
+    }
+    
+    int getCalibrationSampleCount() const { 
+        return calibration_pupil_centers_.size(); 
+    }
+    
+    int getTargetSamples() const { return target_samples_; }
+    float getMagnitudeRatio() const { return magnitude_ratio_; }
+    float getAngleOffset() const { return angle_offset_; }
+};
+
+// ============================================================================
+// BLINK DETECTOR (WITH RADIUS CHECK)
+// ============================================================================
+
+class BlinkDetector {
+private:
+    bool in_blink_;
+    int recovery_countdown_;
+    static constexpr int RECOVERY_FRAMES = 5;
+    
+    // Track pupil radius for blink detection
+    float baseline_radius_;
+    bool baseline_initialized_;
+    static constexpr float BLINK_ENTER_RATIO = 0.5f;  // Enter blink at 50%
+    static constexpr float BLINK_EXIT_RATIO = 0.7f;   // Exit blink at 70% (hysteresis)
+    static constexpr int BASELINE_UPDATE_FRAMES = 10;
+    int frames_since_update_;
+
+public:
+    BlinkDetector() : in_blink_(false), recovery_countdown_(0),
+                     baseline_radius_(0), baseline_initialized_(false),
+                     frames_since_update_(0) {}
+
+    void update(bool pupil_detected, float pupil_radius) {
+        // Update baseline radius during stable periods
+        if (pupil_detected && !in_blink_ && recovery_countdown_ == 0) {
+            if (!baseline_initialized_) {
+                baseline_radius_ = pupil_radius;
+                baseline_initialized_ = true;
+            } else {
+                // Slowly adapt baseline (exponential moving average)
+                frames_since_update_++;
+                if (frames_since_update_ >= BASELINE_UPDATE_FRAMES) {
+                    baseline_radius_ = 0.95f * baseline_radius_ + 0.05f * pupil_radius;
+                    frames_since_update_ = 0;
+                }
+            }
+        }
+        
+        // Detect blink with hysteresis
+        bool blink_condition;
+        if (in_blink_) {
+            // Already in blink - need higher threshold to exit (hysteresis)
+            blink_condition = !pupil_detected || 
+                             (baseline_initialized_ && 
+                              pupil_radius < baseline_radius_ * BLINK_EXIT_RATIO);
+        } else {
+            // Not in blink - use lower threshold to enter
+            blink_condition = !pupil_detected || 
+                             (baseline_initialized_ && 
+                              pupil_radius < baseline_radius_ * BLINK_ENTER_RATIO);
+        }
+        
+		if (blink_condition) {
+			if (!in_blink_) {
+				in_blink_ = true;
+				recovery_countdown_ = RECOVERY_FRAMES;
+			}
+		} else {
+			// Pupil is back and radius is normal, start recovery
+			if (in_blink_) {
+				in_blink_ = false;
+				recovery_countdown_ = RECOVERY_FRAMES;
+			}
+		}
+    }
+    
+void decrementRecovery() {
+    if (recovery_countdown_ > 0) {
+        recovery_countdown_--;
+    }
+}
+    
+    bool isInBlink() const { return in_blink_; }
+    bool isRecovering() const { return recovery_countdown_ > 0; }
+    
+    bool shouldResetValidators() const {
+        return in_blink_ && recovery_countdown_ == RECOVERY_FRAMES;
+    }
+    
+    float getBaselineRadius() const { return baseline_radius_; }
+};
+
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
 struct PupilData {
     cv::Point2f center;
     float radius;
@@ -95,123 +343,101 @@ struct PupilData {
 struct PurkinjeData {
     cv::Point2f p1_center;
     cv::Point2f p4_center;
-    bool p1_detected, p4_detected;
+    bool p1_detected;
+    bool p4_detected;
 };
 
 struct AnalysisResults {
     int frame_idx;
     PupilData pupil;
     PurkinjeData purkinje;
+    bool in_blink;
     bool valid;
 };
 
+// ============================================================================
+// MAIN PLUGIN CLASS
+// ============================================================================
+
 class EyeTrackingPlugin : public IAnalysisPlugin {
 private:
-  // Results storage
-  std::mutex results_mutex_;
-  AnalysisResults latest_results_;
-  
-  // Debug visualization
-  std::vector<cv::Point2f> debug_bright_spots_;
-  std::vector<int> debug_spot_intensities_;
-  
-  // ROI management
-  cv::Rect current_roi_;
-  bool roi_enabled_;
-  
-  // Processing control
-  std::atomic<bool> running_;
-  std::thread analysis_thread_;
-  
-  struct FrameData {
-      cv::Mat frame;
-      int frame_idx;
-      FrameMetadata metadata;
+    // Threading
+    std::atomic<bool> running_;
+    std::thread analysis_thread_;
+    
+    struct FrameData {
+        cv::Mat frame;
+        int frame_idx;
+        FrameMetadata metadata;
     };
-  
-  SharedQueue<FrameData> frame_queue_;
-  
-  // Pre-allocated working buffers
-  cv::Mat gray_buffer_;
-  cv::Mat binary_buffer_;
-  cv::Mat bright_spots_buffer_;
-  cv::Mat dim_spots_buffer_;
-  cv::Size frame_size_;
-  bool buffers_initialized_;
-  
-  // Pupil detection parameters
-  int pupil_threshold_;
-  int pupil_min_area_;
-  int pupil_max_area_;
-  float pupil_min_circularity_;
-  
-  // Purkinje detection parameters
-  int purkinje_threshold_;
-
-  PurkinjeValidator purkinje_validator_;
-  float max_p1_jump_;  // Initialize to ~15 pixels for 250Hz
-  float max_p4_jump_;  // Initialize to ~10 pixels for 250Hz
-  float p1_exclusion_ratio_;  // Ratio of pupil radius to exclude around P1 (default 0.2)
-  float min_p1_p4_ratio_;     // Minimum P1-P4 distance as ratio of pupil radius (default 0.6)
-  float p1_max_distance_ratio_;
-  
-  float p4_search_radius_ratio_;      // Ratio of pupil radius for P4 search area (default 0.85)
-  float p4_min_separation_ratio_;     // Minimum P1-P4 separation as ratio of pupil radius (default 0.3)
-  int p4_min_brightness_;             // Minimum brightness threshold for P4 (default 160)
-  float p4_angular_bonus_;            // Bonus weight for opposite-side P4 (default 1.0)
-  int p4_max_area_;
-  int p4_min_area_;
-
-  std::vector<std::pair<float, cv::Point2f>> last_p4_candidates_;
-
-  int p4_loss_counter_;
-  cv::Point2f p4_last_stable_;
-  int p4_loss_tolerance_ = 3;  // Frames to tolerate loss
-
-  cv::Mat p4_template_;
-  bool use_p4_template_;
-  cv::Point2f p4_template_center_;
-  float p4_template_threshold_;
-  
-  cv::Rect p1_seed_roi_;
-  bool use_p1_seed_;
-  
+    SharedQueue<FrameData> frame_queue_;
+    
+    // Results
+    std::mutex results_mutex_;
+    AnalysisResults latest_results_;
+    
+    // Buffers (pre-allocated)
+    cv::Mat gray_buffer_;
+    cv::Mat binary_buffer_;
+    cv::Size frame_size_;
+    bool buffers_initialized_;
+    
+    // ROI
+    cv::Rect current_roi_;
+    bool roi_enabled_;
+    
+    // Pupil detection parameters
+    int pupil_threshold_;
+    
+    // Blink detection
+    BlinkDetector blink_detector_;
+    
+    // P1 detection
+    P1Validator p1_validator_;
+    int p1_min_intensity_;
+    float p1_max_distance_ratio_;
+    cv::Size p1_centroid_roi_size_;
+    
+    // P4 detection
+    P4Validator p4_validator_;
+    P1P4RotationalModel p4_model_;
+    cv::Size p4_search_roi_size_;
+    float p4_max_prediction_error_;
+    cv::Mat p4_template_;
+    bool use_p4_template_;
+    float p4_template_threshold_;
+    
+    // Statistics
     int frame_count_;
+
+    // ========================================================================
+    // BUFFER MANAGEMENT
+    // ========================================================================
     
     void ensureBuffersAllocated(const cv::Mat& frame) {
         cv::Size current_size(frame.cols, frame.rows);
         
-        // Only allocate/reallocate if size changed or not yet initialized
         if (!buffers_initialized_ || current_size != frame_size_) {
             frame_size_ = current_size;
-            
             gray_buffer_ = cv::Mat(frame_size_, CV_8UC1);
             binary_buffer_ = cv::Mat(frame_size_, CV_8UC1);
-            bright_spots_buffer_ = cv::Mat(frame_size_, CV_8UC1);
-            dim_spots_buffer_ = cv::Mat(frame_size_, CV_8UC1);
-            
             buffers_initialized_ = true;
             
-            std::cout << "Allocated eye tracking buffers: " 
+            std::cout << "Allocated buffers: " 
                       << frame_size_.width << "x" << frame_size_.height << std::endl;
         }
     }
+
+    // ========================================================================
+    // PUPIL DETECTION
+    // ========================================================================
     
     PupilData detectPupil(const cv::Mat& frame) {
-        PupilData result = {cv::Point2f(-1,-1), -1, false};
+        PupilData result = {cv::Point2f(-1, -1), -1, false};
         
         cv::Mat roi_frame = roi_enabled_ ? frame(current_roi_) : frame;
-        
-        // Reuse pre-allocated buffers instead of creating new ones
-        cv::Mat gray_roi, binary_roi;
-        if (roi_enabled_) {
-            // For ROI, use a subset of the buffer
-            gray_roi = gray_buffer_(current_roi_);
-            binary_roi = binary_buffer_(current_roi_);
-        } else {
-            gray_roi = gray_buffer_;
-            binary_roi = binary_buffer_;
-        }
+        cv::Mat gray_roi = roi_enabled_ ? gray_buffer_(current_roi_) : gray_buffer_;
+        cv::Mat binary_roi = roi_enabled_ ? binary_buffer_(current_roi_) : binary_buffer_;
         
         if (roi_frame.channels() > 1) {
             cv::cvtColor(roi_frame, gray_roi, cv::COLOR_BGR2GRAY);
@@ -219,19 +445,13 @@ private:
             roi_frame.copyTo(gray_roi);
         }
         
-        cv::threshold(gray_roi, binary_roi, pupil_threshold_, 255, 
-                     cv::THRESH_BINARY_INV);
+        cv::threshold(gray_roi, binary_roi, pupil_threshold_, 255, cv::THRESH_BINARY_INV);
         
-        // Calculate moments for center of mass
         cv::Moments m = cv::moments(binary_roi, true);
         
         if (m.m00 > 0) {
-            cv::Point2f center;
-            center.x = m.m10 / m.m00;
-            center.y = m.m01 / m.m00;
-            
-            float area = m.m00;
-            float radius = sqrt(area / M_PI);
+            cv::Point2f center(m.m10 / m.m00, m.m01 / m.m00);
+            float radius = std::sqrt(m.m00 / M_PI);
             
             if (roi_enabled_) {
                 center.x += current_roi_.x;
@@ -243,551 +463,505 @@ private:
         
         return result;
     }
-    
 
-  // Fast brightness detection - finds top N brightest spots
-  std::vector<cv::Point2f> findBrightestSpots(const cv::Mat& intensity_region, 
-					      int n_spots = 3,
-					      float min_separation = 5.0f,
-					      float min_brightness = 200.0f) {  // Made configurable
-    std::vector<cv::Point2f> spots;
-    cv::Mat working = intensity_region.clone();
+    // ========================================================================
+    // P1 SUB-PIXEL REFINEMENT
+    // ========================================================================
     
-    for (int i = 0; i < n_spots; ++i) {
-      cv::Point max_loc;
-      double max_val;
-      cv::minMaxLoc(working, nullptr, &max_val, nullptr, &max_loc);
-      
-      if (max_val < min_brightness) break;
-      
-      // For bloomed spots, find center of mass around peak
-      int win_size = 5;  // Larger window for bloomed spots
-      cv::Rect window(std::max(0, max_loc.x - win_size),
-		      std::max(0, max_loc.y - win_size),
-		      win_size * 2 + 1, win_size * 2 + 1);
-      window = window & cv::Rect(0, 0, intensity_region.cols, intensity_region.rows);
-      
-      cv::Mat window_region = intensity_region(window);
-      
-      // Create binary mask of bright pixels in window
-      cv::Mat bright_mask;
-      double threshold_val = max_val * 0.7;  // Pixels at least 70% of peak
-      cv::threshold(window_region, bright_mask, threshold_val, 255, cv::THRESH_BINARY);
-      
-      // Get center of mass of bright region
-      cv::Moments m = cv::moments(bright_mask, true);
-      
-      cv::Point2f refined(max_loc.x, max_loc.y);
-      if (m.m00 > 3) {  // At least a few bright pixels
-	refined.x = window.x + m.m10 / m.m00;
-	refined.y = window.y + m.m01 / m.m00;
-      }
-      
-      // Check if too close to existing spots
-      bool too_close = false;
-      for (const auto& existing : spots) {
-	if (cv::norm(refined - existing) < min_separation) {
-	  too_close = true;
-	  break;
-	}
-      }
-      
-      if (!too_close) {
-	spots.push_back(refined);
-      }
-      
-      // Mask out larger region for bloomed spots
-      cv::circle(working, max_loc, 10, 0, -1);  // Increased from 8
-    }
-    
-    return spots;
-  }
-
-
-  float scoreP4Candidate(const cv::Point2f& candidate,
-			 const cv::Mat& gray_roi,
-			 const cv::Point2f& p1_pos,
-			 const cv::Point2f& pupil_center,
-			 float pupil_radius) {
-    
-    // Bounds check
-    if (candidate.x < 3 || candidate.y < 3 || 
-	candidate.x >= gray_roi.cols - 3 || 
-	candidate.y >= gray_roi.rows - 3) {
-      return 0;
-    }
-    
-    // Local peak analysis
-    int win = 3;
-    cv::Rect local_rect(candidate.x - win, candidate.y - win, win*2+1, win*2+1);
-    local_rect = local_rect & cv::Rect(0, 0, gray_roi.cols, gray_roi.rows);
-    
-    if (local_rect.area() == 0) return 0;
-    
-    cv::Mat local = gray_roi(local_rect);
-    double center_val = gray_roi.at<uchar>(candidate);
-    double mean_val = cv::mean(local)[0];
-    float peak_ratio = center_val / (mean_val + 1);
-    
-    if (peak_ratio < 1.05) return 0;
-    
-    // Compactness analysis
-    cv::Mat binary;
-    cv::threshold(local, binary, center_val * 0.8, 255, cv::THRESH_BINARY);
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-    
-    float compactness = 1.0f;
-    if (!contours.empty() && contours[0].size() > 2) {
-      cv::Rect bbox = cv::boundingRect(contours[0]);
-      if (bbox.width > 0 && bbox.height > 0) {
-        // For tiny spots (1-3 pixels), don't penalize shape
-        if (bbox.area() < 10) {
-	  compactness = 0.8f;  // Fixed decent score
-        } else {
-	  float aspect = (float)std::min(bbox.width, bbox.height) / 
-	    std::max(bbox.width, bbox.height);
-	  compactness = aspect;
+    cv::Point2f refineP1SubPixel(const cv::Mat& gray_roi,
+                                 const cv::Rect& search_rect,
+                                 const cv::Point2f& candidate) {
+        cv::Rect centroid_roi(
+            candidate.x - p1_centroid_roi_size_.width / 2,
+            candidate.y - p1_centroid_roi_size_.height / 2,
+            p1_centroid_roi_size_.width,
+            p1_centroid_roi_size_.height
+        );
+        
+        centroid_roi &= cv::Rect(0, 0, search_rect.width, search_rect.height);
+        
+        if (centroid_roi.area() == 0) {
+            return candidate;
         }
-      }
-    }
-    
-    // Geometric constraints
-    float dist_from_p1 = cv::norm(candidate - p1_pos);
-    float dist_from_center = cv::norm(candidate - pupil_center);
-    
-    float dist_score = 0;
-    
-    // For P4 near center, relax the constraints
-    if (dist_from_center < pupil_radius * 0.4f) {  // P4 is near center
-      // Just need to be away from P1
-      if (dist_from_p1 > pupil_radius * 0.15f) {  // Very small minimum separation
-        dist_score = 1.0f;
-      }
-    } else {
-      // Original constraints for P4 farther from center
-      if (dist_from_p1 > pupil_radius * p4_min_separation_ratio_ && 
-	  dist_from_p1 < pupil_radius * 0.9f &&
-	  dist_from_center < pupil_radius * 0.7f) {
-        dist_score = 1.0f;
-      }
-    }        
-    return peak_ratio * compactness * dist_score;
-  }
-
-  // Template capture function
-  void captureP4Template(cv::Point click_pos) {
-    if (gray_buffer_.empty()) return;
-    
-    // Get ROI around click
-    int template_size = 7;
-    cv::Rect template_roi(
-			  click_pos.x - template_size/2,
-			  click_pos.y - template_size/2,
-			  template_size,
-			  template_size
-			  );
-    
-    // Adjust for ROI if enabled
-    cv::Mat source = gray_buffer_;
-    if (roi_enabled_) {
-      source = gray_buffer_(current_roi_);
-      template_roi.x -= current_roi_.x;
-      template_roi.y -= current_roi_.y;
-    }
-    
-    // Ensure ROI is within bounds
-    template_roi = template_roi & cv::Rect(0, 0, source.cols, source.rows);
-    
-    if (template_roi.area() > 0) {
-      p4_template_ = source(template_roi).clone();
-      p4_template_center_ = cv::Point2f(template_size/2, template_size/2);
-      use_p4_template_ = true;
-      p4_template_threshold_ = 0.7f;  // Correlation threshold
-      
-      // Normalize template for correlation
-      cv::normalize(p4_template_, p4_template_, 0, 1, cv::NORM_MINMAX, CV_32F);
-      
-      std::cout << "P4 template captured: " << template_roi.width 
-		<< "x" << template_roi.height << std::endl;
-    }
-  }
-  
-  PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil) {
-    PurkinjeData result = {{-1,-1}, {-1,-1}, false, false};
-    
-    debug_bright_spots_.clear();
-    debug_spot_intensities_.clear();
-    
-    if (!pupil.detected) {
-        return result;
-    }
-    
-    cv::Mat roi_frame = roi_enabled_ ? frame(current_roi_) : frame;
-    cv::Mat gray_roi;
-    if (roi_enabled_) {
-        gray_roi = gray_buffer_(current_roi_);
-    } else {
-        gray_roi = gray_buffer_;
-    }
-    
-    if (roi_frame.channels() > 1) {
-        cv::cvtColor(roi_frame, gray_roi, cv::COLOR_BGR2GRAY);
-    } else {
-        roi_frame.copyTo(gray_roi);
-    }
-    
-    // Light Gaussian blur to reduce noise but preserve small spots
-    cv::GaussianBlur(gray_roi, gray_roi, cv::Size(3, 3), 0.5);
-    
-    cv::Point2f pupil_center_local = pupil.center;
-    if (roi_enabled_) {
-        pupil_center_local.x -= current_roi_.x;
-        pupil_center_local.y -= current_roi_.y;
-    }
-    
-    // ===== ROBUST P1 DETECTION =====
-    // Search entire pupil area + small margin
-    float search_radius = pupil.radius * 1.2f;
-    
-    int x1 = std::max(0, (int)(pupil_center_local.x - search_radius));
-    int y1 = std::max(0, (int)(pupil_center_local.y - search_radius));
-    int x2 = std::min(gray_roi.cols, (int)(pupil_center_local.x + search_radius));
-    int y2 = std::min(gray_roi.rows, (int)(pupil_center_local.y + search_radius));
-    
-    if (use_p1_seed_ && p1_seed_roi_.area() > 0) {
-        cv::Rect seed_local = p1_seed_roi_;
-        if (roi_enabled_) {
-            seed_local.x -= current_roi_.x;
-            seed_local.y -= current_roi_.y;
+        
+        cv::Mat p1_glint_roi = gray_roi(search_rect)(centroid_roi);
+        
+        double roi_min_val, roi_max_val;
+        cv::minMaxLoc(p1_glint_roi, &roi_min_val, &roi_max_val);
+        
+        cv::Mat p1_glint_thresh;
+        cv::threshold(p1_glint_roi, p1_glint_thresh, roi_max_val * 0.8, 255, cv::THRESH_BINARY);
+        
+        std::vector<std::vector<cv::Point>> sub_contours;
+        cv::findContours(p1_glint_thresh, sub_contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        
+        cv::Point2f refined_p1 = candidate;
+        
+        if (!sub_contours.empty()) {
+            auto largest_contour = std::max_element(sub_contours.begin(), sub_contours.end(),
+                [](const auto& a, const auto& b) { 
+                    return cv::contourArea(a) < cv::contourArea(b); 
+                });
+            
+            cv::Moments M = cv::moments(*largest_contour);
+            if (M.m00 > 0) {
+                cv::Point2f centroid_in_roi(M.m10 / M.m00, M.m01 / M.m00);
+                refined_p1 = centroid_in_roi + cv::Point2f(centroid_roi.x, centroid_roi.y);
+            }
         }
-        x1 = std::max(0, seed_local.x);
-        y1 = std::max(0, seed_local.y);
-        x2 = std::min(gray_roi.cols, seed_local.x + seed_local.width);
-        y2 = std::min(gray_roi.rows, seed_local.y + seed_local.height);
+        
+        return refined_p1;
     }
+
+    // ========================================================================
+    // P1 MAIN DETECTION
+    // ========================================================================
     
-    cv::Rect p1_search_rect(x1, y1, x2 - x1, y2 - y1);
-    
-    if (p1_search_rect.width > 0 && p1_search_rect.height > 0) {
+    cv::Point2f detectP1(const cv::Mat& gray_roi, 
+                        const cv::Point2f& pupil_center_local,
+                        float pupil_radius) {
+        
+        float search_radius = pupil_radius * 1.2f;
+        
+        cv::Rect p1_search_rect(
+            pupil_center_local.x - search_radius,
+            pupil_center_local.y - search_radius,
+            search_radius * 2,
+            search_radius * 2
+        );
+        
+        p1_search_rect &= cv::Rect(0, 0, gray_roi.cols, gray_roi.rows);
+        
+        if (p1_search_rect.area() == 0) {
+            return cv::Point2f(-1, -1);
+        }
+        
         cv::Mat p1_region = gray_roi(p1_search_rect);
         
-        // Multi-threshold approach to handle both bright and dim spots
-        std::vector<int> thresholds = {220, 200, 180};  // Try progressively lower thresholds
-        cv::Point2f best_p1(-1, -1);
+        std::vector<int> thresholds = {220, 200, 180, 160, 140};
+        cv::Point2f best_candidate(-1, -1);
         float best_score = 0;
         
+        int total_candidates = 0;
+        
         for (int thresh : thresholds) {
+            if (thresh < p1_min_intensity_) continue;
+            
             cv::Mat p1_thresh;
             cv::threshold(p1_region, p1_thresh, thresh, 255, cv::THRESH_BINARY);
             
-            // Find connected components
             std::vector<std::vector<cv::Point>> contours;
             cv::findContours(p1_thresh.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
             
             for (const auto& contour : contours) {
                 float area = cv::contourArea(contour);
-                if (area < 2 || area > 500) continue;  // Allow very small spots
                 
-                // Get centroid
+                if (area < 1 || area > 400) continue;
+                
+                total_candidates++;
+                
                 cv::Moments m = cv::moments(contour);
                 if (m.m00 < 1) continue;
                 
                 cv::Point2f center_rel(m.m10 / m.m00, m.m01 / m.m00);
                 
-                // Calculate weighted center using intensity
-                cv::Rect bbox = cv::boundingRect(contour);
-                bbox = bbox & cv::Rect(0, 0, p1_region.cols, p1_region.rows);
+                float perimeter = cv::arcLength(contour, true);
+                float circularity = 0;
+                if (perimeter > 0) {
+                    circularity = 4 * M_PI * area / (perimeter * perimeter);
+                    circularity = std::max(0.0f, std::min(1.0f, circularity));
+                }
                 
+                float circularity_threshold = (area > 100) ? 0.3f : 0.5f;
+                if (circularity < circularity_threshold) continue;
+                
+                cv::Rect bbox = cv::boundingRect(contour);
+                float compactness = (bbox.width > 0 && bbox.height > 0) ? 
+                                    area / (bbox.width * bbox.height) : 0;
+                
+                bbox &= cv::Rect(0, 0, p1_region.cols, p1_region.rows);
                 if (bbox.area() == 0) continue;
                 
                 cv::Mat spot_region = p1_region(bbox);
                 cv::Mat spot_mask = p1_thresh(bbox);
                 
-                // Get mean and max intensity
-                cv::Scalar mean_int = cv::mean(spot_region, spot_mask);
-                double max_int;
-                cv::minMaxLoc(spot_region, nullptr, &max_int);
+                double max_intensity;
+                cv::minMaxLoc(spot_region, nullptr, &max_intensity, nullptr, nullptr, spot_mask);
                 
-                // Refine center using intensity-weighted centroid
-                cv::Mat spot_float;
-                spot_region.convertTo(spot_float, CV_32F);
-                spot_float.setTo(0, spot_mask == 0);
+                cv::Scalar mean_intensity = cv::mean(spot_region, spot_mask);
                 
-                // Subtract background to enhance peak
-                spot_float = spot_float - (float)(thresh - 20);
-                cv::threshold(spot_float, spot_float, 0, 255, cv::THRESH_TOZERO);
+                double effective_intensity = (max_intensity >= 254) ? 
+                                            mean_intensity[0] * 1.2 : max_intensity;
                 
-                cv::Moments m_weighted = cv::moments(spot_float, false);
-                cv::Point2f refined_center = center_rel;
-                
-                if (m_weighted.m00 > 1) {
-                    refined_center.x = bbox.x + m_weighted.m10 / m_weighted.m00;
-                    refined_center.y = bbox.y + m_weighted.m01 / m_weighted.m00;
-                }
-                
-                // Score based on: brightness, compactness, circularity
-                float circularity = 4.0 * M_PI * area / (cv::arcLength(contour, true) * cv::arcLength(contour, true));
-                circularity = std::max(0.0f, std::min(1.0f, circularity));
-                
-                float compactness = area / (bbox.width * bbox.height);
-                
-                float score = max_int * circularity * compactness;
-                
-                // Prefer spots in lower region if IR is from below (bonus for lower position)
-                cv::Point2f spot_global(p1_search_rect.x + refined_center.x,
-                                        p1_search_rect.y + refined_center.y);
+                cv::Point2f spot_global = center_rel + cv::Point2f(p1_search_rect.x, p1_search_rect.y);
                 float vertical_bias = (spot_global.y > pupil_center_local.y) ? 1.2f : 1.0f;
-                score *= vertical_bias;
+                
+                float size_penalty = (area > 150) ? 0.8f : 1.0f;
+                
+                float score = effective_intensity * circularity * compactness * 
+                             vertical_bias * size_penalty;
                 
                 if (score > best_score) {
                     best_score = score;
-                    best_p1 = refined_center;
-                    
-                    // Store debug info
-                    debug_bright_spots_.clear();
-                    debug_spot_intensities_.clear();
-                    debug_bright_spots_.push_back(cv::Point2f(p1_search_rect.x + refined_center.x,
-                                                               p1_search_rect.y + refined_center.y));
-                    debug_spot_intensities_.push_back((int)max_int);
+                    best_candidate = center_rel;
                 }
             }
             
-            // If we found a good candidate at high threshold, don't try lower ones
-            if (best_score > 0 && thresh > 200) break;
+            if (best_score > 0 && thresh > 180) break;
         }
         
-        if (best_p1.x > 0) {
-            cv::Point2f p1_local(p1_search_rect.x + best_p1.x,
-                                 p1_search_rect.y + best_p1.y);
-            
+        static int frame_counter = 0;
+        if (++frame_counter % 100 == 0) {
+            std::cout << "P1 search: " << total_candidates << " candidates, "
+                      << "best_score=" << best_score << std::endl;
+        }
+        
+        if (best_candidate.x < 0) {
+            return cv::Point2f(-1, -1);
+        }
+        
+        cv::Point2f refined = refineP1SubPixel(gray_roi, p1_search_rect, best_candidate);
+        
+        cv::Point2f p1_local(
+            p1_search_rect.x + refined.x,
+            p1_search_rect.y + refined.y
+        );
+        
+        float dist = cv::norm(p1_local - pupil_center_local);
+        if (dist > pupil_radius * 1.5f) {
+            if (frame_counter % 100 == 0) {
+                std::cout << "P1 rejected: dist=" << dist 
+                          << " > " << (pupil_radius * 1.5f) << std::endl;
+            }
+            return cv::Point2f(-1, -1);
+        }
+        
+        return p1_local;
+    }
+
+    // ========================================================================
+    // Capture P4 TEMPLATE
+    // ========================================================================
+    
+	void captureP4Template(cv::Point click_pos) {
+		if (gray_buffer_.empty()) return;
+		
+		int template_size = 9;  // Slightly larger for P4
+		cv::Rect template_roi(
+			click_pos.x - template_size / 2,
+			click_pos.y - template_size / 2,
+			template_size,
+			template_size
+		);
+		
+		// Adjust for ROI if enabled
+		cv::Mat source = gray_buffer_;
+		if (roi_enabled_) {
+			source = gray_buffer_(current_roi_);
+			template_roi.x -= current_roi_.x;
+			template_roi.y -= current_roi_.y;
+		}
+		
+		// Clip to bounds
+		template_roi &= cv::Rect(0, 0, source.cols, source.rows);
+		
+		if (template_roi.area() > 0) {
+			p4_template_ = source(template_roi).clone();
+			
+			// Normalize template for robust matching
+			cv::normalize(p4_template_, p4_template_, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+			
+			use_p4_template_ = true;
+			
+			std::cout << "P4 template captured at (" << click_pos.x << "," 
+					  << click_pos.y << "), size: " << template_size << "x" 
+					  << template_size << std::endl;
+		}
+	}
+    // ========================================================================
+    // P4 DETECTION (PLACEHOLDER)
+    // ========================================================================
+    
+	cv::Point2f findP4ByTemplate(const cv::Mat& search_region,
+								 const cv::Mat& search_mask) {
+		if (!use_p4_template_ || p4_template_.empty()) {
+			return cv::Point2f(-1, -1);
+		}
+		
+		// Apply mask to search region
+		cv::Mat masked_region;
+		search_region.copyTo(masked_region, search_mask);
+		
+		// Enhance contrast in search region
+		cv::Mat normalized;
+		cv::normalize(masked_region, normalized, 0, 255, 
+					  cv::NORM_MINMAX, CV_8UC1, search_mask);
+		
+		// Template matching with normalized cross-correlation
+		cv::Mat match_result;
+		cv::matchTemplate(normalized, p4_template_, match_result, cv::TM_CCOEFF_NORMED);
+		
+		// Find best match
+		double min_val, max_val;
+		cv::Point min_loc, max_loc;
+		cv::minMaxLoc(match_result, &min_val, &max_val, &min_loc, &max_loc);
+		
+		static int debug_counter = 0;
+		if (++debug_counter % 100 == 0) {
+			std::cout << "P4 template match: score=" << max_val 
+					  << " threshold=" << p4_template_threshold_ << std::endl;
+		}
+		
+		if (max_val < p4_template_threshold_) {
+			return cv::Point2f(-1, -1);
+		}
+		
+		// Return center of match
+		cv::Point2f match_center(
+			max_loc.x + p4_template_.cols / 2.0f,
+			max_loc.y + p4_template_.rows / 2.0f
+		);
+		
+		return match_center;
+	}
+	
+	cv::Point2f detectP4(const cv::Mat& gray_roi,
+						const cv::Point2f& pupil_center_local,
+						const cv::Point2f& p1_local,
+						float pupil_radius) {
+		
+		// ===== STEP 1: CREATE SEARCH MASK =====
+		cv::Mat search_mask = cv::Mat::zeros(gray_roi.size(), CV_8UC1);
+		cv::Point2f predicted_p4_local(-1, -1);
+		
+		if (p4_model_.isInitialized()) {
+			// MODEL-GUIDED SEARCH
+			predicted_p4_local = p4_model_.predict(pupil_center_local, p1_local);
+			
+			if (predicted_p4_local.x > 0) {
+				// Create small search ROI around prediction
+				cv::Rect predictive_roi(
+					predicted_p4_local.x - p4_search_roi_size_.width / 2,
+					predicted_p4_local.y - p4_search_roi_size_.height / 2,
+					p4_search_roi_size_.width,
+					p4_search_roi_size_.height
+				);
+				
+				// Clip to image bounds
+				predictive_roi &= cv::Rect(0, 0, gray_roi.cols, gray_roi.rows);
+				
+				if (predictive_roi.area() > 0) {
+					search_mask(predictive_roi) = 255;
+					
+					static int debug_counter = 0;
+					if (++debug_counter % 100 == 0) {
+						std::cout << "P4 model prediction: (" << predicted_p4_local.x 
+								  << "," << predicted_p4_local.y << ")" << std::endl;
+					}
+				}
+			}
+		} else {
+			// WIDE-AREA SEARCH (model not yet initialized)
+			float search_radius = pupil_radius * 0.85f;
+			cv::circle(search_mask, pupil_center_local, search_radius, 255, -1);
+			
+			static int debug_counter = 0;
+			if (++debug_counter % 100 == 0) {
+				std::cout << "P4 wide-area search (model not initialized)" << std::endl;
+			}
+		}
+		
+		// Always exclude P1 region to avoid false detections
+		float p1_exclusion_radius = pupil_radius * 0.3f;
+		cv::circle(search_mask, p1_local, p1_exclusion_radius, 0, -1);
+		
+		// ===== STEP 2: TEMPLATE MATCHING =====
+		cv::Point2f p4_candidate = findP4ByTemplate(gray_roi, search_mask);
+		
+		if (p4_candidate.x < 0) {
+			return cv::Point2f(-1, -1);
+		}
+		
+		// ===== STEP 3: VALIDATE PREDICTION ERROR =====
+		if (p4_model_.isInitialized() && predicted_p4_local.x > 0) {
+			float prediction_error = cv::norm(p4_candidate - predicted_p4_local);
+			
+			if (prediction_error > p4_max_prediction_error_) {
+				static int debug_counter = 0;
+				if (++debug_counter % 50 == 0) {
+					std::cout << "P4 rejected: prediction_error=" << prediction_error 
+							 << " > " << p4_max_prediction_error_ << std::endl;
+				}
+				return cv::Point2f(-1, -1);
+			}
+		}
+		
+		return p4_candidate;
+	}
+
+
+    // ========================================================================
+    // MAIN PURKINJE COORDINATOR
+    // ========================================================================
+    
+  	PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil) {
+        PurkinjeData result = {{-1, -1}, {-1, -1}, false, false};
+        
+        if (!pupil.detected || pupil.radius <= 0) {
+            return result;
+        }
+        
+        cv::Mat roi_frame = roi_enabled_ ? frame(current_roi_) : frame;
+        cv::Mat gray_roi = roi_enabled_ ? gray_buffer_(current_roi_) : gray_buffer_;
+        
+        if (roi_frame.channels() > 1) {
+            cv::cvtColor(roi_frame, gray_roi, cv::COLOR_BGR2GRAY);
+        } else {
+            roi_frame.copyTo(gray_roi);
+        }
+        
+        cv::GaussianBlur(gray_roi, gray_roi, cv::Size(3, 3), 0.5);
+        
+        cv::Point2f pupil_center_local = pupil.center;
+        if (roi_enabled_) {
+            pupil_center_local.x -= current_roi_.x;
+            pupil_center_local.y -= current_roi_.y;
+        }
+        
+        // ===== P1 DETECTION =====
+        cv::Point2f p1_local = detectP1(gray_roi, pupil_center_local, pupil.radius);
+        
+        // Track P1 loss - if lost for multiple frames, treat as blink
+        static int p1_loss_counter = 0;
+        static int p1_recovery_countdown = 0;
+        const int P1_LOSS_THRESHOLD = 5;
+        const int P1_RECOVERY_FRAMES = 5;
+        
+        static int diag_counter = 0;
+        bool should_print = (++diag_counter % 50 == 0) || 
+                           (p1_local.x < 0) || 
+                           blink_detector_.isInBlink() || 
+                           blink_detector_.isRecovering();
+        
+        if (should_print) {
+            std::cout << "P1 diagnostics:" << std::endl;
+            std::cout << "  detectP1 returned: (" << p1_local.x << "," << p1_local.y << ")" << std::endl;
+            std::cout << "  Pupil detected: " << pupil.detected << std::endl;
+            std::cout << "  In blink: " << blink_detector_.isInBlink() << std::endl;
+            std::cout << "  In blink recovery: " << blink_detector_.isRecovering() << std::endl;
+            std::cout << "  P1 recovery countdown: " << p1_recovery_countdown << std::endl;
+        }
+        
+        if (p1_local.x < 0) {
+            p1_loss_counter++;
+            if (p1_loss_counter == P1_LOSS_THRESHOLD) {
+                p1_validator_.reset();
+                p1_recovery_countdown = P1_RECOVERY_FRAMES;
+                std::cout << "P1 lost for " << P1_LOSS_THRESHOLD 
+                         << " frames - resetting validator and starting recovery" << std::endl;
+            }
+        } else {
+            p1_loss_counter = 0;
+            if (p1_recovery_countdown > 0) {
+                p1_recovery_countdown--;
+            }
+        }
+        
+        if (p1_local.x > 0) {
             cv::Point2f p1_full = p1_local;
             if (roi_enabled_) {
                 p1_full.x += current_roi_.x;
                 p1_full.y += current_roi_.y;
             }
             
-            // Validate distance from pupil center (allow very close for small CRs)
-	    float dist = cv::norm(p1_local - pupil_center_local);
-	    if (dist < pupil.radius * p1_max_distance_ratio_) {
-	      if (purkinje_validator_.isValidP1(p1_full, max_p1_jump_)) {
-		result.p1_center = p1_full;
-		result.p1_detected = true;
-		purkinje_validator_.updateP1(p1_full);
-	      } else {
-		std::cout << "P1 rejected by validator: jump too large" << std::endl;
-	      }
-	    } else {
-	      std::cout << "P1 rejected: dist=" << dist << " > " << (pupil.radius * p1_max_distance_ratio_) << std::endl;
-	    }
-        } else {
-	  std::cout << "No P1 candidate found in search region" << std::endl;
+            bool is_valid = blink_detector_.isRecovering() || 
+                           p1_recovery_countdown > 0 ||
+                           p1_validator_.isValid(p1_full);
+            
+            if (is_valid) {
+                result.p1_detected = true;
+                result.p1_center = p1_full;
+                
+                // Only update validator if NOT in blink or recovery
+                if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() && p1_recovery_countdown == 0) {
+                    p1_validator_.update(p1_full);
+                }
+            } else {
+                static int frame_counter = 0;
+                if (++frame_counter % 100 == 0) {
+                    std::cout << "P1 rejected by validator (temporal jump too large)" << std::endl;
+                }
+            }
         }
+        
+        // ===== P4 DETECTION =====
+		if (result.p1_detected) {
+			cv::Point2f p4_local = detectP4(gray_roi, pupil_center_local, p1_local, pupil.radius);
+			
+			if (p4_local.x > 0) {
+				// Convert back to full frame coordinates
+				cv::Point2f p4_full = p4_local;
+				if (roi_enabled_) {
+					p4_full.x += current_roi_.x;
+					p4_full.y += current_roi_.y;
+				}
+				
+				// Validate with temporal consistency check
+				bool is_valid = blink_detector_.isRecovering() || 
+							   p4_validator_.isValid(p4_full, pupil.center);
+				
+				if (is_valid) {
+					result.p4_detected = true;
+					result.p4_center = p4_full;
+					
+					// Only update validator if NOT in blink or recovery
+					if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering()) {
+						p4_validator_.update(p4_full, pupil.center);
+						
+						// ===== MODEL LEARNING =====
+						if (!p4_model_.isInitialized()) {
+							// Auto-calibration mode: collect samples
+							p4_model_.addCalibrationSample(pupil.center, result.p1_center, p4_full);
+							
+							int sample_count = p4_model_.getCalibrationSampleCount();
+							if (sample_count >= p4_model_.getTargetSamples()) {
+								if (p4_model_.calibrateFromSamples()) {
+									std::cout << "✓ P4 model auto-calibrated with " 
+											 << sample_count << " samples!" << std::endl;
+									std::cout << "  Magnitude ratio: " << p4_model_.getMagnitudeRatio() 
+											 << ", Angle offset: " 
+											 << (p4_model_.getAngleOffset() * 180.0 / M_PI) 
+											 << "°" << std::endl;
+								}
+							} else if (sample_count % 10 == 0) {
+								std::cout << "Collecting calibration samples: " 
+										 << sample_count << "/" << p4_model_.getTargetSamples() 
+										 << std::endl;
+							}
+						} else if (!p4_model_.isFrozen()) {
+							// Incremental learning: update model with new observation
+							p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
+						}
+					}
+				}
+			}
+		}        
+        return result;
     }
-    
-    // ===== P4 DETECTION =====
-    if (result.p1_detected) {
-      cv::Mat p4_search = gray_roi.clone();
-      
-      cv::Point2f p1_local = result.p1_center;
-      if (roi_enabled_) {
-        p1_local.x -= current_roi_.x;
-        p1_local.y -= current_roi_.y;
-      }
-      
-      // Block out P1 region
-      float p1_block_radius = pupil.radius * 0.3f;
-      cv::circle(p4_search, p1_local, p1_block_radius, 0, -1);
-      
-      // Create search mask
-      cv::Mat p4_mask = cv::Mat::zeros(gray_roi.size(), CV_8UC1);
-      float search_radius = pupil.radius * p4_search_radius_ratio_;
-      cv::circle(p4_mask, pupil_center_local, search_radius, 255, -1);
-      cv::circle(p4_mask, p1_local, p1_block_radius, 0, -1);
-      
-      // Apply mask and normalize
-      cv::Mat p4_enhanced;
-      p4_search.copyTo(p4_enhanced, p4_mask);
-      cv::normalize(p4_enhanced, p4_enhanced, 0, 255,
-		    cv::NORM_MINMAX, CV_8UC1, p4_mask);
-      
-      // Collect ALL candidates with scoring function
-      std::vector<std::pair<float, cv::Point2f>> p4_candidates;
 
-      if (use_p4_template_ && !p4_template_.empty()) {
-        // Convert search region to float
-        cv::Mat search_float;
-        p4_enhanced.convertTo(search_float, CV_32F, 1.0/255.0);
-        
-        // Template matching
-        cv::Mat correlation;
-        cv::matchTemplate(search_float, p4_template_, correlation, cv::TM_CCORR_NORMED);
-        
-        // Find peaks in correlation
-        double min_val, max_val;
-        cv::Point min_loc, max_loc;
-        cv::minMaxLoc(correlation, &min_val, &max_val, &min_loc, &max_loc);
-        
-        if (max_val > p4_template_threshold_) {
-	  // Convert to full coordinates
-	  cv::Point2f template_match(
-				     max_loc.x + p4_template_.cols/2,
-				     max_loc.y + p4_template_.rows/2
-				     );
-	  
-	  // Verify it's in valid P4 region
-	  float dist_from_p1 = cv::norm(template_match - p1_local);
-	  float dist_from_center = cv::norm(template_match - pupil_center_local);
-          
-	  if (dist_from_p1 > pupil.radius * 0.15f && 
-	      dist_from_center < pupil.radius * 0.7f) {
-	    
-	    // High score for template match
-	    float template_score = 3.0f * max_val;  // Boost template matches
-	    p4_candidates.push_back({template_score, template_match});
-            
-	    if (frame_count_ % 100 == 0) {
-	      std::cout << "P4 template match: correlation=" << max_val 
-			<< " at " << template_match << std::endl;
-	    }
-	  }
-        }
-        
-        // Also look for secondary peaks
-        cv::Mat mask = cv::Mat::zeros(correlation.size(), CV_8UC1);
-        cv::circle(mask, max_loc, 5, 255, -1);  // Mask out primary peak
-        correlation.setTo(0, mask);
-        
-        cv::minMaxLoc(correlation, &min_val, &max_val, &min_loc, &max_loc);
-        if (max_val > p4_template_threshold_ * 0.9f) {
-	  cv::Point2f secondary(
-				max_loc.x + p4_template_.cols/2,
-				max_loc.y + p4_template_.rows/2
-				);
-	  p4_candidates.push_back({2.5f * max_val, secondary});
-        }
-      }
-      
-      // Multi-threshold approach
-      std::vector<int> thresholds;
-      for (int t = 240; t >= p4_min_brightness_; t -= 20) {
-        thresholds.push_back(t);
-      }
-      
-      for (int thresh : thresholds) {
-        cv::Mat p4_binary;
-        cv::threshold(p4_enhanced, p4_binary, thresh, 255, cv::THRESH_BINARY);
-        p4_binary = p4_binary & p4_mask;
-        
-        std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(p4_binary.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-        
-        for (const auto& contour : contours) {
-	  float area = cv::contourArea(contour);
-	  if (area < p4_min_area_ || area > p4_max_area_) continue;
-          
-	  cv::Moments m = cv::moments(contour);
-	  if (m.m00 < 1) continue;
-          
-	  cv::Point2f candidate(m.m10 / m.m00, m.m01 / m.m00);
-          
-	  float score = scoreP4Candidate(candidate, gray_roi, p1_local, 
-					 pupil_center_local, pupil.radius);
-	  
-	  if (score > 0.1f) {  // LOWERED from 0.3f for better detection
-	    // Check if we already have a candidate near this position
-	    bool duplicate = false;
-	    for (auto& candidate_pair : p4_candidates) {
-	      float& existing_score = candidate_pair.first;
-	      cv::Point2f& existing_pos = candidate_pair.second;
-	      if (cv::norm(candidate - existing_pos) < 5.0f) {
-		if (score > existing_score) {
-		  existing_score = score;
-		}
-		duplicate = true;
-		break;
-	      }
-	    }
-            
-	    if (!duplicate) {
-	      p4_candidates.push_back({score, candidate});
-	    }
-	  }
-        }
-      }
-      
-      // Sort candidates by score
-      std::sort(p4_candidates.begin(), p4_candidates.end(),
-		[](const auto& a, const auto& b) { return a.first > b.first; });
-      
-      // Store for debugging/analysis
-      last_p4_candidates_ = p4_candidates;
-      
-      // Try to find valid P4 from candidates
-      bool found_valid_p4 = false;
-      cv::Point2f pupil_global = pupil.center;
-      
-      for (const auto& candidate_pair : p4_candidates) {
-        float score = candidate_pair.first;
-        cv::Point2f candidate = candidate_pair.second;
-        cv::Point2f p4_full = candidate;
-        if (roi_enabled_) {
-	  p4_full.x += current_roi_.x;
-	  p4_full.y += current_roi_.y;
-        }
-        
-        if (purkinje_validator_.isValidP4(p4_full, pupil_global, max_p4_jump_)) {
-	  result.p4_center = p4_full;
-	  result.p4_detected = true;
-	  purkinje_validator_.updateP4(p4_full, pupil_global);
-	  p4_last_stable_ = p4_full;  // Update stable position
-	  p4_loss_counter_ = 0;       // Reset loss counter
-	  found_valid_p4 = true;
-          
-	  if (frame_count_ % 100 == 0) {
-	    std::cout << "P4 selected with score: " << score 
-		      << " from " << p4_candidates.size() << " candidates" << std::endl;
-	  }
-	  break;
-        }
-      }
-      
-      // Hysteresis: If no valid candidate but recently had P4, maintain position
-      if (!found_valid_p4) {
-        if (p4_loss_counter_ < p4_loss_tolerance_ && purkinje_validator_.p4_initialized) {
-	  // Use last stable position
-	  result.p4_center = p4_last_stable_;
-	  result.p4_detected = true;
-	  p4_loss_counter_++;
-	  
-	  if (frame_count_ % 50 == 0) {
-	    std::cout << "P4 maintained from history (loss count: " 
-		      << p4_loss_counter_ << "/" << p4_loss_tolerance_ << ")" << std::endl;
-	  }
-        } else {
-	  // Really lost P4
-	  result.p4_detected = false;
-          
-	  if (!p4_candidates.empty() && frame_count_ % 100 == 0) {
-	    std::cout << "P4 candidates found but rejected. Best score: " 
-		      << p4_candidates[0].first << std::endl;
-	  }
-        }
-      }
-    }
+
+    // ========================================================================
+    // ANALYSIS THREAD
+    // ========================================================================
     
-    return result;
-  }
-  
-  void analysisThreadFunc() {
-    std::cout << "Eye tracking analysis thread started" << std::endl;
-    
-    while (running_) {
-      try {
+    void analysisThreadFunc() {
+        std::cout << "Eye tracking analysis thread started" << std::endl;
+        
+        while (running_) {
+            try {
                 FrameData frame_data = frame_queue_.front();
                 frame_queue_.pop_front();
 
-                // Check for shutdown sentinel
                 if (frame_data.frame_idx < 0) {
                     break;
                 }
@@ -796,15 +970,21 @@ private:
                     continue;
                 }
                 
-                // Ensure buffers are allocated before first use
                 ensureBuffersAllocated(frame_data.frame);
                 
                 auto start = std::chrono::high_resolution_clock::now();
                 
-                // Detect pupil first
                 PupilData pupil = detectPupil(frame_data.frame);
                 
-                // Use pupil location to constrain Purkinje search
+                bool was_in_blink = blink_detector_.isInBlink();
+                
+                blink_detector_.update(pupil.detected, pupil.radius);
+                
+                if (blink_detector_.shouldResetValidators()) {
+                    p1_validator_.reset();
+                    p4_validator_.reset();                
+                }
+                
                 PurkinjeData purkinje = detectPurkinje(frame_data.frame, pupil);
                 
                 {
@@ -812,8 +992,12 @@ private:
                     latest_results_.frame_idx = frame_data.frame_idx;
                     latest_results_.pupil = pupil;
                     latest_results_.purkinje = purkinje;
+                    latest_results_.in_blink = blink_detector_.isInBlink();
                     latest_results_.valid = true;
                 }
+                
+                // Decrement recovery AFTER storing results
+                blink_detector_.decrementRecovery();
                 
                 auto end = std::chrono::high_resolution_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
@@ -826,35 +1010,60 @@ private:
                         std::cout << "Pupil: (" << pupil.center.x << "," << pupil.center.y 
                                   << ") r=" << pupil.radius << std::endl;
                     }
+                    if (blink_detector_.isInBlink()) {
+                        std::cout << "Blink detected" << std::endl;
+                    }
                 }
             } catch (...) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         }
     }
+
+    // ========================================================================
+    // TCL COMMANDS
+    // ========================================================================
     
-    // Tcl command callbacks
     static int setPupilThresholdCmd(ClientData clientData, Tcl_Interp *interp,
                                     int objc, Tcl_Obj *const objv[]) {
-        if (objc != 2) {
-            Tcl_WrongNumArgs(interp, 1, objv, "threshold");
-            return TCL_ERROR;
-        }
-        
-        int threshold;
-        if (Tcl_GetIntFromObj(interp, objv[1], &threshold) != TCL_OK) {
-            return TCL_ERROR;
-        }
-        
         EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-        plugin->pupil_threshold_ = threshold;
+        
+        if (objc > 2) {
+            Tcl_WrongNumArgs(interp, 1, objv, "?threshold?");
+            return TCL_ERROR;
+        }
+        
+        int last_threshold = plugin->pupil_threshold_;
+        
+        if (objc > 1) {
+            int threshold;
+            if (Tcl_GetIntFromObj(interp, objv[1], &threshold) != TCL_OK) {
+                return TCL_ERROR;
+            }
+            plugin->pupil_threshold_ = threshold;
+        }
+        
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(last_threshold));
         return TCL_OK;
     }
     
     static int setROICmd(ClientData clientData, Tcl_Interp *interp,
-                        int objc, Tcl_Obj *const objv[]) {
+                         int objc, Tcl_Obj *const objv[]) {
+        EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+        
+        if (objc == 1) {
+            const cv::Rect& roi = plugin->current_roi_;
+            Tcl_Obj* resultList = Tcl_NewListObj(0, nullptr);
+            Tcl_ListObjAppendElement(interp, resultList, Tcl_NewIntObj(roi.x));
+            Tcl_ListObjAppendElement(interp, resultList, Tcl_NewIntObj(roi.y));
+            Tcl_ListObjAppendElement(interp, resultList, Tcl_NewIntObj(roi.width));
+            Tcl_ListObjAppendElement(interp, resultList, Tcl_NewIntObj(roi.height));
+            Tcl_SetObjResult(interp, resultList);
+            return TCL_OK;
+        }
+        
         if (objc != 5) {
-            Tcl_WrongNumArgs(interp, 1, objv, "x y width height");
+            Tcl_WrongNumArgs(interp, 1, objv, "?x y width height?");
             return TCL_ERROR;
         }
         
@@ -866,7 +1075,6 @@ private:
             return TCL_ERROR;
         }
         
-        EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
         plugin->current_roi_ = cv::Rect(x, y, width, height);
         plugin->roi_enabled_ = true;
         return TCL_OK;
@@ -878,160 +1086,117 @@ private:
         plugin->roi_enabled_ = false;
         return TCL_OK;
     }
+    
+    static int captureP4TemplateCmd(ClientData clientData, Tcl_Interp *interp,
+                                int objc, Tcl_Obj *const objv[]) {
+		if (objc != 3) {
+			Tcl_WrongNumArgs(interp, 1, objv, "x y");
+			return TCL_ERROR;
+		}
+		
+		int x, y;
+		if (Tcl_GetIntFromObj(interp, objv[1], &x) != TCL_OK ||
+			Tcl_GetIntFromObj(interp, objv[2], &y) != TCL_OK) {
+			return TCL_ERROR;
+		}
+		
+		EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+		plugin->captureP4Template(cv::Point(x, y));
+		
+		Tcl_SetObjResult(interp, Tcl_NewStringObj("P4 template captured", -1));
+		return TCL_OK;
+	}
 
-  static int setP1SeedROICmd(ClientData clientData, Tcl_Interp *interp,
-			     int objc, Tcl_Obj *const objv[]) {
-    if (objc != 5) {
-      Tcl_WrongNumArgs(interp, 1, objv, "center_x center_y width height");
-      return TCL_ERROR;
-    }
+	static int freezeP4ModelCmd(ClientData clientData, Tcl_Interp *interp,
+								int objc, Tcl_Obj *const objv[]) {
+		if (objc != 2) {
+			Tcl_WrongNumArgs(interp, 1, objv, "0|1");
+			return TCL_ERROR;
+		}
+		
+		int freeze_flag;
+		if (Tcl_GetIntFromObj(interp, objv[1], &freeze_flag) != TCL_OK) {
+			return TCL_ERROR;
+		}
+		
+		EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+		if (freeze_flag) {
+			plugin->p4_model_.freeze();
+		} else {
+			plugin->p4_model_.unfreeze();
+		}
+		
+		Tcl_SetObjResult(interp, Tcl_NewStringObj(
+			plugin->p4_model_.isFrozen() ? "P4 model frozen" : "P4 model unfrozen", -1));
+		return TCL_OK;
+	}
+	
+	static int resetP4ModelCmd(ClientData clientData, Tcl_Interp *interp,
+							   int objc, Tcl_Obj *const objv[]) {
+		EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+		plugin->p4_model_.reset();
+		plugin->p4_validator_.reset();
+		Tcl_SetObjResult(interp, Tcl_NewStringObj("P4 model and validator reset", -1));
+		return TCL_OK;
+	}
+	
+	static int getP4ModelStatusCmd(ClientData clientData, Tcl_Interp *interp,
+								   int objc, Tcl_Obj *const objv[]) {
+		EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+		
+		Tcl_Obj* statusDict = Tcl_NewDictObj();
+		
+		Tcl_DictObjPut(interp, statusDict, Tcl_NewStringObj("initialized", -1),
+					  Tcl_NewBooleanObj(plugin->p4_model_.isInitialized()));
+		Tcl_DictObjPut(interp, statusDict, Tcl_NewStringObj("frozen", -1),
+					  Tcl_NewBooleanObj(plugin->p4_model_.isFrozen()));
+		Tcl_DictObjPut(interp, statusDict, Tcl_NewStringObj("samples", -1),
+					  Tcl_NewIntObj(plugin->p4_model_.getCalibrationSampleCount()));
+		
+		if (plugin->p4_model_.isInitialized()) {
+			Tcl_DictObjPut(interp, statusDict, Tcl_NewStringObj("magnitude_ratio", -1),
+						  Tcl_NewDoubleObj(plugin->p4_model_.getMagnitudeRatio()));
+			Tcl_DictObjPut(interp, statusDict, Tcl_NewStringObj("angle_offset_deg", -1),
+						  Tcl_NewDoubleObj(plugin->p4_model_.getAngleOffset() * 180.0 / M_PI));
+		}
+		
+		Tcl_SetObjResult(interp, statusDict);
+		return TCL_OK;
+	}
     
-    int cx, cy, w, h;
-    if (Tcl_GetIntFromObj(interp, objv[1], &cx) != TCL_OK ||
-        Tcl_GetIntFromObj(interp, objv[2], &cy) != TCL_OK ||
-        Tcl_GetIntFromObj(interp, objv[3], &w) != TCL_OK ||
-        Tcl_GetIntFromObj(interp, objv[4], &h) != TCL_OK) {
-      return TCL_ERROR;
-    }
-    
-    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-    plugin->p1_seed_roi_ = cv::Rect(cx - w/2, cy - h/2, w, h);
-    plugin->use_p1_seed_ = true;
-    return TCL_OK;
-  }
+    static int setP4TemplateThresholdCmd(ClientData clientData, Tcl_Interp *interp,
+                                     int objc, Tcl_Obj *const objv[]) {
+		if (objc != 2) {
+			Tcl_WrongNumArgs(interp, 1, objv, "threshold");
+			return TCL_ERROR;
+		}
+		
+		double threshold;
+		if (Tcl_GetDoubleFromObj(interp, objv[1], &threshold) != TCL_OK) {
+			return TCL_ERROR;
+		}
+		
+		EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+		plugin->p4_template_threshold_ = (float)threshold;
+		
+		Tcl_SetObjResult(interp, Tcl_NewStringObj("P4 template threshold updated", -1));
+		return TCL_OK;
+	}
+	
+	static int clearP4TemplateCmd(ClientData clientData, Tcl_Interp *interp,
+                              int objc, Tcl_Obj *const objv[]) {
+		EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+		
+		plugin->p4_template_.release();  // Free the template
+		plugin->use_p4_template_ = false;
+		
+		std::cout << "P4 template cleared" << std::endl;
+		
+		Tcl_SetObjResult(interp, Tcl_NewStringObj("P4 template cleared", -1));
+		return TCL_OK;
+	}
 
-  static int setValidatorThresholdsCmd(ClientData clientData, Tcl_Interp *interp,
-				       int objc, Tcl_Obj *const objv[]) {
-    if (objc != 3) {
-      Tcl_WrongNumArgs(interp, 1, objv, "max_p1_jump max_p4_jump");
-      return TCL_ERROR;
-    }
-    
-    double p1_jump, p4_jump;
-    if (Tcl_GetDoubleFromObj(interp, objv[1], &p1_jump) != TCL_OK ||
-        Tcl_GetDoubleFromObj(interp, objv[2], &p4_jump) != TCL_OK) {
-      return TCL_ERROR;
-    }
-    
-    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-    plugin->max_p1_jump_ = (float)p1_jump;
-    plugin->max_p4_jump_ = (float)p4_jump;
-    
-    std::cout << "Validator thresholds updated: P1=" << p1_jump 
-              << " P4=" << p4_jump << std::endl;
-    
-    Tcl_SetObjResult(interp, Tcl_NewStringObj("Validator thresholds updated", -1));
-    return TCL_OK;
-  }
-
-  static int resetValidatorCmd(ClientData clientData, Tcl_Interp *interp,
-			       int objc, Tcl_Obj *const objv[]) {
-    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-    plugin->purkinje_validator_.reset();
-    std::cout << "Purkinje validator reset" << std::endl;
-    return TCL_OK;
-  }
-
-  static int setP1MaxDistanceCmd(ClientData clientData, Tcl_Interp *interp,
-				 int objc, Tcl_Obj *const objv[]) {
-    if (objc != 2) {
-      Tcl_WrongNumArgs(interp, 1, objv, "distance_ratio");
-      return TCL_ERROR;
-    }
-    
-    double ratio;
-    if (Tcl_GetDoubleFromObj(interp, objv[1], &ratio) != TCL_OK) {
-      return TCL_ERROR;
-    }
-    
-    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-    plugin->p1_max_distance_ratio_ = (float)ratio;
-    
-    std::cout << "P1 max distance ratio updated: " << ratio << std::endl;
-    
-    Tcl_SetObjResult(interp, Tcl_NewStringObj("P1 max distance updated", -1));
-    return TCL_OK;
-  }
-
-  static int setP4TemplateCmd(ClientData clientData, Tcl_Interp *interp,
-			      int objc, Tcl_Obj *const objv[]) {
-    if (objc != 3) {
-      Tcl_WrongNumArgs(interp, 1, objv, "x y");
-      return TCL_ERROR;
-    }
-    
-    int x, y;
-    if (Tcl_GetIntFromObj(interp, objv[1], &x) != TCL_OK ||
-        Tcl_GetIntFromObj(interp, objv[2], &y) != TCL_OK) {
-      return TCL_ERROR;
-    }
-    
-    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-    
-    // Capture template from current frame around clicked point
-    plugin->captureP4Template(cv::Point(x, y));
-    
-    std::cout << "P4 template captured at: " << x << "," << y << std::endl;
-    return TCL_OK;
-  }
-
-
-  
-  static int setP4DetectionParamsCmd(ClientData clientData, Tcl_Interp *interp,
-				     int objc, Tcl_Obj *const objv[]) {
-    if (objc != 5) {
-      Tcl_WrongNumArgs(interp, 1, objv, "search_radius min_separation min_brightness angular_bonus");
-      return TCL_ERROR;
-    }
-    
-    double search_radius, min_sep, angular;
-    int min_bright;
-    
-    if (Tcl_GetDoubleFromObj(interp, objv[1], &search_radius) != TCL_OK ||
-        Tcl_GetDoubleFromObj(interp, objv[2], &min_sep) != TCL_OK ||
-        Tcl_GetIntFromObj(interp, objv[3], &min_bright) != TCL_OK ||
-        Tcl_GetDoubleFromObj(interp, objv[4], &angular) != TCL_OK) {
-      return TCL_ERROR;
-    }
-    
-    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-    plugin->p4_search_radius_ratio_ = (float)search_radius;
-    plugin->p4_min_separation_ratio_ = (float)min_sep;
-    plugin->p4_min_brightness_ = min_bright;
-    plugin->p4_angular_bonus_ = (float)angular;
-    
-    std::cout << "P4 detection params updated: search=" << search_radius 
-              << " sep=" << min_sep << " bright=" << min_bright 
-              << " angular=" << angular << std::endl;
-    
-    Tcl_SetObjResult(interp, Tcl_NewStringObj("P4 detection parameters updated", -1));
-    return TCL_OK;
-  }
-  
-  static int setP4AreaConstraintsCmd(ClientData clientData, Tcl_Interp *interp,
-				     int objc, Tcl_Obj *const objv[]) {
-    if (objc != 3) {
-      Tcl_WrongNumArgs(interp, 1, objv, "min_area max_area");
-      return TCL_ERROR;
-    }
-    
-    int min_area, max_area;
-    if (Tcl_GetIntFromObj(interp, objv[1], &min_area) != TCL_OK ||
-        Tcl_GetIntFromObj(interp, objv[2], &max_area) != TCL_OK) {
-      return TCL_ERROR;
-    }
-    
-    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-    plugin->p4_min_area_ = min_area;
-    plugin->p4_max_area_ = max_area;
-    
-    std::cout << "P4 area constraints: " << min_area << " - " << max_area << std::endl;
-    
-    Tcl_SetObjResult(interp, Tcl_NewStringObj("P4 area constraints updated", -1));
-    return TCL_OK;
-  }
-  
-  static int getResultsCmd(ClientData clientData, Tcl_Interp *interp,
+    static int getResultsCmd(ClientData clientData, Tcl_Interp *interp,
                              int objc, Tcl_Obj *const objv[]) {
         EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
         
@@ -1042,10 +1207,11 @@ private:
             return TCL_OK;
         }
         
-        // Build result dict
         Tcl_Obj* resultDict = Tcl_NewDictObj();
         
-        // Pupil data
+        Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("in_blink", -1),
+                      Tcl_NewBooleanObj(plugin->latest_results_.in_blink));
+        
         if (plugin->latest_results_.pupil.detected) {
             Tcl_Obj* pupilDict = Tcl_NewDictObj();
             Tcl_DictObjPut(interp, pupilDict, Tcl_NewStringObj("x", -1),
@@ -1057,7 +1223,6 @@ private:
             Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("pupil", -1), pupilDict);
         }
         
-        // Purkinje data
         if (plugin->latest_results_.purkinje.p1_detected) {
             Tcl_Obj* p1Dict = Tcl_NewDictObj();
             Tcl_DictObjPut(interp, p1Dict, Tcl_NewStringObj("x", -1),
@@ -1068,47 +1233,36 @@ private:
         }
         
         if (plugin->latest_results_.purkinje.p4_detected) {
-            Tcl_Obj* p4Dict = Tcl_NewDictObj();
-            Tcl_DictObjPut(interp, p4Dict, Tcl_NewStringObj("x", -1),
-                          Tcl_NewDoubleObj(plugin->latest_results_.purkinje.p4_center.x));
-            Tcl_DictObjPut(interp, p4Dict, Tcl_NewStringObj("y", -1),
-                          Tcl_NewDoubleObj(plugin->latest_results_.purkinje.p4_center.y));
-            Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("p4", -1), p4Dict);
-        }
-        
+			Tcl_Obj* p4Dict = Tcl_NewDictObj();
+			Tcl_DictObjPut(interp, p4Dict, Tcl_NewStringObj("x", -1),
+						  Tcl_NewDoubleObj(plugin->latest_results_.purkinje.p4_center.x));
+			Tcl_DictObjPut(interp, p4Dict, Tcl_NewStringObj("y", -1),
+						  Tcl_NewDoubleObj(plugin->latest_results_.purkinje.p4_center.y));
+			Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("p4", -1), p4Dict);
+		}
+
         Tcl_SetObjResult(interp, resultDict);
         return TCL_OK;
-    }  
-    
+    }
+
 public:
     EyeTrackingPlugin() 
-        : roi_enabled_(false),
-          running_(false),
-          pupil_threshold_(65),
-          pupil_min_area_(5000),
-          pupil_max_area_(100000),
-          pupil_min_circularity_(0.65),
-          purkinje_threshold_(240),
+        : running_(false),
+          roi_enabled_(false),
+          pupil_threshold_(45),
+          p1_validator_(15.0f),
+          p1_min_intensity_(140),
+          p1_max_distance_ratio_(1.5f),
+          p1_centroid_roi_size_(cv::Size(7, 7)),
+          p4_validator_(10.0f),
+          p4_model_(50),
+          p4_search_roi_size_(cv::Size(30, 30)),
+          p4_max_prediction_error_(13.0f),
+          use_p4_template_(false),
+          p4_template_threshold_(0.7f),
           frame_count_(0),
-	  max_p1_jump_(30.0f),
-	  max_p4_jump_(30.0f),
-	  p1_exclusion_ratio_(0.3f),
-	  min_p1_p4_ratio_(0.1f),
-	  use_p1_seed_(false),
-	  p1_max_distance_ratio_(1.3f),
-	  p4_search_radius_ratio_(0.85f),
-	  p4_min_separation_ratio_(0.3f),
-	  p4_min_brightness_(160),
-	  p4_angular_bonus_(1.0f),
-	  p4_max_area_(100),
-	  p4_min_area_(2),
-	  p4_loss_counter_(0),
-	  p4_loss_tolerance_(3),  // Allow 3 frames of loss
-	  p4_last_stable_(cv::Point2f(-1, -1)),	  
           buffers_initialized_(false) {
-        
         latest_results_.valid = false;
-
     }
     
     ~EyeTrackingPlugin() {
@@ -1124,9 +1278,8 @@ public:
     void shutdown() override {
         running_ = false;
 
-        // Push sentinel to unblock thread
         FrameData sentinel;
-        sentinel.frame_idx = -1;  // Signal to exit
+        sentinel.frame_idx = -1;
         frame_queue_.push_back(sentinel);
         
         if (analysis_thread_.joinable()) {
@@ -1153,22 +1306,22 @@ public:
                             setROICmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::disableROI", 
                             disableROICmd, this, NULL);
-	Tcl_CreateObjCommand(interp, "::eyetracking::setP4Template", 
-			     setP4TemplateCmd, this, NULL);	
-	Tcl_CreateObjCommand(interp, "::eyetracking::setP1SeedROI", 
-			     setP1SeedROICmd, this, NULL);
-	Tcl_CreateObjCommand(interp, "::eyetracking::setP1MaxDistance", 
-			     setP1MaxDistanceCmd, this, NULL);
-	Tcl_CreateObjCommand(interp, "::eyetracking::setP4DetectionParams", 
-			     setP4DetectionParamsCmd, this, NULL);
-	Tcl_CreateObjCommand(interp, "::eyetracking::setP4AreaConstraints", 
-			     setP4AreaConstraintsCmd, this, NULL);
-	Tcl_CreateObjCommand(interp, "::eyetracking::setValidatorThresholds", 
-			     setValidatorThresholdsCmd, this, NULL);
-	Tcl_CreateObjCommand(interp, "::eyetracking::resetValidator", 
-			     resetValidatorCmd, this, NULL);
+                            
+		Tcl_CreateObjCommand(interp, "::eyetracking::captureP4Template", 
+							captureP4TemplateCmd, this, NULL);
+		Tcl_CreateObjCommand(interp, "::eyetracking::clearP4Template", 
+         		            clearP4TemplateCmd, this, NULL);
+   		Tcl_CreateObjCommand(interp, "::eyetracking::freezeP4Model", 
+							freezeP4ModelCmd, this, NULL);
+		Tcl_CreateObjCommand(interp, "::eyetracking::resetP4Model", 
+							resetP4ModelCmd, this, NULL);
+		Tcl_CreateObjCommand(interp, "::eyetracking::getP4ModelStatus", 
+							getP4ModelStatusCmd, this, NULL);
+		Tcl_CreateObjCommand(interp, "::eyetracking::setP4TemplateThreshold", 
+        		            setP4TemplateThresholdCmd, this, NULL);
+                                                
         Tcl_CreateObjCommand(interp, "::eyetracking::getResults",
-                            getResultsCmd, this, NULL);      
+                            getResultsCmd, this, NULL);
     }
     
     const char* getName() override { return "eye_tracking"; }
@@ -1182,7 +1335,6 @@ public:
         
         if (!latest_results_.valid) return false;
         
-        // Draw ROI if enabled
         if (roi_enabled_) {
             cv::rectangle(frame, current_roi_, cv::Scalar(255, 255, 0), 2);
             cv::putText(frame, "ROI", 
@@ -1191,7 +1343,6 @@ public:
                        cv::Scalar(255, 255, 0), 1);
         }
         
-        // Draw pupil
         if (latest_results_.pupil.detected) {
             cv::circle(frame, latest_results_.pupil.center, 
                       (int)latest_results_.pupil.radius, 
@@ -1206,59 +1357,59 @@ public:
                        cv::FONT_HERSHEY_SIMPLEX, 0.5, 
                        cv::Scalar(0, 255, 0), 1);
         }
-
-#ifdef DEBUG_OVERLAY
-	if (latest_results_.pupil.detected && !debug_bright_spots_.empty()) {
-	  for (size_t i = 0; i < debug_bright_spots_.size(); ++i) {
-            cv::Point2f spot = debug_bright_spots_[i];
-            int intensity = debug_spot_intensities_[i];
-            
-            // Draw spot with different colors based on rank
-            cv::Scalar color;
-            if (i == 0) color = cv::Scalar(255, 255, 0); // Cyan - brightest
-            else if (i == 1) color = cv::Scalar(255, 0, 255); // Magenta - 2nd
-            else color = cv::Scalar(128, 128, 128); // Gray - others
-            
-            cv::circle(frame, spot, 6, color, 2);
-            cv::circle(frame, spot, 2, color, -1);
-            
-            // Show intensity value
-            char text[32];
-            snprintf(text, sizeof(text), "%d", intensity);
-            cv::putText(frame, text,
-			cv::Point(spot.x + 8, spot.y - 8),
-			cv::FONT_HERSHEY_SIMPLEX, 0.35,
-			color, 1);
-	  }
-	}
-#endif	
-	
-        // Draw Purkinje reflections
+        
         if (latest_results_.purkinje.p1_detected) {
-	  cv::circle(frame, latest_results_.purkinje.p1_center, 
-		     5, cv::Scalar(255, 0, 0), 2);
-	  cv::putText(frame, "P1", 
-		      cv::Point(latest_results_.purkinje.p1_center.x + 8, 
+            cv::circle(frame, latest_results_.purkinje.p1_center, 
+                       5, cv::Scalar(255, 0, 0), 2);
+            cv::drawMarker(frame, latest_results_.purkinje.p1_center,
+                          cv::Scalar(255, 0, 0), cv::MARKER_CROSS, 8, 1);
+            cv::putText(frame, "P1", 
+                       cv::Point(latest_results_.purkinje.p1_center.x + 8, 
                                 latest_results_.purkinje.p1_center.y),
-		      cv::FONT_HERSHEY_SIMPLEX, 0.4, 
-		      cv::Scalar(255, 0, 0), 1);
-        }
-        
-        if (latest_results_.purkinje.p4_detected) {
-            cv::circle(frame, latest_results_.purkinje.p4_center, 
-                      5, cv::Scalar(0, 0, 255), 2);
-            cv::putText(frame, "P4", 
-                       cv::Point(latest_results_.purkinje.p4_center.x + 8, 
-                                latest_results_.purkinje.p4_center.y),
                        cv::FONT_HERSHEY_SIMPLEX, 0.4, 
-                       cv::Scalar(0, 0, 255), 1);
+                       cv::Scalar(255, 0, 0), 1);
         }
         
+        // Draw P4 if detected
+		if (latest_results_.purkinje.p4_detected) {
+			cv::circle(frame, latest_results_.purkinje.p4_center, 
+					   5, cv::Scalar(0, 0, 255), 2);
+			cv::drawMarker(frame, latest_results_.purkinje.p4_center,
+						  cv::Scalar(0, 0, 255), cv::MARKER_CROSS, 8, 1);
+			cv::putText(frame, "P4", 
+					   cv::Point(latest_results_.purkinje.p4_center.x + 8, 
+								latest_results_.purkinje.p4_center.y),
+					   cv::FONT_HERSHEY_SIMPLEX, 0.4, 
+					   cv::Scalar(0, 0, 255), 1);
+		}
+		
+		// Optionally draw prediction ROI when model is active
+		if (p4_model_.isInitialized() && latest_results_.pupil.detected && 
+			latest_results_.purkinje.p1_detected) {
+			cv::Point2f predicted_p4 = p4_model_.predict(
+				latest_results_.pupil.center, 
+				latest_results_.purkinje.p1_center
+			);
+			
+			if (predicted_p4.x > 0) {
+				cv::Rect pred_roi(
+					predicted_p4.x - p4_search_roi_size_.width / 2,
+					predicted_p4.y - p4_search_roi_size_.height / 2,
+					p4_search_roi_size_.width,
+					p4_search_roi_size_.height
+				);
+				cv::rectangle(frame, pred_roi, cv::Scalar(255, 255, 0), 1);
+				cv::circle(frame, predicted_p4, 3, cv::Scalar(255, 255, 0), 1);
+			}
+		}
         return true;
     }
 };
 
-// Standard Tcl package entry point
+// ============================================================================
+// TCL PACKAGE ENTRY POINT
+// ============================================================================
+
 extern "C" {
     int Eyetracking_Init(Tcl_Interp *interp) {
         EyeTrackingPlugin* plugin = new EyeTrackingPlugin();
@@ -1268,13 +1419,8 @@ extern "C" {
             return TCL_ERROR;
         }
         
-        // Register with the global registry
         g_pluginRegistry.registerPlugin(plugin);
-        
-        // Register Tcl commands
         plugin->registerTclCommands(interp);
-        
-        // Declare package
         Tcl_PkgProvide(interp, "Eyetracking", "1.0");
         
         return TCL_OK;
