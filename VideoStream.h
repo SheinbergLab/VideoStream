@@ -11,13 +11,15 @@ typedef struct _proginfo_t {
   FrameBufferManager* frameBuffer;
   WidgetManager* widgetManager;
   
-  int *displayFrame;
+  std::atomic<int> *curFrame;
+  std::atomic<int> *displayFrame;
+  
   IFrameSource** frameSource;  // Pointer to pointer so we can update it
   
   // Frame properties
   float* frame_rate;
-  int* frame_width;
-  int* frame_height;
+  std::atomic<int>* frame_width;
+  std::atomic<int>* frame_height;
   bool* is_color;  
 } proginfo_t;
 
@@ -25,6 +27,27 @@ typedef struct _proginfo_t {
 // thread safe tcl command evals
 int tcl_eval(const std::string& cmd);
 int tcl_eval(const std::string& cmd, std::string& response);
+
+
+// Add uWebSockets support
+#include <App.h>
+
+// Add WebSocket per-socket data structure
+struct WSPerSocketData {
+  SharedQueue<std::string> *rqueue;
+  std::string client_name;
+  std::vector<std::string> subscriptions;
+};
+
+// To help manage large WebSocket messages (stimdg -> ess/stiminfo)
+struct ChunkedMessage {
+    std::string messageId;
+    size_t chunkIndex;
+    size_t totalChunks;
+    std::string data;
+    bool isLastChunk;
+};
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,5 +85,10 @@ extern "C" {
 
 #ifdef __cplusplus
 }
+
+
+extern std::atomic<int> frame_width;
+extern std::atomic<int> frame_height;
+
 #endif
 
