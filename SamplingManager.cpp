@@ -58,7 +58,7 @@ void SamplingManager::samplingLoop() {
     FrameMetadata metadata;
     bool in_obs;
     
-    if (prog_info_->frameBuffer->copyFrame(*(prog_info_->displayFrame), 
+    if (prog_info_->frameBuffer->copyFrame(*(prog_info_->curFrame), 
 					   frame_copy, metadata, in_obs)) {
       if (prog_info_->sourceManager->sampleCurrentFrame(frame_copy, metadata)) {
 	sampled++;
