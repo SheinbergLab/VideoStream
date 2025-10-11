@@ -26,6 +26,8 @@
 #include <csignal>
 #include <cmath>
 
+#include <jansson.h>
+
 #include <sys/un.h>
 #include <sys/socket.h>
 
@@ -51,6 +53,9 @@
 #include "SamplingManager.h"
 
 #include "VideoStream.h"
+
+// our minified html pages (in www/*.html)
+#include "embedded_terminal.h"
 
 using namespace std;
 using namespace cv;
@@ -108,8 +113,11 @@ void signal_handler(int signal)
 int nFrames = 50;
 FrameBufferManager frameBufferManager(nFrames);
 
-int processFrame, displayFrame;
-int frame_width, frame_height;
+std::atomic<int> displayFrame{0};
+std::atomic<int> processFrame{0};
+
+std::atomic<int> frame_width, frame_height;
+
 bool is_color = true;
 float frame_rate;
 std::string output_file;
@@ -504,6 +512,225 @@ private:
 #endif
   }
 };
+
+
+class WebSocketThread
+{
+private:
+  std::mutex ws_connections_mutex;
+  std::map<std::string, uWS::WebSocket<false, true, WSPerSocketData>*> ws_connections;
+  uWS::Loop *ws_loop = nullptr;
+
+public:
+  bool m_bDone;
+  int port;
+  int listening_socket_fd;
+  
+  WebSocketThread() : m_bDone(false), port(8080), listening_socket_fd(-1) {}
+  
+  void shutdown() {
+    m_bDone = true;
+    // uWebSockets handles cleanup internally
+  }
+  
+  void startWebSocketServer(void) {
+    ws_loop = uWS::Loop::get();
+    
+    auto app = uWS::App();
+    
+    // Serve your embedded HTML
+    app.get("/", [](auto *res, auto *req) {
+      res->writeHeader("Content-Type", "text/html; charset=utf-8")
+         ->writeHeader("Cache-Control", "no-cache")
+         ->end("<html><body><h1>VideoStream WebSocket Server</h1></body></html>");
+    });
+    
+    app.get("/terminal", [](auto *res, auto *req) {
+      res->writeHeader("Content-Type", "text/html; charset=utf-8")
+         ->writeHeader("Cache-Control", "no-cache")
+         ->end(embedded::terminal_html);
+    });
+    
+    // Health check
+    app.get("/health", [](auto *res, auto *req) {
+      res->writeHeader("Content-Type", "application/json")
+         ->end("{\"status\":\"ok\",\"service\":\"videostream\"}");
+    });
+    
+    // WebSocket endpoint
+    app.ws<WSPerSocketData>("/ws", {
+      .compression = uWS::SHARED_COMPRESSOR,
+      .maxPayloadLength = 16 * 1024 * 1024,
+      .idleTimeout = 120,
+      .maxBackpressure = 16 * 1024 * 1024,
+      
+      .upgrade = [](auto *res, auto *req, auto *context) {
+        res->template upgrade<WSPerSocketData>({
+          .rqueue = new SharedQueue<std::string>(),
+          .client_name = "",
+          .subscriptions = std::vector<std::string>()
+        }, 
+        req->getHeader("sec-websocket-key"),
+        req->getHeader("sec-websocket-protocol"),
+        req->getHeader("sec-websocket-extensions"),
+        context);
+      },
+      
+      .open = [this](auto *ws) {
+        WSPerSocketData *userData = (WSPerSocketData *) ws->getUserData();
+        
+        if (!userData || !userData->rqueue) {
+          std::cerr << "ERROR: Invalid userData in WebSocket open" << std::endl;
+          ws->close();
+          return;
+        }
+        
+        // Create unique client name
+        char client_id[32];
+        snprintf(client_id, sizeof(client_id), "ws_%p", (void*)ws);
+        userData->client_name = std::string(client_id);
+        
+        // Store connection
+        {
+          std::lock_guard<std::mutex> lock(this->ws_connections_mutex);
+          this->ws_connections[userData->client_name] = ws;
+        }
+        
+        std::cout << "WebSocket client connected: " << userData->client_name << std::endl;
+      },
+      
+	.message = [this](auto *ws, std::string_view message, uWS::OpCode opCode) {
+	  WSPerSocketData *userData = (WSPerSocketData *) ws->getUserData();
+	  
+	  if (!userData || !userData->rqueue) {
+	    std::cerr << "ERROR: Invalid userData in message handler" << std::endl;
+	    ws->close();
+	    return;
+	  }
+	  
+	  // Handle JSON protocol for web clients
+	  if (message.length() > 0 && message[0] == '{') {
+	    // Create null-terminated string for jansson
+	    std::string json_str(message.data(), message.length());
+	    
+	    json_error_t error;
+	    json_t *root = json_loads(json_str.c_str(), 0, &error);
+	    
+	    if (!root) {
+	      json_t *error_response = json_object();
+	      json_object_set_new(error_response, "error", json_string("Invalid JSON"));
+	      char *error_str = json_dumps(error_response, 0);
+	      ws->send(error_str, uWS::OpCode::TEXT);
+	      free(error_str);
+	      json_decref(error_response);
+	      return;
+	    }
+	    
+	    json_t *cmd_obj = json_object_get(root, "cmd");
+	    if (!cmd_obj || !json_is_string(cmd_obj)) {
+	      json_t *error_response = json_object();
+	      json_object_set_new(error_response, "error", json_string("Missing 'cmd' field"));
+	      char *error_str = json_dumps(error_response, 0);
+	      ws->send(error_str, uWS::OpCode::TEXT);
+	      free(error_str);
+	      json_decref(error_response);
+	      json_decref(root);
+	      return;
+	    }
+	    
+	    const char *cmd = json_string_value(cmd_obj);
+	    
+	    if (strcmp(cmd, "eval") == 0) {
+	      // Handle Tcl script evaluation
+	      json_t *script_obj = json_object_get(root, "script");
+	      json_t *requestId_obj = json_object_get(root, "requestId");
+	      
+	      if (script_obj && json_is_string(script_obj)) {
+		const char *script = json_string_value(script_obj);
+		
+		// Use your existing thread-safe tcl_eval function
+		std::string result;
+		int retcode = tcl_eval(std::string(script), result);
+		
+		// Create JSON response
+		json_t *response = json_object();
+		if (retcode != TCL_OK) {
+		  json_object_set_new(response, "status", json_string("error"));
+		  json_object_set_new(response, "error", json_string(result.c_str()));
+		} else {
+		  json_object_set_new(response, "status", json_string("ok"));
+		  json_object_set_new(response, "result", json_string(result.c_str()));
+		}
+		
+		// If a requestId was provided, include it in the response
+		if (requestId_obj && json_is_string(requestId_obj)) {
+		  json_object_set(response, "requestId", requestId_obj);
+		}
+		
+		char *response_str = json_dumps(response, 0);
+		ws->send(response_str, uWS::OpCode::TEXT);
+		free(response_str);
+		json_decref(response);
+	      }
+	    }
+	    
+	    json_decref(root);
+	  }
+	  else {
+	    // Handle legacy text protocol (newline-terminated commands)
+	    std::string script(message);
+	    
+	    // Remove trailing newline if present
+	    if (!script.empty() && script.back() == '\n') {
+	      script.pop_back();
+	    }
+	    
+	    // Use thread-safe tcl_eval
+	    std::string result;
+	    tcl_eval(script, result);
+	    
+	    // For text protocol, send plain response
+	    ws->send(result, uWS::OpCode::TEXT);
+	  }
+	},
+      
+	.drain = [](auto *ws) {
+        if (ws->getBufferedAmount() > 1024 * 1024) {
+          ws->close();
+        }
+      },
+      
+      .close = [this](auto *ws, int code, std::string_view message) {
+        WSPerSocketData *userData = (WSPerSocketData *) ws->getUserData();
+        
+        if (!userData) return;
+        
+        // Remove from connections
+        {
+          std::lock_guard<std::mutex> lock(this->ws_connections_mutex);
+          this->ws_connections.erase(userData->client_name);
+        }
+        
+        // Cleanup
+        delete userData->rqueue;
+        userData->rqueue = nullptr;
+        
+        std::cout << "WebSocket client disconnected: " << userData->client_name << std::endl;
+      }
+    })
+    .listen(port, [this](auto *listen_socket) {
+      if (listen_socket) {
+        std::cout << "WebSocket server listening on port " << port << std::endl;
+        std::cout << "Open http://localhost:" << port << "/ in your browser" << std::endl;
+      } else {
+        std::cerr << "Failed to start WebSocket server on port " << port << std::endl;
+      }
+    }).run();
+  }
+};
+
+
+
 class ProcessThread
 {
   int overwrite;
@@ -1452,9 +1679,11 @@ void processMacOSEvents(proginfo_t* p, float scale = 1.0, Mat* frame_to_display 
   } else {
     // Display idle screen with status
     static Mat idle_frame;
-    
-    int width = (frame_width > 0) ? frame_width : 640;
-    int height = (frame_height > 0) ? frame_height : 480;
+
+    int fw = frame_width.load();
+    int fh = frame_height.load();
+    int width = (fw > 0) ? fw : 640;
+    int height = (fh > 0) ? fh : 480;
     
     // Recreate idle frame each time to show current status
     idle_frame = Mat(height, width, CV_8UC3, Scalar(40, 40, 40));
@@ -1538,13 +1767,17 @@ int main(int argc, char **argv)
   float playback_speed = 1.0;
   bool playback_mode = false;
   bool playback_loop = true;
+
+  int ws_port = 8080;
   
   cxxopts::Options options("videostream","video streaming example program");
 
+  
   options.add_options()
     ("v,verbose", "Verbose mode", cxxopts::value<bool>(verbose))
+    ("ws-port", "WebSocket server port", cxxopts::value<int>()->default_value("8080"))    
     ("w,webcam", "Use webcam", cxxopts::value<bool>(use_webcam))
-    ("R,fliR", "Use flir", cxxopts::value<bool>(use_flir))
+    ("flir", "Use flir", cxxopts::value<bool>(use_flir))
     ("d,display", "Start with display", cxxopts::value<bool>(init_display))
     ("p,port", "TCP/IP server port", cxxopts::value<int>(port))
     ("c,camera_id", "Camera ID", cxxopts::value<int>(camera_id))
@@ -1566,6 +1799,10 @@ int main(int argc, char **argv)
     
     if (result.count("file")) {
       startup_file = strdup((result["file"].as<std::string>()).c_str());
+    }
+
+    if (result.count("ws-port")) {
+      ws_port = result["ws-port"].as<int>();
     }
     
     if (result.count("playback")) {
@@ -1593,6 +1830,9 @@ int main(int argc, char **argv)
     exit(0);
   }
 
+  // index of current frame
+  std::atomic<int> curFrame{0};
+
   proginfo_t programInfo;
   ReviewModeSource reviewModeSource;
   
@@ -1602,6 +1842,7 @@ int main(int argc, char **argv)
   programInfo.sourceManager = &g_sourceManager;
   programInfo.widgetManager = &g_widgetManager;
   programInfo.frameBuffer = &frameBufferManager;
+  programInfo.curFrame = &curFrame;
   programInfo.displayFrame = &displayFrame;
   programInfo.frameSource = &g_frameSource;
   programInfo.frame_rate = &frame_rate;
@@ -1670,8 +1911,7 @@ int main(int argc, char **argv)
 	      << " @ " << frame_rate << " fps, " 
 	      << (is_color ? "color" : "grayscale") << std::endl;
   }
-  
-  int curFrame = 0;
+
   done = false;
 
   // Used to take video samples and store in review source
@@ -1693,6 +1933,12 @@ int main(int argc, char **argv)
   DSTcpipThread dstcpServer;
   dstcpServer.port = port+1;
   dsPort = dstcpServer.port;
+
+  WebSocketThread wsServer;
+  wsServer.port = ws_port;
+  if (verbose)
+    cout << "Starting WebSocket server on port " << wsServer.port << std::endl;
+  std::thread ws_thread(&WebSocketThread::startWebSocketServer, &wsServer);
   
   if (verbose)
     cout << "Starting ds server on port " << dstcpServer.port << std::endl;
@@ -1847,6 +2093,11 @@ int main(int argc, char **argv)
   // Give CoreMediaIO time to settle
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
+  wsServer.shutdown();
+  if (ws_thread.joinable()) {
+    ws_thread.detach();  // uWebSockets handles its own cleanup
+  }
+ 
   tcpServer.shutdown();
   dstcpServer.shutdown();
 
@@ -1857,6 +2108,7 @@ int main(int argc, char **argv)
   if (ds_thread.joinable()) {
     ds_thread.join();
   }
+
   
   if (verbose) std::cout << "Shutting down" << std::endl;
 
