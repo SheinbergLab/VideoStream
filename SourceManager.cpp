@@ -37,7 +37,6 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
     }
     else if (type == "review") {
       ensureReviewSource();
-
       IFrameSource* raw = review_source_.get();
       return std::unique_ptr<IFrameSource>(raw);
     }
@@ -93,6 +92,13 @@ bool SourceManager::startSource(const std::string& type,
   if (state_ == SOURCE_RUNNING) {
     std::cerr << "Source already running" << std::endl;
     return false;
+  }
+
+  if (type == "review") {
+    ensureReviewSource();
+    if (review_source_->getFrameCount() == 0) {
+        return false;
+    }
   }
   
   try {
