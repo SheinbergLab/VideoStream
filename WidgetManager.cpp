@@ -130,7 +130,7 @@ bool WidgetManager::updateWidgetText(int id, std::string str) {
 	txt->text = str;
 	return true;
       }
-      else if (auto* slider = dynamic_cast<SliderWidget*>(widget.get())) {
+      else if (auto* slider = dynamic_cast<AbstractSliderWidget*>(widget.get())) {
 	slider->label = str;
 	return true;
       }
@@ -138,6 +138,40 @@ bool WidgetManager::updateWidgetText(int id, std::string str) {
     }
   }
   return false;  // Widget not found
+}
+
+bool WidgetManager::updateWidgetValue(int id, const std::string& str) {
+    std::lock_guard<std::mutex> lock(widgetMutex);
+
+    std::istringstream iss(str);
+
+    for (auto& widget : widgets) {
+        if (widget->id == id) {
+            if (auto* slider = dynamic_cast<FloatSliderWidget*>(widget.get())) {
+                float min_v, max_v, val;
+                if (!(iss >> min_v >> max_v >> val)) return false;
+
+                slider->min_val = min_v;
+                slider->max_val = max_v;
+                slider->value = std::clamp((val - min_v) / (max_v - min_v), 0.0f, 1.0f);
+                slider->updateHandlePosition();
+                return true;
+            }
+            else if (auto* slider = dynamic_cast<IntSliderWidget*>(widget.get())) {
+                int min_i, max_i, val_i;
+                if (!(iss >> min_i >> max_i >> val_i)) return false;
+
+                slider->min_val = min_i;
+                slider->max_val = max_i;
+                slider->value = std::clamp(val_i, min_i, max_i);
+                slider->lastValue = slider->value;
+                slider->updateHandlePosition();
+                return true;
+            }
+            return false;
+        }
+    }
+    return false;  // Widget not found
 }
 
 bool WidgetManager::updateWidget(int id, int x, int y, int w, int h) {
@@ -180,7 +214,7 @@ bool WidgetManager::updateWidget(int id, int x, int y, int w, int h) {
 	if (h >= 0) line->pt2.y = h;
 	return true;
       }
-      else if (auto* slider = dynamic_cast<SliderWidget*>(widget.get())) {
+      else if (auto* slider = dynamic_cast<AbstractSliderWidget*>(widget.get())) {
 	if (x >= 0) slider->bounds.x = x;
 	if (y >= 0) slider->bounds.y = y;
 	if (w >= 0) slider->bounds.width = w;
