@@ -11,7 +11,7 @@ class WidgetManager;
 
 class Widget {
 public:
-  enum Type { BUTTON, CIRCLE, RECTANGLE, TEXT, LINE, SLIDER };
+  enum Type { BUTTON, CIRCLE, RECTANGLE, TEXT, LINE, FLOAT_SLIDER, INT_SLIDER };
     Type type;
     bool visible = true;
     int id;
@@ -163,28 +163,60 @@ public:
     }
 };
 
-class SliderWidget : public Widget {
+class AbstractSliderWidget : public Widget {
 public:
-    cv::Rect bounds;
-    cv::Rect track;
-    cv::Rect handle;
-    std::string label;
-    float value;
-    float min_val, max_val;
-    std::string tclCallback;
-    bool dragging;
-    cv::Scalar trackColor;
-    cv::Scalar handleColor;
-    
-    SliderWidget(int x, int y, int width, int height,
-                 const std::string& lbl,
-                 float min_v, float max_v, float initial,
-                 const std::string& cb = "");
-    
-    void updateHandlePosition();
+    cv::Rect bounds, track, handle;
+    std::string label, tclCallback;
+    bool dragging = false;
+    cv::Scalar trackColor = cv::Scalar(100, 100, 100);
+    cv::Scalar handleColor = cv::Scalar(200, 200, 200);
+
+    AbstractSliderWidget(int x, int y, int width, int height,
+                         const std::string& lbl,
+                         const std::string& cb = "");
+
+    virtual void updateHandlePosition() = 0;
+    virtual void drawValue(cv::Mat& frame) = 0;
+    virtual void updateValueFromPosition(int x) = 0;
+    virtual void invokeCallback() = 0;
+
     void draw(cv::Mat& frame) override;
     bool contains(int x, int y) override;
     void onClick() override;
     void onDrag(int x, int y) override;
     void onRelease() override;
 };
+
+class FloatSliderWidget : public AbstractSliderWidget {
+public:
+    float value;
+    float min_val, max_val;
+
+    FloatSliderWidget(int x, int y, int width, int height,
+                      const std::string& lbl,
+                      float min_v, float max_v, float initial,
+                      const std::string& cb = "");
+
+    void updateHandlePosition() override;
+    void drawValue(cv::Mat& frame) override;
+    void updateValueFromPosition(int x) override;
+    void invokeCallback() override;
+};
+
+class IntSliderWidget : public AbstractSliderWidget {
+public:
+    int value;
+    int min_val, max_val;
+  int lastValue;
+  
+    IntSliderWidget(int x, int y, int width, int height,
+                    const std::string& lbl,
+                    int min_v, int max_v, int initial,
+                    const std::string& cb = "");
+
+    void updateHandlePosition() override;
+    void drawValue(cv::Mat& frame) override;
+    void updateValueFromPosition(int x) override;
+    void invokeCallback() override;
+};
+
