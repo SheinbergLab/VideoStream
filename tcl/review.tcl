@@ -12,11 +12,13 @@ proc onMouseClick {x y modifier} {
     puts "Mouse clicked at ($x, $y) with modifier: $modifier"
     
     switch $modifier {
-    "shift" {
-        # Check if in calibration mode
-            ::eyetracking::captureP4Template $x $y
-            puts "P4 template captured at $x,$y"
-        }
+        "shift" {
+            # Add P4 calibration sample
+            if {[info commands ::eyetracking::addP4CalibrationSample] ne ""} {
+                ::eyetracking::addP4CalibrationSample $x $y
+                puts "P4 calibration sample added at $x,$y"
+            }
+        }	
         "ctrl" {
             # Set P1 seed ROI (30x30 around click)
             if {[info commands ::eyetracking::setP1SeedROI] ne ""} {
@@ -99,7 +101,7 @@ proc review_mode {} {
     review_gui
 }
 
-proc collect_samples { { n 14 } { interval_ms 500 } } {
+proc collect_samples { { n 6 } { interval_ms 500 } } {
     set random 1
     playback_mode
     vstream::reviewClear
@@ -124,4 +126,5 @@ proc playback_mode { { index 0 } } {
 }    
 
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
+eyetracking::setP4MinIntensity 100
 playback_mode
