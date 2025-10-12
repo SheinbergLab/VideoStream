@@ -133,7 +133,7 @@ proc review_gui {} {
     add_text 20 40 "Review" {240 140 180} 1.0 2
 
     add_button -100 -50 80 40 Live playback_mode
-    add_button -180 -50 80 40 Update calibrate_p4_model
+    add_button -180 -50 80 40 Model calibrate_p4_model
     set s \
         [add_int_slider -200 25 150 40 Frame 1 \
              [vstream::reviewCount] [expr {[vstream::reviewIndex]+1}] review_goto_frame]
@@ -143,10 +143,6 @@ proc review_gui {} {
         [add_int_slider 20 -50 150 40 \
              {Pupil Threshold} 1 255 [eyetracking::setPupilThreshold] eyetracking::setPupilThreshold]
     dict set ::Registry::widgets pupil_threshold_slider $s
-    
-    # Increase max jump for review mode (frames can be very different)
-    eyetracking::setP1MaxJump 100
-    eyetracking::setP4MaxJump 100
     
     # Key Bindings
     bind_key $::keys::RIGHT review_next
@@ -179,15 +175,11 @@ proc playback_mode { { filename {} } } {
 
     vstream::startSource playback file $filename speed 1
     
-    add_button -100 -50 80 40 SetupP4 collect_samples
+    add_button -100 -50 80 40 Setup collect_samples
     add_int_slider 20 -50 150 40 \
          {Pupil Threshold} 1 255 [eyetracking::setPupilThreshold] eyetracking::setPupilThreshold
     add_int_slider 20 -90 150 40 \
          {P4 Threshold} 1 255 [eyetracking::setP4MinIntensity] eyetracking::setP4MinIntensity
-    
-    # Set higher target for automatic collection and normal jump limits
-    eyetracking::setP1MaxJump 30
-    eyetracking::setP4MaxJump 30
 }
 
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
@@ -198,6 +190,8 @@ set files [list \
 	       {/Users/sheinb/Desktop/trial-videos/glen_dual_purkinje.mp4} \	       
 	      ]
 
+eyetracking::setP1MaxJump 40
+eyetracking::setP4MaxJump 40
 eyetracking::setP4MinIntensity 42
 eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
