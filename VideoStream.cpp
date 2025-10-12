@@ -142,14 +142,14 @@ class WatchdogThread
     m_bDone = false;
     interval = 1000;       // 1 second wakeup
   }
-  
+
   void startWatchdog(void) {
     while (!m_bDone) {
-      wd_cqueue.push_back(std::string("onWatchdog"));
+      // Check if proc exists before calling it
+      wd_cqueue.push_back(std::string("if {[info commands onWatchdog] ne \"\"} { onWatchdog }"));
       /* rqueue will be available after command has been processed */
       std::string s(wd_rqueue.front());
       wd_rqueue.pop_front();
-
       // sleep 
       std::this_thread::sleep_for(std::chrono::milliseconds(interval));
     }
