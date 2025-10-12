@@ -17,6 +17,24 @@
 extern AnalysisPluginRegistry g_pluginRegistry;
 
 // ============================================================================
+// DEBUG LEVELS
+// ============================================================================
+enum DebugLevel {
+    DEBUG_SILENT = 0,      // No output
+    DEBUG_CRITICAL = 1,    // Only critical events (calibration, losses)
+    DEBUG_NORMAL = 2,      // + Warnings and important state changes
+    DEBUG_VERBOSE = 3,     // + Detailed detection info
+    DEBUG_PROFILE = 4      // + Timing information
+};
+
+// Profiling flags (can be combined with debug levels)
+enum ProfileFlags {
+    PROFILE_NONE = 0,
+    PROFILE_TIMING = 1 << 0,     // Frame timing
+    PROFILE_DETECTION = 1 << 1    // Detection details
+};
+
+// ============================================================================
 // P1 VALIDATOR
 // ============================================================================
 
@@ -404,6 +422,10 @@ private:
     
     // Statistics
     int frame_count_;
+    
+    // Debug control
+    int debug_level_;
+    int profile_flags_;
 
     // ========================================================================
     // BUFFER MANAGEMENT
@@ -418,8 +440,10 @@ private:
             binary_buffer_ = cv::Mat(frame_size_, CV_8UC1);
             buffers_initialized_ = true;
             
-            std::cout << "Allocated buffers: " 
-                      << frame_size_.width << "x" << frame_size_.height << std::endl;
+            if (debug_level_ >= DEBUG_NORMAL) {
+                std::cout << "Allocated buffers: " 
+                          << frame_size_.width << "x" << frame_size_.height << std::endl;
+            }
         }
     }
 
@@ -605,10 +629,8 @@ private:
             if (best_score > 0 && thresh > 180) break;
         }
         
-        static int frame_counter = 0;
-        if (++frame_counter % 100 == 0) {
-            std::cout << "P1 search: " << total_candidates << " candidates, "
-                      << "best_score=" << best_score << std::endl;
+        if (debug_level_ >= DEBUG_VERBOSE) {
+            std::cout << "P1: " << total_candidates << " candidates, score=" << best_score << std::endl;
         }
         
         if (best_candidate.x < 0) {
@@ -624,7 +646,7 @@ private:
         
         float dist = cv::norm(p1_local - pupil_center_local);
         if (dist > pupil_radius * 1.5f) {
-            if (frame_counter % 100 == 0) {
+            if (debug_level_ >= DEBUG_VERBOSE) {
                 std::cout << "P1 rejected: dist=" << dist 
                           << " > " << (pupil_radius * 1.5f) << std::endl;
             }
@@ -644,33 +666,27 @@ private:
             return cv::Point2f(-1, -1);
         }
         
-        // Find brightest point in masked region
         double min_val, max_val;
         cv::Point min_loc, max_loc;
         cv::minMaxLoc(search_region, &min_val, &max_val, &min_loc, &max_loc, search_mask);
         
-        static int debug_counter = 0;
-        if (++debug_counter % 100 == 0) {
-            std::cout << "P4 bright spot: max_intensity=" << max_val 
-                      << " at (" << max_loc.x << "," << max_loc.y << ")" << std::endl;
+        if (debug_level_ >= DEBUG_VERBOSE) {
+            std::cout << "P4 bright spot: intensity=" << max_val << std::endl;
         }
         
-        // Validate intensity (P4 glints are very bright)
         if (max_val < p4_min_intensity_) {
             return cv::Point2f(-1, -1);
         }
         
-        // Sub-pixel refinement: intensity-weighted centroid in 3x3 neighborhood
+        // Sub-pixel refinement
         cv::Rect refinement_roi(max_loc.x - 1, max_loc.y - 1, 3, 3);
         refinement_roi &= cv::Rect(0, 0, search_region.cols, search_region.rows);
         
         if (refinement_roi.area() < 9) {
-            return cv::Point2f(max_loc);  // Edge case: just use brightest pixel
+            return cv::Point2f(max_loc);
         }
         
         cv::Mat neighborhood = search_region(refinement_roi);
-        
-        // Intensity-weighted centroid for sub-pixel accuracy
         cv::Moments m = cv::moments(neighborhood, false);
         
         if (m.m00 > 0) {
@@ -693,16 +709,13 @@ private:
                         const cv::Point2f& p1_local,
                         float pupil_radius) {
         
-        // ===== STEP 1: CREATE SEARCH MASK =====
         cv::Mat search_mask = cv::Mat::zeros(gray_roi.size(), CV_8UC1);
         cv::Point2f predicted_p4_local(-1, -1);
         
         if (p4_model_.isInitialized()) {
-            // MODEL-GUIDED SEARCH
             predicted_p4_local = p4_model_.predict(pupil_center_local, p1_local);
             
             if (predicted_p4_local.x > 0) {
-                // Create small search ROI around prediction
                 cv::Rect predictive_roi(
                     predicted_p4_local.x - p4_search_roi_size_.width / 2,
                     predicted_p4_local.y - p4_search_roi_size_.height / 2,
@@ -715,22 +728,19 @@ private:
                 if (predictive_roi.area() > 0) {
                     search_mask(predictive_roi) = 255;
                     
-                    static int debug_counter = 0;
-                    if (++debug_counter % 100 == 0) {
-                        std::cout << "P4 model prediction: (" << predicted_p4_local.x 
+                    if (debug_level_ >= DEBUG_VERBOSE) {
+                        std::cout << "P4 prediction: (" << predicted_p4_local.x 
                                   << "," << predicted_p4_local.y << ")" << std::endl;
                     }
                 }
             }
         } else if (p4_bootstrap_mode_) {
-            // BOOTSTRAP MODE: Search near last known position
             cv::Point2f last_known_local = p4_last_known_position_;
             if (roi_enabled_) {
                 last_known_local.x -= current_roi_.x;
                 last_known_local.y -= current_roi_.y;
             }
             
-            // Small search area around last known position
             cv::Rect bootstrap_roi(
                 last_known_local.x - p4_search_roi_size_.width / 2,
                 last_known_local.y - p4_search_roi_size_.height / 2,
@@ -742,36 +752,23 @@ private:
             
             if (bootstrap_roi.area() > 0) {
                 search_mask(bootstrap_roi) = 255;
-                
-                static int debug_counter = 0;
-                if (++debug_counter % 50 == 0) {
-                    std::cout << "P4 bootstrap search near (" << last_known_local.x 
-                             << "," << last_known_local.y << ")" << std::endl;
-                }
             }
         } else {
-            // WIDE-AREA SEARCH (model not yet initialized)
             float search_radius = pupil_radius * 0.85f;
             cv::circle(search_mask, pupil_center_local, search_radius, 255, -1);
-            
-            static int debug_counter = 0;
-            if (++debug_counter % 100 == 0) {
-                std::cout << "P4 wide-area search (model not initialized)" << std::endl;
-            }
         }
         
-        // Always exclude P1 region to avoid false detections
+        // Exclude P1 region
         float p1_exclusion_radius = pupil_radius * 0.3f;
         cv::circle(search_mask, p1_local, p1_exclusion_radius, 0, -1);
         
-        // ===== STEP 2: BRIGHT SPOT DETECTION =====
         cv::Point2f p4_candidate = findP4ByBrightestSpot(gray_roi, search_mask);
         
         if (p4_candidate.x < 0) {
             return cv::Point2f(-1, -1);
         }
         
-        // Update last known position for next bootstrap search
+        // Update last known position for bootstrap
         if (p4_bootstrap_mode_) {
             cv::Point2f p4_full = p4_candidate;
             if (roi_enabled_) {
@@ -781,14 +778,13 @@ private:
             p4_last_known_position_ = p4_full;
         }
         
-        // ===== STEP 3: VALIDATE PREDICTION ERROR =====
+        // Validate prediction error
         if (p4_model_.isInitialized() && predicted_p4_local.x > 0) {
             float prediction_error = cv::norm(p4_candidate - predicted_p4_local);
             
             if (prediction_error > p4_max_prediction_error_) {
-                static int debug_counter = 0;
-                if (++debug_counter % 50 == 0) {
-                    std::cout << "P4 rejected: prediction_error=" << prediction_error 
+                if (debug_level_ >= DEBUG_NORMAL) {
+                    std::cout << "⚠️  P4 prediction error too large: " << prediction_error 
                              << " > " << p4_max_prediction_error_ << std::endl;
                 }
                 return cv::Point2f(-1, -1);
@@ -826,28 +822,19 @@ private:
             pupil_center_local.y -= current_roi_.y;
         }
         
-        // ===== P1 DETECTION =====
+        // P1 DETECTION
         cv::Point2f p1_local = detectP1(gray_roi, pupil_center_local, pupil.radius);
         
-        // Track P1 loss
         static int p1_loss_counter = 0;
         static int p1_recovery_countdown = 0;
         const int P1_LOSS_THRESHOLD = 5;
         const int P1_RECOVERY_FRAMES = 5;
         
-        static int diag_counter = 0;
-        bool should_print = (++diag_counter % 50 == 0) || 
-                           (p1_local.x < 0) || 
-                           blink_detector_.isInBlink() || 
-                           blink_detector_.isRecovering();
-        
-        if (should_print) {
-            std::cout << "P1 diagnostics:" << std::endl;
-            std::cout << "  detectP1 returned: (" << p1_local.x << "," << p1_local.y << ")" << std::endl;
-            std::cout << "  Pupil detected: " << pupil.detected << std::endl;
-            std::cout << "  In blink: " << blink_detector_.isInBlink() << std::endl;
-            std::cout << "  In blink recovery: " << blink_detector_.isRecovering() << std::endl;
-            std::cout << "  P1 recovery countdown: " << p1_recovery_countdown << std::endl;
+        if (debug_level_ >= DEBUG_VERBOSE && 
+            (p1_local.x < 0 || blink_detector_.isInBlink())) {
+            std::cout << "P1: detected=" << (p1_local.x >= 0)
+                      << " blink=" << blink_detector_.isInBlink()
+                      << " recovery=" << blink_detector_.isRecovering() << std::endl;
         }
         
         if (p1_local.x < 0) {
@@ -855,8 +842,9 @@ private:
             if (p1_loss_counter == P1_LOSS_THRESHOLD) {
                 p1_validator_.reset();
                 p1_recovery_countdown = P1_RECOVERY_FRAMES;
-                std::cout << "P1 lost for " << P1_LOSS_THRESHOLD 
-                         << " frames - resetting validator and starting recovery" << std::endl;
+                if (debug_level_ >= DEBUG_CRITICAL) {
+                    std::cout << "⚠️  P1 lost - resetting validator" << std::endl;
+                }
             }
         } else {
             p1_loss_counter = 0;
@@ -880,18 +868,16 @@ private:
                 result.p1_detected = true;
                 result.p1_center = p1_full;
                 
-                if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() && p1_recovery_countdown == 0) {
+                if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() && 
+                    p1_recovery_countdown == 0) {
                     p1_validator_.update(p1_full);
                 }
-            } else {
-                static int frame_counter = 0;
-                if (++frame_counter % 100 == 0) {
-                    std::cout << "P1 rejected by validator (temporal jump too large)" << std::endl;
-                }
+            } else if (debug_level_ >= DEBUG_NORMAL) {
+                std::cout << "⚠️  P1 rejected by validator (jump too large)" << std::endl;
             }
         }
         
-        // ===== P4 DETECTION =====
+        // P4 DETECTION
         if (result.p1_detected) {
             cv::Point2f p4_local = detectP4(gray_roi, pupil_center_local, p1_local, pupil.radius);
             
@@ -902,56 +888,50 @@ private:
                     p4_full.y += current_roi_.y;
                 }
                 
-                // During bootstrap, be more lenient with validation
                 bool is_valid = blink_detector_.isRecovering() || 
-                               p4_bootstrap_mode_ ||  // Accept all detections during bootstrap
+                               p4_bootstrap_mode_ ||
                                p4_validator_.isValid(p4_full, pupil.center);
                 
-                static int p4_debug_counter = 0;
-                bool should_debug = (++p4_debug_counter % 50 == 0) || !is_valid;
-                
-                if (should_debug && !is_valid) {
-                    std::cout << "P4 REJECTED by validator: pos=(" << p4_full.x << "," << p4_full.y << ")"
-                              << " bootstrap=" << p4_bootstrap_mode_ << std::endl;
+                if (!is_valid && debug_level_ >= DEBUG_NORMAL) {
+                    std::cout << "⚠️  P4 rejected by validator" << std::endl;
                 }
                 
                 if (is_valid) {
                     result.p4_detected = true;
                     result.p4_center = p4_full;
                     
-                    if (should_debug) {
-                        std::cout << "P4 ACCEPTED: pos=(" << p4_full.x << "," << p4_full.y << ")"
-                                  << " model_init=" << p4_model_.isInitialized() << std::endl;
+                    if (debug_level_ >= DEBUG_VERBOSE) {
+                        std::cout << "✓ P4 accepted at (" << p4_full.x << "," << p4_full.y << ")" << std::endl;
                     }
                     
                     if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering()) {
                         p4_validator_.update(p4_full, pupil.center);
                         
-                        // ===== MODEL LEARNING =====
+                        // MODEL LEARNING
                         if (!p4_model_.isInitialized()) {
-                            // Auto-collect samples during bootstrap
                             p4_model_.addCalibrationSample(pupil.center, result.p1_center, p4_full);
                             
                             int count = p4_model_.getCalibrationSampleCount();
                             int target = p4_model_.getTargetSamples();
                             
-                            if (count % 10 == 0) {
-                                std::cout << "Auto-collecting P4 samples: " << count << "/" << target << std::endl;
+                            if (debug_level_ >= DEBUG_NORMAL && count % 10 == 0) {
+                                std::cout << "Collecting P4 samples: " << count << "/" << target << std::endl;
                             }
                             
                             if (count >= target) {
                                 if (p4_model_.calibrateFromSamples()) {
-                                    std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" << std::endl;
-                                    std::cout << "✓✓✓ P4 MODEL CALIBRATED! ✓✓✓" << std::endl;
-                                    std::cout << "  Magnitude ratio: " << p4_model_.getMagnitudeRatio() << std::endl;
-                                    std::cout << "  Angle offset: " << (p4_model_.getAngleOffset() * 180.0 / M_PI) << "°" << std::endl;
-                                    std::cout << "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" << std::endl;
-                                    
-                                    p4_bootstrap_mode_ = false;  // Exit bootstrap mode
+                                    if (debug_level_ >= DEBUG_CRITICAL) {
+                                        std::cout << "╔════════════════════════════════╗" << std::endl;
+                                        std::cout << "║  ✓✓✓ P4 MODEL CALIBRATED! ✓✓✓  ║" << std::endl;
+                                        std::cout << "╠════════════════════════════════╣" << std::endl;
+                                        std::cout << "║  Magnitude: " << p4_model_.getMagnitudeRatio() << std::endl;
+                                        std::cout << "║  Angle: " << (p4_model_.getAngleOffset() * 180.0 / M_PI) << "°" << std::endl;
+                                        std::cout << "╚════════════════════════════════╝" << std::endl;
+                                    }
+                                    p4_bootstrap_mode_ = false;
                                 }
                             }
                         } else if (!p4_model_.isFrozen()) {
-                            // Incremental learning
                             p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
                         }
                     }
@@ -967,7 +947,9 @@ private:
     // ========================================================================
     
     void analysisThreadFunc() {
-        std::cout << "Eye tracking analysis thread started" << std::endl;
+        if (debug_level_ >= DEBUG_CRITICAL) {
+            std::cout << "Eye tracking analysis thread started" << std::endl;
+        }
         
         while (running_) {
             try {
@@ -1015,15 +997,27 @@ private:
                 
                 frame_count_++;
                 
-                if (frame_count_ % 100 == 0) {
-                    std::cout << "Analysis time: " << duration.count() << "µs" << std::endl;
+                // Profiling output - timing only
+                if ((profile_flags_ & PROFILE_TIMING) && frame_count_ % 100 == 0) {
+                    std::cout << "[Profile] Frame " << frame_count_ 
+                              << ": " << duration.count() << "µs" << std::endl;
+                }
+                
+                // Profiling output - full details (original DEBUG_PROFILE behavior)
+                if (debug_level_ >= DEBUG_PROFILE && frame_count_ % 100 == 0) {
+                    std::cout << "Frame " << frame_count_ << ": " << duration.count() << "µs";
                     if (pupil.detected) {
-                        std::cout << "Pupil: (" << pupil.center.x << "," << pupil.center.y 
-                                  << ") r=" << pupil.radius << std::endl;
+                        std::cout << " | Pupil: r=" << pupil.radius;
                     }
                     if (blink_detector_.isInBlink()) {
-                        std::cout << "Blink detected" << std::endl;
+                        std::cout << " | BLINK";
                     }
+                    std::cout << std::endl;
+                }
+                
+                // Periodic summary at normal level
+                if (debug_level_ >= DEBUG_NORMAL && frame_count_ % 1000 == 0) {
+                    std::cout << "Processed " << frame_count_ << " frames" << std::endl;
                 }
             } catch (...) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1122,7 +1116,6 @@ private:
             return TCL_ERROR;
         }
         
-        // Add the clicked position as the first calibration sample immediately
         cv::Point2f p4_pos(x, y);
         plugin->p4_model_.addCalibrationSample(
             plugin->latest_results_.pupil.center,
@@ -1130,14 +1123,14 @@ private:
             p4_pos
         );
         
-        // Store the position and enable bootstrap mode
         plugin->p4_last_known_position_ = p4_pos;
         plugin->p4_bootstrap_mode_ = true;
         
-        int count = plugin->p4_model_.getCalibrationSampleCount();
-        std::cout << "P4 bootstrap initiated at (" << x << "," << y << ")" << std::endl;
-        std::cout << "Added first calibration sample (1/" << plugin->p4_model_.getTargetSamples() << ")" << std::endl;
-        std::cout << "Will auto-collect remaining samples..." << std::endl;
+        if (plugin->debug_level_ >= DEBUG_CRITICAL) {
+            std::cout << "P4 bootstrap initiated at (" << x << "," << y << ")" << std::endl;
+            std::cout << "Will auto-collect " << plugin->p4_model_.getTargetSamples() 
+                      << " samples..." << std::endl;
+        }
         
         Tcl_SetObjResult(interp, Tcl_NewStringObj("P4 bootstrap started", -1));
         return TCL_OK;
@@ -1221,6 +1214,66 @@ private:
         Tcl_SetObjResult(interp, Tcl_NewStringObj("P4 min intensity updated", -1));
         return TCL_OK;
     }
+    
+    static int setDebugLevelCmd(ClientData clientData, Tcl_Interp *interp,
+                                 int objc, Tcl_Obj *const objv[]) {
+        EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+        
+        if (objc == 1) {
+            // Return current level
+            Tcl_SetObjResult(interp, Tcl_NewIntObj(plugin->debug_level_));
+            return TCL_OK;
+        }
+        
+        if (objc != 2) {
+            Tcl_WrongNumArgs(interp, 1, objv, "?level?");
+            return TCL_ERROR;
+        }
+        
+        int level;
+        if (Tcl_GetIntFromObj(interp, objv[1], &level) != TCL_OK) {
+            return TCL_ERROR;
+        }
+        
+        plugin->debug_level_ = std::max(0, std::min(4, level));
+        
+        const char* level_names[] = {"SILENT", "CRITICAL", "NORMAL", "VERBOSE", "PROFILE"};
+        std::string msg = "Debug level set to " + std::to_string(plugin->debug_level_) + 
+                         " (" + level_names[plugin->debug_level_] + ")";
+        Tcl_SetObjResult(interp, Tcl_NewStringObj(msg.c_str(), -1));
+        return TCL_OK;
+    }
+    
+    static int enableProfilingCmd(ClientData clientData, Tcl_Interp *interp,
+                                   int objc, Tcl_Obj *const objv[]) {
+        EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+        
+        if (objc == 1) {
+            // Return current flags
+            Tcl_SetObjResult(interp, Tcl_NewIntObj(plugin->profile_flags_));
+            return TCL_OK;
+        }
+        
+        if (objc != 2) {
+            Tcl_WrongNumArgs(interp, 1, objv, "?0|1?");
+            return TCL_ERROR;
+        }
+        
+        int enable;
+        if (Tcl_GetIntFromObj(interp, objv[1], &enable) != TCL_OK) {
+            return TCL_ERROR;
+        }
+        
+        if (enable) {
+            plugin->profile_flags_ |= PROFILE_TIMING;
+            Tcl_SetObjResult(interp, Tcl_NewStringObj("Frame timing enabled", -1));
+        } else {
+            plugin->profile_flags_ &= ~PROFILE_TIMING;
+            Tcl_SetObjResult(interp, Tcl_NewStringObj("Frame timing disabled", -1));
+        }
+        
+        return TCL_OK;
+    }
 
     static int getResultsCmd(ClientData clientData, Tcl_Interp *interp,
                              int objc, Tcl_Obj *const objv[]) {
@@ -1280,14 +1333,16 @@ public:
           p1_min_intensity_(140),
           p1_max_distance_ratio_(1.5f),
           p1_centroid_roi_size_(cv::Size(7, 7)),
-          p4_validator_(20.0f),  // Increased from 10.0f
+          p4_validator_(20.0f),
           p4_model_(50),
           p4_search_roi_size_(cv::Size(30, 30)),
           p4_max_prediction_error_(13.0f),
           p4_min_intensity_(140),
           p4_bootstrap_mode_(false),
           frame_count_(0),
-          buffers_initialized_(false) {
+          buffers_initialized_(false),
+          debug_level_(DEBUG_CRITICAL),  // Default to critical only
+          profile_flags_(PROFILE_NONE) {  // Profiling off by default
         latest_results_.valid = false;
     }
     
@@ -1342,6 +1397,10 @@ public:
                             getP4ModelStatusCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP4MinIntensity", 
                             setP4MinIntensityCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::setDebugLevel", 
+                            setDebugLevelCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::enableProfiling", 
+                            enableProfilingCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::getResults",
                             getResultsCmd, this, NULL);
     }
