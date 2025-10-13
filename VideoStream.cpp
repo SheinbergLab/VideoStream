@@ -27,7 +27,6 @@
 #include <cmath>
 
 #include <jansson.h>
-
 #include <sys/un.h>
 #include <sys/socket.h>
 
@@ -39,6 +38,7 @@
 #include "SharedQueue.hpp"
 #include "KeyboardCallbackRegistry.h"
 #include "SourceManager.h"
+#include "StorageManager.h"
 #include "FrameBufferManager.h"
 #include "IFrameSource.h"
 #include "WebcamSource.h"
@@ -89,6 +89,25 @@ SharedQueue<std::string> disp_rqueue;
 
 SharedQueue<std::string> ds_queue;
 SharedQueue<std::string> shutdown_queue;
+
+// Event support for setting up event driven callbacks
+
+struct Event {
+    std::string type;
+    std::string data;  // JSON-like key-value string or simple data
+    
+    Event(const std::string& t, const std::string& d = "") : type(t), data(d) {}
+};
+
+SharedQueue<Event> event_queue;
+
+// Helper function to fire events
+std::atomic<bool> events_ready{false};
+void fireEvent(const std::string& type, const std::string& data = "") {
+  if (events_ready.load()) {
+    event_queue.push_back(Event(type, data));
+  }  
+}
 
 Tcl_Interp *interp = NULL;
 
@@ -736,9 +755,11 @@ class ProcessThread
   int overwrite;
   int fourcc;
   std::string output_file;
-  bool openfile;
-  bool closefile;
-  bool do_open;
+
+  std::atomic<bool> openfile;
+  std::atomic<bool> closefile;
+  std::atomic<bool> do_open;
+
   bool just_opened;
   bool annotate;
   int frame_count;
@@ -759,6 +780,14 @@ class ProcessThread
   int64_t on_frameID;
   int64_t on_frameTimestamp;
   std::chrono::high_resolution_clock::time_point on_systemTimestamp;
+
+  StorageManager storage_manager_;
+  bool use_sqlite_;
+  std::string metadata_base_name_;
+  
+  std::atomic<bool> metadata_only_;
+  std::atomic<bool> file_opened_;
+  std::atomic<bool> recording_active_;
   
   bool exists (const std::string& name) {
     if (FILE *file = fopen(name.c_str(), "r")) {
@@ -780,6 +809,10 @@ public:
     just_opened = false;
     only_save_in_obs = true;
     annotate = true;
+    file_opened_ = false;
+    recording_active_ = false;
+    use_sqlite_ = true;  // Set to false to use DYN_GROUP format
+    metadata_only_ = false;
     
     dg = dfuCreateDynGroup(6);
     
@@ -810,6 +843,8 @@ public:
   int getFrameCount(void) {
     return frame_count;
   }
+
+  bool getUseSQLite() const { return use_sqlite_; }
   
   void annotate_frame(Mat frame)
   {
@@ -852,33 +887,125 @@ public:
     obs_count = -1;
     frame_count = 0;
     output_file = std::string(filename);
+    metadata_only_ = false;    
     return true;
   }
 
-  bool doOpenFile(void)
+  void startRecording() { storage_manager_.startRecording(); }
+  void stopRecording() { storage_manager_.stopRecording(); }
+
+  bool openMetadataFile(const char *base_name, const char *source_video)
+  {
+    if (openfile.load()) return false;
+
+    output_file = std::string(source_video);  // Reference to source
+    metadata_base_name_ = std::string(base_name);
+    metadata_only_ = true;
+
+    obs_count = -1;
+    frame_count = 0;
+
+    do_open.store(true, std::memory_order_release);
+    
+    return true;
+  }
+
+  bool isMetadataOnly() const { 
+    return metadata_only_; 
+  }
+
+  void setUseSQLite(bool enable) { 
+    use_sqlite_ = enable; 
+  }
+
+ bool doOpenFile(void)
   {
     if (openfile) return 0;
 
-    if (exists(output_file) && overwrite) {
-      std::remove(output_file.c_str());
+    if (!metadata_only_) {
+      // Normal recording - check for overwrite
+      if (exists(output_file) && overwrite) {
+        std::remove(output_file.c_str());
+      }
+      
+      // Open video file
+      video = VideoWriter(output_file,
+                         fourcc,
+                         frame_rate,
+                         Size(frame_width,frame_height), is_color);
+      
+      if (!video.isOpened()) {
+        std::cerr << "Failed to open video file for writing" << std::endl;
+        return false;
+      }
+    }
+
+    // Open storage
+    if (use_sqlite_) {
+      RecordingMetadata metadata;
+      metadata.filename = output_file;
+      metadata.start_time = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+      metadata.frame_rate = frame_rate;
+      metadata.width = frame_width;
+      metadata.height = frame_height;
+      metadata.is_color = is_color;
+      
+      // Convert fourcc to string
+      char codec_str[5];
+      codec_str[0] = (fourcc & 0xFF);
+      codec_str[1] = ((fourcc >> 8) & 0xFF);
+      codec_str[2] = ((fourcc >> 16) & 0xFF);
+      codec_str[3] = ((fourcc >> 24) & 0xFF);
+      codec_str[4] = '\0';
+      metadata.codec = std::string(codec_str);
+
+      bool storage_ok;
+      if (metadata_only_) {
+	storage_ok = storage_manager_.openMetadataOnly(
+						       metadata_base_name_, output_file, metadata);
+	
+	if (storage_ok) {
+	  std::cout << "Opened metadata-only recording: " << metadata_base_name_ << ".db" << std::endl;
+	  std::cout << "Source video: " << output_file << std::endl;
+	  
+	  // Fire event with data
+	  std::string data = "file " + metadata_base_name_ + ".db source " + output_file;
+	  fireEvent("metadata_recording_started", data);
+	}
+      } else {
+	storage_ok = storage_manager_.openRecording(output_file, metadata);
+
+	if (storage_ok) {
+	  // Fire event for normal recording
+	  fireEvent("recording_started", "file " + output_file);
+	}
+      }
+      
+      if (!storage_ok) {
+	std::cerr << "Failed to open SQLite storage" << std::endl;
+	if (!metadata_only_) video.release();
+	return false;
+      }
+      
+      // allow plugins to store data in our db
+      storage_manager_.initializePluginStorage();
+      storage_manager_.beginPluginStorageBatch();       
+    }
+    else {
+      // Old DYN_GROUP format
+      dfuResetDynList(ids);
+      dfuResetDynList(obs_starts);
+      dfuResetDynList(obs_stops);
+      dfuResetDynList(frame_ids);
+      dfuResetDynList(frame_timestamps);
+      dfuResetDynList(frame_systemtimes);
+      dfuResetDynList(frame_linestatus);
     }
     
-    video = VideoWriter(output_file,
-			fourcc,
-			frame_rate,
-			Size(frame_width,frame_height), is_color);
-
-    dfuResetDynList(ids);
-    dfuResetDynList(obs_starts);
-    dfuResetDynList(obs_stops);
-    dfuResetDynList(frame_ids);
-    dfuResetDynList(frame_timestamps);
-    dfuResetDynList(frame_systemtimes);
-    dfuResetDynList(frame_linestatus);
-    
     openfile = true;
-    return 1;
-  }
+    return true;
+  }  
 
   string getFileName(const string& s) {
     
@@ -976,9 +1103,9 @@ public:
   void startProcessThread(void)
   {
     while (1) {
-      if (do_open) {
+      if (do_open.load(std::memory_order_acquire)) {
 	doOpenFile();
-	do_open = false;
+	do_open.store(false);
 	just_opened = true;
       }
       
@@ -999,6 +1126,7 @@ public:
 	  }
 	}
 	
+	// Domain socket push (for external access to frames)
 	if (push_next_frame != 0) {
 	  auto access = frameBufferManager.accessFrame(processFrame);
 	  if (access.isValid()) {
@@ -1007,54 +1135,85 @@ public:
 	}
 	if (push_next_frame > 0) push_next_frame--;
 	
-	if (openfile) {
+	if (openfile.load()) {
 	  if (processFrame)
 	    prev_fr = (processFrame-1);
 	  else prev_fr = nFrames-1;
-	  
-	  // Check observation boundaries
-	  auto curr_access = frameBufferManager.accessFrame(processFrame);
-	  auto prev_access = frameBufferManager.accessFrame(prev_fr);
-	  
-	  if (curr_access.isValid() && prev_access.isValid()) {
-	    if (curr_access.in_obs && !prev_access.in_obs) {
-	      start_obs = true;
-	      dfuAddDynListLong(obs_starts, frame_count);
+
+	  // Check obs period boundaries
+	  auto obs = frameBufferManager.getObservationPair(processFrame, prev_fr);
+
+	  if (!obs.cur_valid || !obs.prev_valid) {
+	    // Can't check boundaries without both frames
+	    start_obs = false;
+	    end_obs = false;
+	  } else {
+	    // Obs period start
+	    start_obs = (obs.cur_in_obs && !obs.prev_in_obs);
+	    if (start_obs) {
+	      if (use_sqlite_) {
+		storage_manager_.storeObservationStart(frame_count);
+	      } else {
+		dfuAddDynListLong(obs_starts, frame_count);
+	      }
 	    }
-	    else start_obs = false;
 	    
-	    if (!curr_access.in_obs && prev_access.in_obs) {
-	      end_obs = true;
-	      dfuAddDynListLong(obs_stops, frame_count-1);
+	    // Obs period end
+	    end_obs = (!obs.cur_in_obs && obs.prev_in_obs);
+	    if (end_obs) {
+	      if (use_sqlite_) {
+		storage_manager_.storeObservationEnd(frame_count - 1);
+	      } else {
+		dfuAddDynListLong(obs_stops, frame_count - 1);
+	      }
 	    }
-	    else end_obs = false;
-	  }
+	  }	  
 	  
 	  // Copy frame for processing
 	  cv::Mat frame_copy;
 	  FrameMetadata frame_metadata;
 	  bool frame_in_obs;
-	  
+
 	  if (frameBufferManager.copyFrame(processFrame, frame_copy, frame_metadata, frame_in_obs)) {
 	    if (!only_save_in_obs || (only_save_in_obs && frame_in_obs)) {
 	      
-	      if (annotate) annotate_frame(frame_copy);
+	      // Write video frame (unless metadata-only mode)
+	      if (!metadata_only_) {
+		if (annotate) annotate_frame(frame_copy);
+		video.write(frame_copy);
+	      }
 	      
-	      video.write(frame_copy);
-	      
-	      dfuAddDynListLong(ids, frame_count);
-	      dfuAddDynListLong(frame_ids,
-				(int) (frame_metadata.frameID - on_frameID));
-	      
-	      int64_t ns = frame_metadata.timestamp - on_frameTimestamp; 
-	      dfuAddDynListLong(frame_timestamps, (int) (ns/1000));
-	      
-	      int elapsed = chrono::duration_cast<chrono::microseconds>(
+	      // Store frame metadata
+	      if (use_sqlite_) {
+		FrameData fdata;
+		fdata.frame_number = frame_count;
+		fdata.relative_frame_id = (int)(frame_metadata.frameID - on_frameID);
+		fdata.timestamp_us = (frame_metadata.timestamp - on_frameTimestamp) / 1000;
+		fdata.system_time_us =
+		  std::chrono::duration_cast<std::chrono::microseconds>(
 									frame_metadata.systemTime - on_systemTimestamp).count();
-	      dfuAddDynListLong(frame_systemtimes, elapsed);
-	      
-	      dfuAddDynListChar(frame_linestatus,
-				(unsigned char) frame_metadata.lineStatus);
+		fdata.line_status = frame_metadata.lineStatus;
+		
+		storage_manager_.storeFrame(fdata);
+		storage_manager_.storeFrameWithPlugins(frame_count, prev_fr);
+	      }
+	      else {
+		// DYN_GROUP format
+		dfuAddDynListLong(ids, frame_count);
+		dfuAddDynListLong(frame_ids,
+				  (int) (frame_metadata.frameID - on_frameID));
+		
+		int64_t ns = frame_metadata.timestamp - on_frameTimestamp; 
+		dfuAddDynListLong(frame_timestamps, (int) (ns/1000));
+		
+		int elapsed =
+		  std::chrono::duration_cast<std::chrono::microseconds>(
+									frame_metadata.systemTime - on_systemTimestamp).count();
+		dfuAddDynListLong(frame_systemtimes, elapsed);
+		
+		dfuAddDynListChar(frame_linestatus,
+				  (unsigned char) frame_metadata.lineStatus);
+	      }
 	      
 	      frame_count++;
 	    }
@@ -1063,18 +1222,48 @@ public:
       } while (processFrame >= 0 && process_queue.size());
       
       if (processFrame < 0 || processFrame >= nFrames) {
-	if (openfile) {
-	  video.release();
-	  writeFrameDG(dg, output_file);
+	if (openfile.load()) {
+	  if (!metadata_only_) {
+	    video.release();
+	  }
+	  if (use_sqlite_) {
+	    storage_manager_.endPluginStorageBatch(); 	    
+	    storage_manager_.closeRecording();
+	    
+	    // Fire event
+	    if (metadata_only_) {
+	      std::string data = "file " + metadata_base_name_ + ".db";
+	      fireEvent("metadata_recording_closed", data);
+	    } else {
+	      fireEvent("recording_closed", "file " + output_file);
+	    }
+	  } else {
+	    writeFrameDG(dg, output_file);
+	  }
 	}
 	break;
       }
       
       if (closefile) {
-	video.release();
+	if (!metadata_only_) {
+	  video.release();
+	}
 	openfile = false;
 	closefile = false;
-	writeFrameDG(dg, output_file);
+	if (use_sqlite_) {
+	  storage_manager_.endPluginStorageBatch(); 	  
+	  storage_manager_.closeRecording();
+	  
+	  // Fire event
+	  if (metadata_only_) {
+	    std::string data = "file " + metadata_base_name_ + ".db";
+	    fireEvent("metadata_recording_closed", data);
+	  } else {
+	    fireEvent("recording_closed", "file " + output_file);
+	  }
+	} else {
+	  writeFrameDG(dg, output_file);
+	}
       }
     }
   }  
@@ -1090,6 +1279,36 @@ int open_videoFile(char *filename)
 int close_videoFile(void)
 {
   return processThread.closeFile();
+}
+
+void start_recording()
+{
+   processThread.startRecording();
+}
+
+void stop_recording()
+{
+  processThread.stopRecording();
+}
+
+int open_metadataFile(const char *base_name, const char *source_video)
+{
+  return processThread.openMetadataFile(base_name, source_video);
+}
+
+int is_metadataOnly(void)
+{
+  return processThread.isMetadataOnly() ? 1 : 0;
+}
+
+void set_useSQLite(int enable)
+{
+  processThread.setUseSQLite(enable != 0);
+}
+
+int get_useSQLite(void)
+{
+  return processThread.getUseSQLite() ? 1 : 0;
 }
 
 int open_domainSocket(char *socket_path)
@@ -1457,6 +1676,7 @@ int processShutdownCommands(void) {
   return n;
 }
 
+
 int processMouseEvents(void)
 {
   int count = 0;
@@ -1476,6 +1696,30 @@ int processMouseEvents(void)
 
   g_widgetManager.processPendingCallbacks();
  
+  return count;
+}
+
+int processEvents(void)
+{
+  int count = 0;
+  while (event_queue.size()) {
+    Event event = event_queue.front();
+    event_queue.pop_front();
+    
+    // Build Tcl command "onEvent { argdict }
+    std::ostringstream cmd;
+    cmd << "if {[info commands onEvent] ne \"\"} { onEvent {" 
+	<< event.type << "} {" << event.data << "} }";
+    
+    int retcode = Tcl_Eval(interp, cmd.str().c_str());
+    if (retcode != TCL_OK) {
+      const char *err = Tcl_GetStringResult(interp);
+      if (err) {
+	std::cerr << "Event Tcl error: " << err << std::endl;
+      }
+    }
+    count++;
+  }
   return count;
 }
 
@@ -1960,6 +2204,9 @@ int main(int argc, char **argv)
   if (init_display) displayThread.show();
   displayThread.setScale(scale);
 #endif
+
+  // Ready to accept "fired" events
+  events_ready = true;
   
   while(!done)
     {
@@ -1970,6 +2217,7 @@ int main(int argc, char **argv)
 	
         processTclCommands();
         processMouseEvents();
+	processEvents();
         processDSCommands();
 
 #ifdef __APPLE__
@@ -1986,8 +2234,10 @@ int main(int argc, char **argv)
 	  Mat frame;
 	  
 	  if (!g_frameSource->getNextFrame(frame, metadata)) {
-	    if (playback_mode && !playback_loop) {
-	      std::cout << "End of playback file" << std::endl;
+	    if (g_frameSource->isPlaybackMode() && !g_frameSource->isLooping()) {
+
+	      fireEvent("video_source_eof", "");
+ 
 	      // Don't shutdown, just stop the source
 	      g_sourceManager.stopSource();
 	      g_frameSource = nullptr;
@@ -2050,11 +2300,13 @@ int main(int argc, char **argv)
 	  
 	  processTclCommands();
 	  processMouseEvents();
+	  processEvents();
 	}
 	break;
       case SOURCE_PAUSED:
 	processTclCommands();
 	processMouseEvents();
+	processEvents();
 	processDSCommands();
 	std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	break;
