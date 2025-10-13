@@ -270,7 +270,9 @@ include_directories( ${OpenCV_INCLUDE_DIRS} ${TCL_INCLUDE_DIR} ${FLIR_INCLUDE_DI
 add_executable( VideoStream VideoStream.cpp FrameBufferManager.cpp
 		SourceManager.cpp Widget.cpp WidgetManager.cpp KeyboardCallbackRegistry.cpp
 		SamplingManager.cpp ReviewModeSource.cpp WebcamSource.cpp
-		FlirCameraSource.cpp VideoFileSource.cpp AnalysisPluginRegistry.cpp tclproc.cpp )
+		FlirCameraSource.cpp VideoFileSource.cpp StorageManager.cpp
+		AnalysisPluginRegistry.cpp tclproc.cpp
+		external/sqlite/sqlite3.c)
 
 
 # Make VideoStream depend on header generation (AFTER add_executable)
