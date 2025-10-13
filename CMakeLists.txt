@@ -47,6 +47,9 @@ include_directories(${usockets_SOURCE_DIR}/src)
 # Also add the parent directory for proper includes
 include_directories(${uwebsockets_SOURCE_DIR})
 
+# find sqlite header
+include_directories(external/sqlite)
+
 find_library(LZ4_LIBRARY NAMES lz4)
 
 if(WIN32)
