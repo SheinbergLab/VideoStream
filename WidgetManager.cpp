@@ -134,6 +134,10 @@ bool WidgetManager::updateWidgetText(int id, std::string str) {
 	slider->label = str;
 	return true;
       }
+    else if (auto* button = dynamic_cast<Button*>(widget.get())) {
+		button->label = str;
+		return true;
+      }
       return false;
     }
   }
