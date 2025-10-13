@@ -177,6 +177,18 @@ static int getSourceStatusCmd(ClientData clientData, Tcl_Interp *interp,
         Tcl_DictObjPut(interp, statusDict, Tcl_NewStringObj("color", -1),
                       Tcl_NewBooleanObj(*(p->is_color)));
     }
+
+    // Add source parameters
+    auto params = sm->getSourceParams();
+    if (!params.empty()) {
+      Tcl_Obj* paramsDict = Tcl_NewDictObj();
+      for (const auto& pair : params) {
+        Tcl_DictObjPut(interp, paramsDict, 
+		       Tcl_NewStringObj(pair.first.c_str(), -1),
+		       Tcl_NewStringObj(pair.second.c_str(), -1));
+      }
+      Tcl_DictObjPut(interp, statusDict, Tcl_NewStringObj("params", -1), paramsDict);
+    }
     
     Tcl_SetObjResult(interp, statusDict);
     return TCL_OK;
@@ -1023,29 +1035,91 @@ static int reviewIndexCmd(ClientData data, Tcl_Interp *interp,
 /*********************************************************************/
 
 static int openFileCmd(ClientData clientData, Tcl_Interp *interp,
-               int argc, char *argv[])
+                       int objc, Tcl_Obj *const objv[])
 {
   int res;
-  if (argc < 2) {
-    Tcl_AppendResult(interp, "usage: ", argv[0], " filename", NULL); 
-    return TCL_ERROR;
-  }
-  res = open_videoFile(argv[1]);
-  if (res) {
-    Tcl_SetResult(interp, "1", TCL_STATIC);
-  }
-  else {
-    Tcl_SetResult(interp, "0", TCL_STATIC);
-  }
-  return TCL_OK;
+    if (objc < 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "filename");
+        return TCL_ERROR;
+    }
+    res = open_videoFile(Tcl_GetString(objv[1]));
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(res ? 1 : 0));
+    return TCL_OK;
 }
 
 static int closeFileCmd(ClientData clientData, Tcl_Interp *interp,
-            int argc, char *argv[])
+                        int objc, Tcl_Obj *const objv[])
 {
-  int res;
-  close_videoFile();
+    close_videoFile();
+    return TCL_OK;
+}
+
+static int startRecordingCmd(ClientData clientData, Tcl_Interp *interp,
+                             int objc, Tcl_Obj *const objv[])
+{
+  start_recording();
   return TCL_OK;
+}
+
+static int stopRecordingCmd(ClientData clientData, Tcl_Interp *interp,
+                            int objc, Tcl_Obj *const objv[])
+{
+  stop_recording();
+  return TCL_OK;
+}
+
+static int openMetadataFileCmd(ClientData clientData, Tcl_Interp *interp,
+                               int objc, Tcl_Obj *const objv[])
+{
+    if (objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "base_name source_video");
+        return TCL_ERROR;
+    }
+    
+    const char* base_name = Tcl_GetString(objv[1]);
+    const char* source_video = Tcl_GetString(objv[2]);
+    
+    if (open_metadataFile(base_name, source_video)) {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(1));
+        return TCL_OK;
+    } else {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(0));
+        return TCL_ERROR;
+    }
+}
+
+
+static int isMetadataOnlyCmd(ClientData clientData, Tcl_Interp *interp,
+                             int objc, Tcl_Obj *const objv[])
+{
+    int result = is_metadataOnly();
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(result ? 1 : 0));
+    return TCL_OK;
+}
+
+static int useSQLiteCmd(ClientData clientData, Tcl_Interp *interp,
+                        int objc, Tcl_Obj *const objv[])
+{
+    if (objc < 2) {
+        // Query current state
+        int current = get_useSQLite();
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(current ? 1 : 0));
+        return TCL_OK;
+    }
+    
+    int enable;
+    if (Tcl_GetIntFromObj(interp, objv[1], &enable) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    set_useSQLite(enable);
+    
+    if (enable) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("SQLite enabled", -1));
+    } else {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("DGZ format enabled", -1));
+    }
+    return TCL_OK;
 }
 
 /*********************************************************************/
@@ -1305,6 +1379,26 @@ static int shutdownCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+/*********************************************************************/
+/*                       Fire Events Command                         */
+/*********************************************************************/
+
+
+static int fireEventCmd(ClientData clientData, Tcl_Interp *interp,
+                        int argc, char *argv[])
+{
+  if (argc < 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " event_name ?data?", NULL);
+    return TCL_ERROR;
+  }
+  
+  std::string event_type = argv[1];
+  std::string event_data = (argc > 2) ? argv[2] : "";
+  
+  fireEvent(event_type, event_data);
+  
+  return TCL_OK;
+}
 
 void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 {
@@ -1343,12 +1437,26 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
 
   
-  Tcl_CreateCommand(interp, "vstream::fileOpen", (Tcl_CmdProc *) openFileCmd, 
-            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "vstream::fileClose",
-            (Tcl_CmdProc *) closeFileCmd, 
-            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateObjCommand(interp, "vstream::fileOpen", openFileCmd, 
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateObjCommand(interp, "vstream::fileClose", closeFileCmd, 
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateObjCommand(interp, "vstream::fileStartRecording", startRecordingCmd, 
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateObjCommand(interp, "vstream::fileStopRecording", stopRecordingCmd, 
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
+  Tcl_CreateObjCommand(interp, "vstream::fileOpenMetadata", 
+		       openMetadataFileCmd,
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateObjCommand(interp, "vstream::fileIsMetadataOnly",
+		       isMetadataOnlyCmd,
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateObjCommand(interp, "vstream::fileUseSQLite",
+		       useSQLiteCmd,
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+
+  
   Tcl_CreateCommand(interp, "vstream::domainSocketOpen", 
             (Tcl_CmdProc *) openDomainSocketCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
@@ -1391,6 +1499,10 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   
   Tcl_CreateCommand(interp, "vstream::shutdown", (Tcl_CmdProc *) shutdownCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "vstream::fireEvent", (Tcl_CmdProc *) fireEventCmd, 
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  
+
   Tcl_CreateCommand(interp, "vstream::exit", (Tcl_CmdProc *) shutdownCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
