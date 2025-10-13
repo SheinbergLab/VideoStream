@@ -28,6 +28,8 @@ typedef struct _proginfo_t {
 int tcl_eval(const std::string& cmd);
 int tcl_eval(const std::string& cmd, std::string& response);
 
+// send events to event queue
+void fireEvent(const std::string& type, const std::string& data);
 
 // Add uWebSockets support
 #include <App.h>
@@ -56,6 +58,14 @@ extern "C" {
   int open_videoFile(char *filename);
   int close_videoFile(void);
 
+  void start_recording();
+  void stop_recording();
+  
+  int open_metadataFile(const char *base_name, const char *source_video);
+  int is_metadataOnly(void);
+  void set_useSQLite(int enable);
+  int get_useSQLite(void);
+  
   int open_domainSocket(char *socket_path);
   int close_domainSocket(void);
   int sendn_domainSocket(int n);
