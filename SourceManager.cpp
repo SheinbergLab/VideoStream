@@ -5,6 +5,9 @@
 #include "FlirCameraSource.h"
 #endif
 #include "ReviewModeSource.h"
+#include "SamplingManager.h"
+#include "FrameBufferManager.h"
+#include "VideoStream.h"
 
 #include <iostream>
 
@@ -32,8 +35,10 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
         std::string file = params.at("file");
         std::string metadata = params.count("metadata") ? params.at("metadata") : "";
         float speed = params.count("speed") ? std::stof(params.at("speed")) : 1.0f;
+        bool rate_limited = params.count("rate_limited") ? (params.at("rate_limited") == "1") : false;
+
         bool loop = params.count("loop") ? (params.at("loop") == "1") : true;
-        return std::make_unique<VideoFileSource>(file, metadata, speed, loop);
+        return std::make_unique<VideoFileSource>(file, metadata, speed, rate_limited, loop);
     }
     else if (type == "review") {
       ensureReviewSource();
@@ -132,7 +137,9 @@ bool SourceManager::startSource(const std::string& type,
       widget_manager_->clearAll();
     }
     
-    //       std::cout << "Source started: " << type << std::endl;
+    std::string data = "type " + type;
+    fireEvent("source_started", data);
+    
     return true;
     
   } catch (const std::exception& e) {
@@ -172,6 +179,10 @@ bool SourceManager::stopSource()
       }
       current_source_.release();
     }
+
+    // source_stopped callback can react...
+    std::string data = "type " + getSourceType();
+    fireEvent("source_stopped", data);    
     
     state_ = SOURCE_IDLE;
     return true;

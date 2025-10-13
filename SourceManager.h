@@ -50,6 +50,19 @@ public:
   SourceState getState() const { return state_; }
   std::string getSourceType() const { return current_source_type_; }
   IFrameSource* getCurrentSource() { return current_source_.get(); }
+ 
+  // Get current source parameters
+  std::map<std::string, std::string> getSourceParams() const { 
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return current_params_; 
+  }
+  
+  // Get specific parameter
+  std::string getSourceParam(const std::string& key, const std::string& default_val = "") const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = current_params_.find(key);
+    return (it != current_params_.end()) ? it->second : default_val;
+  }
   
   ReviewModeSource* getReviewSource();
   void ensureReviewSource();
