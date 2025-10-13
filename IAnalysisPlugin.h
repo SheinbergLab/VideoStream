@@ -1,41 +1,78 @@
-#ifndef IANALYSIS_PLUGIN_H
-#define IANALYSIS_PLUGIN_H
+#pragma once
 
+#include <string>
 #include <tcl.h>
 #include "opencv2/opencv.hpp"
 #include "IFrameSource.h"
+#include <sqlite3.h>
 
 // Base interface for all analysis plugins
 class IAnalysisPlugin {
 public:
     virtual ~IAnalysisPlugin() = default;
     
-    // Plugin lifecycle
-    virtual bool initialize(Tcl_Interp* interp) = 0;
-    virtual void shutdown() = 0;
-    
-    // Analysis hook - called for each frame
-    // Plugins should be non-blocking or manage their own threading
-    virtual void analyzeFrame(const cv::Mat& frame, int frameIdx, 
-                             const FrameMetadata& metadata) = 0;
-    
-    // Tcl command registration for plugin-specific commands
-    virtual void registerTclCommands(Tcl_Interp* interp) = 0;
-    
     // Plugin identification
     virtual const char* getName() = 0;
     virtual const char* getVersion() = 0;
     virtual const char* getDescription() = 0;
     
-    // Optional: plugin draws its own overlay on the frame
-    // Return true if drawing was performed, false if no visualization
-    virtual bool drawOverlay(cv::Mat& frame, int frame_idx) { 
-        return false; 
-    }
+    // Lifecycle
+    virtual bool initialize(Tcl_Interp* interp) = 0;
+    virtual void shutdown() = 0;
     
-    // Optional: plugin can provide results for display overlay
-    // Returns nullptr if no visualization data available
-    virtual void* getDisplayData() { return nullptr; }
+    // Frame processing
+    virtual void analyzeFrame(const cv::Mat& frame, int frameIdx, 
+                             const FrameMetadata& metadata) = 0;
+    
+    // Visualization
+    virtual bool drawOverlay(cv::Mat& frame, int frame_idx) { return false; }
+    
+    // TCL command registration
+    virtual void registerTclCommands(Tcl_Interp* interp) {}
+    
+    // ========================================================================
+    // STORAGE INTERFACE
+    // ========================================================================
+    
+    /**
+     * Legacy JSON serialization (for backward compatibility or simple plugins)
+     * Returns JSON string of results for the given frame index.
+     * Return "{}" if no data available.
+     */
+    virtual std::string serializeResults(int frame_idx) { return "{}"; }
+    
+    /**
+     * Does this plugin use structured storage (its own database table)?
+     * If true, the plugin will use storeFrameData() instead of serializeResults()
+     */
+    virtual bool usesStructuredStorage() const { return false; }
+    
+    /**
+     * Get SQL schema for plugin's table(s)
+     * Should include CREATE TABLE IF NOT EXISTS and any indexes
+     * Can include multiple statements separated by semicolons
+     */
+    virtual std::string getTableSchema() const { return ""; }
+    
+    /**
+     * Store frame data directly to database
+     * Called once per frame during recording
+     * @param db Open SQLite database handle
+     * @param frame_number Sequential frame number in output video
+     * @return true if data was stored successfully
+     */
+    virtual bool storeFrameData(sqlite3* db, int frame_number) { return false; }
+    
+    /**
+     * Optional: Called before a batch of frames will be stored
+     * Useful for beginning transactions, preparing statements, etc.
+     */
+    virtual void beginStorageBatch(sqlite3* db) {}
+    
+    /**
+     * Optional: Called after a batch of frames has been stored
+     * Useful for committing transactions, finalizing statements, etc.
+     */
+    virtual void endStorageBatch(sqlite3* db) {}
 };
 
-#endif // IANALYSIS_PLUGIN_H
