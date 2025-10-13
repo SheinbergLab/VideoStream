@@ -13,15 +13,17 @@ struct FrameMetadata {
 
 class IFrameSource {
 public:
-    virtual ~IFrameSource() = default;
-    
-    virtual bool getNextFrame(cv::Mat& frame, FrameMetadata& metadata) = 0;
-    virtual bool isOpen() const = 0;
-    virtual float getFrameRate() const = 0;
-    virtual int getWidth() const = 0;
-    virtual int getHeight() const = 0;
-    virtual bool isColor() const = 0;
-    virtual void close() = 0;
+  virtual ~IFrameSource() = default;
+  
+  virtual bool getNextFrame(cv::Mat& frame, FrameMetadata& metadata) = 0;
+  virtual bool isOpen() const = 0;
+  virtual float getFrameRate() const = 0;
+  virtual int getWidth() const = 0;
+  virtual int getHeight() const = 0;
+  virtual bool isColor() const = 0;
+  virtual void close() = 0;
+  virtual bool isPlaybackMode() const { return false; }
+  virtual bool isLooping() const { return true; }  
 };
 
 #endif
