@@ -93,16 +93,6 @@ IAnalysisPlugin* AnalysisPluginRegistry::getPlugin(const std::string& plugin_nam
     return nullptr;
 }
 
-void* AnalysisPluginRegistry::getPluginDisplayData(const std::string& plugin_name) {
-    std::lock_guard<std::mutex> lock(plugins_mutex_);
-    
-    auto it = plugins_.find(plugin_name);
-    if (it != plugins_.end()) {
-        return it->second->getDisplayData();
-    }
-    return nullptr;
-}
-
 void AnalysisPluginRegistry::shutdownAll() {
     std::lock_guard<std::mutex> lock(plugins_mutex_);
     

@@ -36,9 +36,6 @@ public:
     std::vector<std::string> listPlugins() const;
     IAnalysisPlugin* getPlugin(const std::string& plugin_name);
     
-    // Get display data from a specific plugin (for visualization)
-    void* getPluginDisplayData(const std::string& plugin_name);
-    
     // Shutdown all plugins
     void shutdownAll();
 };
