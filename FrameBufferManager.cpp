@@ -70,3 +70,29 @@ bool FrameBufferManager::hasFrame(int index) const
     std::lock_guard<std::mutex> lock(mutex_);
     return !frames_[index].empty();
 }
+
+bool FrameBufferManager::isInObs(int index) const {
+  if (index < 0 || index >= size_) return false;
+  std::lock_guard<std::mutex> lock(mutex_);
+  return frame_in_obs_[index];
+}
+
+bool FrameBufferManager::getLineStatus(int index) const {
+  if (index < 0 || index >= size_) return false;
+  std::lock_guard<std::mutex> lock(mutex_);
+  return frame_linestatus_[index];
+}
+
+FrameBufferManager::ObservationPair 
+FrameBufferManager::getObservationPair(int cur_idx, int prev_idx) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  
+  ObservationPair result;
+  result.cur_valid = (cur_idx >= 0 && cur_idx < size_ && !frames_[cur_idx].empty());
+  result.prev_valid = (prev_idx >= 0 && prev_idx < size_ && !frames_[prev_idx].empty());
+  result.cur_in_obs = result.cur_valid ? frame_in_obs_[cur_idx] : false;
+  result.prev_in_obs = result.prev_valid ? frame_in_obs_[prev_idx] : false;
+  
+  return result;
+}
+

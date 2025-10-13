@@ -38,9 +38,36 @@ public:
         
         bool isValid() const { return frame && !frame->empty(); }
     };
+
     
+    /**
+     * Access frame with lock held.
+     * WARNING: The returned FrameAccess holds a lock until it's destroyed.
+     * DO NOT call accessFrame() multiple times in the same expression or
+     * while another FrameAccess is in scope!
+     * 
+     * WRONG (DEADLOCK):
+     *   auto a = accessFrame(i); auto b = accessFrame(j);
+     * 
+     * RIGHT:
+     *   { auto a = accessFrame(i); use(a); }  // Lock released
+     *   { auto b = accessFrame(j); use(b); }  // Now safe
+     * 
+     * For simple queries, prefer convenience methods like getObservationPair().
+     */
     FrameAccess accessFrame(int index) const;
-    
+
+    bool isInObs(int index) const;
+    bool getLineStatus(int index) const;
+
+    struct ObservationPair {
+        bool cur_in_obs;
+        bool prev_in_obs;
+        bool cur_valid;
+        bool prev_valid;
+    };
+    ObservationPair getObservationPair(int cur_idx, int prev_idx) const;
+  
     // Get buffer size
     int size() const { return size_; }
     
