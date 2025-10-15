@@ -51,6 +51,7 @@
 #include "Widget.h"
 #include "WidgetManager.h"
 #include "SamplingManager.h"
+#include "DataserverForwarder.h"
 
 #include "VideoStream.h"
 
@@ -62,6 +63,9 @@ using namespace cv;
 
 SourceManager g_sourceManager;
 WidgetManager g_widgetManager;
+
+SharedQueue<DataPoint> ds_forward_queue;
+DataserverForwarder* g_dataForwarder = nullptr;
 
 // Global frame source pointer
 IFrameSource* g_frameSource = nullptr;
@@ -2013,6 +2017,9 @@ int main(int argc, char **argv)
   bool playback_loop = true;
 
   int ws_port = 8080;
+
+  std::string ds_host = "";  // Empty = disabled
+  int ds_port = 4620;
   
   cxxopts::Options options("videostream","video streaming example program");
 
@@ -2034,7 +2041,10 @@ int main(int argc, char **argv)
     ("playback", "Playback mode (video file)", cxxopts::value<std::string>())
     ("metadata", "Metadata file (.dgz) for playback", cxxopts::value<std::string>())
     ("speed", "Playback speed multiplier", cxxopts::value<float>()->default_value("1.0"))
-    ("noloop", "Disable playback looping", cxxopts::value<bool>())     
+    ("noloop", "Disable playback looping", cxxopts::value<bool>())
+    ("ds-host", "Dataserver host address", cxxopts::value<std::string>())
+    ("ds-port", "Dataserver port", cxxopts::value<int>()->default_value("4620"))
+    
     ("help", "Print help", cxxopts::value<bool>(help))
     ;
 
@@ -2047,6 +2057,14 @@ int main(int argc, char **argv)
 
     if (result.count("ws-port")) {
       ws_port = result["ws-port"].as<int>();
+    }
+
+    if (result.count("ds-host")) {
+      ds_host = result["ds-host"].as<std::string>();
+    }
+    
+    if (result.count("ds-port")) {
+      ds_port = result["ds-port"].as<int>();
     }
     
     if (result.count("playback")) {
@@ -2160,6 +2178,17 @@ int main(int argc, char **argv)
 
   // Used to take video samples and store in review source
   programInfo.samplingManager = new SamplingManager(&programInfo);
+
+  if (!ds_host.empty()) {
+    g_dataForwarder = new DataserverForwarder(ds_host, ds_port);
+    g_dataForwarder->start();
+    std::cout << "Started dataserver forwarder to " << ds_host << ":" << ds_port << std::endl;
+  } else {
+    // Start the queue draining thread even without connection
+    g_dataForwarder = new DataserverForwarder("", 0);  // Dummy values
+    g_dataForwarder->startDrainOnly();
+    std::cout << "Dataserver forwarding disabled (queue draining only)" << std::endl;
+  }
   
   std::signal(SIGINT, signal_handler);
   
@@ -2339,6 +2368,12 @@ int main(int argc, char **argv)
 
   
   // Cleanup
+  if (g_dataForwarder) {
+    g_dataForwarder->stop();
+    delete g_dataForwarder;
+    g_dataForwarder = nullptr;
+  }
+  
   g_sourceManager.stopSource();
   g_frameSource = nullptr;
   
