@@ -426,11 +426,17 @@ proc playback_mode { { filename {} } } {
 
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
 
+if { [file exists /home/lab] } {
+    set video_folder /home/lab
+} else {
+    set video_folder /Users/sheinb/Desktop/trial-videos
+}
+
 set files [list \
-    {/Users/sheinb/Desktop/trial-videos/OpenIris-2025Jun23-131340-Right.mp4} \
-    {/Users/sheinb/Desktop/trial-videos/OpenIris-2025Oct03-143614-Right.mkv} \
-    {/Users/sheinb/Desktop/trial-videos/glen_dual_purkinje.mp4} \
-]
+	       [file join $video_folder OpenIris-2025Jun23-131340-Right.mp4] \
+	       [file join $video_folder OpenIris-2025Oct03-143614-Right.mkv] \
+	       [file join $video_folder glen_dual_purkinje.mp4] \
+	      ]
 
 # Default parameters
 eyetracking::setP1MaxJump 40
