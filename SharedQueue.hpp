@@ -11,6 +11,9 @@ public:
   
   T& front();
   void pop_front();
+
+  void push_front(const T& item);
+  void push_front(T&& item);
   
   void push_back(const T& item);
   void push_back(T&& item);
@@ -53,6 +56,24 @@ void SharedQueue<T>::pop_front()
   mlock.unlock();     // unlock before notificiation to minimize mutex con
   queue_.pop_front();
 }     
+
+template <typename T>
+void SharedQueue<T>::push_front(const T& item)
+{
+  std::unique_lock<std::mutex> mlock(mutex_);
+  queue_.push_front(item);
+  mlock.unlock();     // unlock before notification to minimize mutex contention
+  cond_.notify_one(); // notify one waiting thread
+}
+
+template <typename T>
+void SharedQueue<T>::push_front(T&& item)
+{
+  std::unique_lock<std::mutex> mlock(mutex_);
+  queue_.push_front(std::move(item));
+  mlock.unlock();     // unlock before notification to minimize mutex contention
+  cond_.notify_one(); // notify one waiting thread  
+}
 
 template <typename T>
 void SharedQueue<T>::push_back(const T& item)
