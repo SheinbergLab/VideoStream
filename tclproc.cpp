@@ -935,20 +935,6 @@ static int reviewSampleStopCmd(ClientData data, Tcl_Interp *interp,
   return TCL_OK;
 }
 
-static int reviewSampleCallbackCmd(ClientData clientData, Tcl_Interp *interp,
-				   int objc, Tcl_Obj *const objv[]) {
-  proginfo_t *p = (proginfo_t *) clientData;
-  if (objc != 2) {
-    Tcl_WrongNumArgs(interp, 1, objv, "callbackProc");
-    return TCL_ERROR;
-  }
-  
-  std::string callback = Tcl_GetString(objv[1]);
-  p->samplingManager->setCompletionCallback(callback);
-  return TCL_OK;
-}
-
-
 static int reviewRemoveCmd(ClientData data, Tcl_Interp *interp,
 			   int objc, Tcl_Obj *const objv[])
 {
@@ -1419,9 +1405,6 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 		       reviewSampleMultipleCmd,
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
   Tcl_CreateObjCommand(interp, "::vstream::reviewSampleStop", reviewSampleStopCmd,
-		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
-  Tcl_CreateObjCommand(interp, "::vstream::reviewSampleCallback",
-		       reviewSampleCallbackCmd,
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
   Tcl_CreateObjCommand(interp, "::vstream::reviewRemove", reviewRemoveCmd,
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
