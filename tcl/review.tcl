@@ -60,6 +60,37 @@ proc onEvent {event data} {
             }
 	}
 	
+	"video_source_rewind" {
+            puts "⏮  Video rewound - resetting tracking state"
+            eyetracking::resetTrackingState
+	}
+	
+	       "sampling_progress" {
+            set sampled [get_event_data $info sampled 0]
+            set total [get_event_data $info total 0]
+            
+            # Update a progress indicator widget if you have one
+            if {[dict exists $::Registry::widgets sampling_progress]} {
+                set widget [dict get $::Registry::widgets sampling_progress]
+                update_widget_text $widget "Sampling: $sampled/$total"
+            }
+        }
+        
+        "sampling_complete" {
+            set sampled [get_event_data $info sampled 0]
+            set total [get_event_data $info total 0]
+            puts "✅ Sampling complete: $sampled/$total frames"
+            
+            # Remove progress indicator if present
+            if {[dict exists $::Registry::widgets sampling_progress]} {
+                remove_widget [dict get $::Registry::widgets sampling_progress]
+                dict unset ::Registry::widgets sampling_progress
+            }
+            
+            # Switch to review mode
+            review_mode
+        }
+        
         "eyetracking_blink_start" {
             set frame [dict get $info frame]
             
@@ -85,7 +116,7 @@ proc onEvent {event data} {
             # Add persistent warning
             if {$::Registry::p1_lost_indicator == -1} {
                 set ::Registry::p1_lost_indicator \
-                    [add_text -150 80 "⚠ P1 LOST" {255 80 80} 1.2 2]
+                    [add_text -150 80 "P1 LOST" {255 80 80} 1.2 2]
             }
         }
         
@@ -227,6 +258,8 @@ proc review_gui {} {
 }
 
 proc review_mode {} {
+	eyetracking::resetP4Model
+	eyetracking::setDetectionMode pupil_p1
     vstream::startSource review
     review_gui
 }
@@ -235,7 +268,11 @@ proc collect_samples { { n 16 } { interval_ms 700 } } {
     set random 1
     playback_mode
     vstream::reviewClear
-    ::vstream::reviewSampleCallback review_mode
+    
+    # Add progress indicator
+    set progress_widget [add_text 20 120 "Sampling: 0/$n" {100 255 100} 1.0 2]
+    dict set ::Registry::widgets sampling_progress $progress_widget
+
     ::vstream::reviewSampleMultiple $n $interval_ms $random
 }
 
@@ -338,10 +375,10 @@ proc playback_mode { { filename {} } } {
     clearRegistry
     clear_key_bindings
 
-    vstream::startSource playback file $filename speed 1.0 loop 0
+    vstream::startSource playback file $filename speed 1.0 loop 1
     
     # Button row
-    add_button -340 -50 80 40 Setup collect_samples
+    add_button -100 -50 80 40 Setup collect_samples
     add_button -260 -50 80 40 Rewind rewind_playback
     
     # Save button - main feature
