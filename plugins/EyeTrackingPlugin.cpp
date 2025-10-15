@@ -17,6 +17,8 @@
 #include "IAnalysisPlugin.h"
 #include "AnalysisPluginRegistry.h"
 
+#include "DataserverForwarder.h"
+
 extern AnalysisPluginRegistry g_pluginRegistry;
 
 extern void fireEvent(const std::string& type, const std::string& data);
@@ -1089,7 +1091,9 @@ private:
                     latest_results_.in_blink = blink_detector_.isInBlink();
                     latest_results_.valid = true;
                 }
-                
+
+		forwardResults(frame_data.frame_idx, pupil, purkinje);
+		
                 blink_detector_.decrementRecovery();
                 
                 auto end = std::chrono::high_resolution_clock::now();
@@ -1938,6 +1942,35 @@ public:
     }
     
     return true;
+  }
+  
+  void forwardResults(int frame_idx, const PupilData& pupil, const PurkinjeData& purkinje) {
+    // Pack as float array
+    float batch[10];
+    
+    // Pupil data (use -1 for not detected)
+    batch[0] = pupil.detected ? pupil.center.x : -1.0f;
+    batch[1] = pupil.detected ? pupil.center.y : -1.0f;
+    batch[2] = pupil.detected ? pupil.radius : -1.0f;
+    
+    // P1 data
+    batch[3] = purkinje.p1_detected ? purkinje.p1_center.x : -1.0f;
+    batch[4] = purkinje.p1_detected ? purkinje.p1_center.y : -1.0f;
+    
+    // P4 data
+    batch[5] = purkinje.p4_detected ? purkinje.p4_center.x : -1.0f;
+    batch[6] = purkinje.p4_detected ? purkinje.p4_center.y : -1.0f;
+    
+    // Status flags (as floats for consistency)
+    batch[7] = blink_detector_.isInBlink() ? 1.0f : 0.0f;
+    batch[8] = purkinje.p1_detected ? 1.0f : 0.0f;
+    batch[9] = purkinje.p4_detected ? 1.0f : 0.0f;
+    
+    // Send as float array
+    ds_forward_queue.push_back(DataPoint("eyetracking/results", 
+                                         DataserverForwarder::FLOAT, 
+                                         batch, 
+                                         sizeof(batch)));
   }
   
   bool drawOverlay(cv::Mat& frame, int frame_idx) override {
