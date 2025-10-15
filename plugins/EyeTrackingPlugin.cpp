@@ -1092,7 +1092,8 @@ private:
                     latest_results_.valid = true;
                 }
 
-		forwardResults(frame_data.frame_idx, pupil, purkinje);
+		forwardResults(frame_data.frame_idx, frame_data.metadata,
+			       pupil, purkinje);
 		
                 blink_detector_.decrementRecovery();
                 
@@ -1200,6 +1201,32 @@ static int resetDetectionCmd(ClientData clientData, Tcl_Interp *interp,
     }
     
     Tcl_SetObjResult(interp, Tcl_NewStringObj("Detection reset to pupil_only", -1));
+    return TCL_OK;
+}
+
+static int resetTrackingStateCmd(ClientData clientData, Tcl_Interp *interp,
+                                  int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    
+    // Check if we're currently in a blink state
+    bool was_in_blink = plugin->blink_detector_.isInBlink();
+    
+    // Light reset: just clear transient tracking state (for video rewind/loop)
+    // Keeps detection mode and calibrated P4 model intact
+    plugin->p1_validator_.reset();
+    plugin->p4_validator_.reset();
+    plugin->blink_detector_ = BlinkDetector();
+    
+    // If we were in a blink, fire event to clear UI indicators
+    if (was_in_blink) {
+        fireEvent("eyetracking_blink_end", "frame -1");
+    }
+    
+    if (plugin->debug_level_ >= DEBUG_CRITICAL) {
+        std::cout << "🔄 Tracking state reset (validators and blink cleared)" << std::endl;
+    }
+    
+    Tcl_SetObjResult(interp, Tcl_NewStringObj("Tracking state reset", -1));
     return TCL_OK;
 }
   
@@ -1718,6 +1745,8 @@ public:
                             setDetectionModeCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::resetDetection", 
                             resetDetectionCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::resetTrackingState", 
+                            resetTrackingStateCmd, this, NULL);
  
         Tcl_CreateObjCommand(interp, "::eyetracking::setPupilThreshold", 
                             setPupilThresholdCmd, this, NULL);
@@ -1943,28 +1972,42 @@ public:
     
     return true;
   }
-  
-  void forwardResults(int frame_idx, const PupilData& pupil, const PurkinjeData& purkinje) {
-    // Pack as float array
-    float batch[10];
+
+  void forwardResults(int frame_idx, const FrameMetadata& metadata,
+		      const PupilData& pupil, const PurkinjeData& purkinje) {
+    static int64_t first_timestamp = -1;
+    if (first_timestamp < 0) {
+        first_timestamp = metadata.timestamp;
+    }
+
+    // Extended format with frame metadata
+    // [frame_id, frame_timestamp_us, pupil_x, pupil_y, pupil_r, 
+    //  p1_x, p1_y, p4_x, p4_y, blink, p1_detected, p4_detected]
+    float batch[12];
+
+    batch[0] = static_cast<float>(metadata.frameID);
+
+    // relative to first frame
+    batch[1] = (metadata.timestamp - first_timestamp) / 1e9f;  // nanoseconds to seconds
+    
     
     // Pupil data (use -1 for not detected)
-    batch[0] = pupil.detected ? pupil.center.x : -1.0f;
-    batch[1] = pupil.detected ? pupil.center.y : -1.0f;
-    batch[2] = pupil.detected ? pupil.radius : -1.0f;
+    batch[2] = pupil.detected ? pupil.center.x : -1.0f;
+    batch[3] = pupil.detected ? pupil.center.y : -1.0f;
+    batch[4] = pupil.detected ? pupil.radius : -1.0f;
     
     // P1 data
-    batch[3] = purkinje.p1_detected ? purkinje.p1_center.x : -1.0f;
-    batch[4] = purkinje.p1_detected ? purkinje.p1_center.y : -1.0f;
+    batch[5] = purkinje.p1_detected ? purkinje.p1_center.x : -1.0f;
+    batch[6] = purkinje.p1_detected ? purkinje.p1_center.y : -1.0f;
     
     // P4 data
-    batch[5] = purkinje.p4_detected ? purkinje.p4_center.x : -1.0f;
-    batch[6] = purkinje.p4_detected ? purkinje.p4_center.y : -1.0f;
+    batch[7] = purkinje.p4_detected ? purkinje.p4_center.x : -1.0f;
+    batch[8] = purkinje.p4_detected ? purkinje.p4_center.y : -1.0f;
     
-    // Status flags (as floats for consistency)
-    batch[7] = blink_detector_.isInBlink() ? 1.0f : 0.0f;
-    batch[8] = purkinje.p1_detected ? 1.0f : 0.0f;
-    batch[9] = purkinje.p4_detected ? 1.0f : 0.0f;
+    // Status flags
+    batch[9] = blink_detector_.isInBlink() ? 1.0f : 0.0f;
+    batch[10] = purkinje.p1_detected ? 1.0f : 0.0f;
+    batch[11] = purkinje.p4_detected ? 1.0f : 0.0f;
     
     // Send as float array
     ds_forward_queue.push_back(DataPoint("eyetracking/results", 
@@ -1973,27 +2016,32 @@ public:
                                          sizeof(batch)));
   }
   
-  bool drawOverlay(cv::Mat& frame, int frame_idx) override {
+bool drawOverlay(cv::Mat& frame, int frame_idx) override {
     std::lock_guard<std::mutex> lock(results_mutex_);
     
     if (!latest_results_.valid) return false;
     
+    // Create overlay for semi-transparent drawing
+    cv::Mat overlay = frame.clone();
+    double alpha = 0.6;  // Transparency factor (0.0 = fully transparent, 1.0 = opaque)
+    
     if (roi_enabled_) {
-      cv::rectangle(frame, current_roi_, cv::Scalar(255, 255, 0), 2);
-      cv::putText(frame, "ROI", 
+      cv::rectangle(overlay, current_roi_, cv::Scalar(255, 255, 0), 2);
+      cv::putText(overlay, "ROI", 
 		  cv::Point(current_roi_.x + 5, current_roi_.y + 20),
 		  cv::FONT_HERSHEY_SIMPLEX, 0.5, 
 		  cv::Scalar(255, 255, 0), 1);
     }
     
     if (latest_results_.pupil.detected) {
-      cv::circle(frame, latest_results_.pupil.center, 
+      // Draw pupil with transparency
+      cv::circle(overlay, latest_results_.pupil.center, 
 		 (int)latest_results_.pupil.radius, 
 		 cv::Scalar(0, 255, 0), 2);
-      cv::drawMarker(frame, latest_results_.pupil.center, 
+      cv::drawMarker(overlay, latest_results_.pupil.center, 
 		     cv::Scalar(0, 255, 0), 
-		     cv::MARKER_CROSS, 10, 2);
-      cv::putText(frame, "Pupil", 
+		     cv::MARKER_CROSS, 10, 1);
+      cv::putText(overlay, "Pupil", 
 		  cv::Point(latest_results_.pupil.center.x + 
 			    latest_results_.pupil.radius + 5, 
 			    latest_results_.pupil.center.y),
@@ -2002,58 +2050,54 @@ public:
     }
     
     if (latest_results_.purkinje.p1_detected) {
-      cv::circle(frame, latest_results_.purkinje.p1_center, 
-		 5, cv::Scalar(255, 0, 0), 2);
-      cv::drawMarker(frame, latest_results_.purkinje.p1_center,
-		     cv::Scalar(255, 0, 0), cv::MARKER_CROSS, 8, 1);
-      cv::putText(frame, "P1", 
+      // Blue marker with yellow text - visible against dark pupil
+      cv::circle(overlay, latest_results_.purkinje.p1_center, 
+		 4, cv::Scalar(255, 0, 0), 1);
+      cv::drawMarker(overlay, latest_results_.purkinje.p1_center,
+		     cv::Scalar(255, 0, 0), cv::MARKER_CROSS, 6, 1);
+      cv::putText(overlay, "P1", 
 		  cv::Point(latest_results_.purkinje.p1_center.x + 8, 
 			    latest_results_.purkinje.p1_center.y),
 		  cv::FONT_HERSHEY_SIMPLEX, 0.4, 
-		  cv::Scalar(255, 0, 0), 1);
+		  cv::Scalar(0, 255, 255), 1);
     }
     
     if (latest_results_.purkinje.p4_detected) {
-      cv::circle(frame, latest_results_.purkinje.p4_center, 
-		 5, cv::Scalar(0, 0, 255), 2);
-      cv::drawMarker(frame, latest_results_.purkinje.p4_center,
-		     cv::Scalar(0, 0, 255), cv::MARKER_CROSS, 8, 1);
-      cv::putText(frame, "P4", 
+      // Red circle ONLY - no crosshair to obscure the tiny P4 spot
+      cv::circle(overlay, latest_results_.purkinje.p4_center, 
+		 4, cv::Scalar(0, 0, 255), 1);
+      cv::putText(overlay, "P4", 
 		  cv::Point(latest_results_.purkinje.p4_center.x + 8, 
 			    latest_results_.purkinje.p4_center.y),
 		  cv::FONT_HERSHEY_SIMPLEX, 0.4, 
 		  cv::Scalar(0, 0, 255), 1);
     }
     
-    // P4 Manual Calibration Visualization
+  // P4 Manual Calibration Visualization
     if (p4_pending_sample_active_) {
-      // PENDING: Yellow circle (awaiting confirmation)
-      cv::circle(frame, p4_pending_sample_position_, 8, cv::Scalar(0, 255, 255), 2);
-      cv::drawMarker(frame, p4_pending_sample_position_, cv::Scalar(0, 255, 255), 
-		     cv::MARKER_CROSS, 12, 2);
-      cv::putText(frame, "P4 Sample (Enter to accept)", 
+      // PENDING: Yellow circle (awaiting confirmation) - NO crosshair
+      cv::circle(overlay, p4_pending_sample_position_, 6, cv::Scalar(0, 255, 255), 1);
+      cv::putText(overlay, "P4 Sample (Enter to accept)", 
 		  cv::Point(p4_pending_sample_position_.x + 12, 
 			    p4_pending_sample_position_.y - 8),
 		  cv::FONT_HERSHEY_SIMPLEX, 0.4, 
 		  cv::Scalar(0, 255, 255), 1);
     } else if (p4_model_.getCalibrationSampleCount() > 0 && 
 	       !p4_model_.isInitialized()) {
-      // COLLECTING: Show sample count
+      // COLLECTING: Show sample count - NO crosshair
       int sample_count = p4_model_.getCalibrationSampleCount();
       
-      cv::circle(frame, p4_last_known_position_, 5, cv::Scalar(255, 165, 0), 2);
-      cv::drawMarker(frame, p4_last_known_position_, cv::Scalar(255, 165, 0), 
-		     cv::MARKER_DIAMOND, 8, 1);
+      cv::circle(overlay, p4_last_known_position_, 4, cv::Scalar(255, 165, 0), 1);
       
       std::string status = "P4 Samples: " + std::to_string(sample_count);
-      cv::putText(frame, status, 
+      cv::putText(overlay, status, 
 		  cv::Point(p4_last_known_position_.x + 10, 
 			    p4_last_known_position_.y),
 		  cv::FONT_HERSHEY_SIMPLEX, 0.4, 
 		  cv::Scalar(255, 165, 0), 1);
     } else if (p4_model_.isInitialized() && latest_results_.pupil.detected && 
 	       latest_results_.purkinje.p1_detected) {
-      // MODEL ACTIVE: Show prediction area
+      // MODEL ACTIVE: Show prediction ROI only (no center circle)
       cv::Point2f predicted_p4 = p4_model_.predict(
 						   latest_results_.pupil.center, 
 						   latest_results_.purkinje.p1_center
@@ -2066,12 +2110,17 @@ public:
 			  p4_search_roi_size_.width,
 			  p4_search_roi_size_.height
 			  );
-	cv::rectangle(frame, pred_roi, cv::Scalar(0, 255, 0), 1);
-	cv::circle(frame, predicted_p4, 3, cv::Scalar(0, 255, 0), 1);
+	// Just draw the ROI box - no circle in center that obscures P4
+	cv::rectangle(overlay, pred_roi, cv::Scalar(0, 255, 0), 1);
       }
-    }	
+    }
+    
+    // Blend overlay with original frame
+    cv::addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame);
+    
     return true;
-  }
+}
+
 };
 
 // ============================================================================
