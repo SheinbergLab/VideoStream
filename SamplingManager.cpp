@@ -14,6 +14,9 @@
 #include "SamplingManager.h"
 #include "VideoStream.h"
 
+// Forward declaration for event system
+extern void fireEvent(const std::string& type, const std::string& data);
+
 // SampleManager implementation
 
 void SamplingManager::start(int n_frames, int interval_ms, bool random) {
@@ -63,6 +66,11 @@ void SamplingManager::samplingLoop() {
       if (prog_info_->sourceManager->sampleCurrentFrame(frame_copy, metadata)) {
 	sampled++;
 	std::cout << "Sampled frame " << sampled << "/" << n_frames_ << std::endl;
+	
+	// Fire progress event
+	std::string progress_data = "sampled " + std::to_string(sampled) + 
+	                           " total " + std::to_string(n_frames_);
+	fireEvent("sampling_progress", progress_data);
       }
     }
     
@@ -75,15 +83,7 @@ void SamplingManager::samplingLoop() {
   
   m_bActive = false;
   
-  // Thread-safe read of callback
-  std::string callback_copy;
-  {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    callback_copy = completion_callback_;
-  }
-  
-  if (!callback_copy.empty()) {
-    extern SharedQueue<std::string> mouse_queue;
-    mouse_queue.push_back(callback_copy);
-  }  
+  // Fire completion event
+  std::string data = "sampled " + std::to_string(sampled) + " total " + std::to_string(n_frames_);
+  fireEvent("sampling_complete", data);
 }
