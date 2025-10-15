@@ -1050,7 +1050,27 @@ private:
         if (debug_level_ >= DEBUG_CRITICAL) {
             std::cout << "Eye tracking analysis thread started" << std::endl;
         }
-        
+#ifdef __linux__
+    // Pin to a specific core (avoid CCX hopping on AMD)
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(4, &cpuset);  // Core 4, for example
+    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    
+    // Increase priority
+    struct sched_param param;
+    param.sched_priority = sched_get_priority_max(SCHED_FIFO) - 1;
+    pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+#elif __APPLE__
+    // macOS: Set thread priority (no CPU pinning API)
+    struct sched_param param;
+    param.sched_priority = sched_get_priority_max(SCHED_FIFO) - 1;
+    pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+    
+    // Alternative: Use QoS (Quality of Service) classes
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
+    
         while (running_) {
             try {
                 FrameData frame_data = frame_queue_.front();
