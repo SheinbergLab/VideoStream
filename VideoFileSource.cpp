@@ -3,6 +3,8 @@
 #include <iostream>
 #include <dynio.h>
 
+extern void fireEvent(const std::string& type, const std::string& data);
+
 VideoFileSource::VideoFileSource(const std::string& videoFile,
                                  const std::string& dgzFile,
                                  float playbackSpeed,
@@ -94,6 +96,9 @@ void VideoFileSource::rewind() {
   current_idx = 0;
   default_frameID = 0;
   playback_start = std::chrono::high_resolution_clock::now();
+  
+  // Fire event to notify plugins/UI
+  fireEvent("video_source_rewind", "");
 }
 
 VideoFileSource::~VideoFileSource() {
