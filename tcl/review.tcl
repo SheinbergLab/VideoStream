@@ -407,7 +407,7 @@ eyetracking::resetP4Model
 playback_mode [lindex $files 1]
 
 # We have already calibrated this P4 model
-eyetracking::setP4Model .421 168.5
+eyetracking::setP4Model .421 169.5
 eyetracking::setDetectionMode full
 
 # For now, save metadata/analysis for all frames
