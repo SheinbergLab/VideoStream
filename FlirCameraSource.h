@@ -26,26 +26,30 @@ private:
     void configureCameraDefaults();
     
 public:
-    FlirCameraSource(int cameraId = 0, bool flipView = true, int flipCode = -2);
-    ~FlirCameraSource();
-    
-    bool getNextFrame(cv::Mat& frame, FrameMetadata& metadata) override;
-    bool isOpen() const override;
-    float getFrameRate() const override { return fps; }
-    int getWidth() const override { return width; }
-    int getHeight() const override { return height; }
-    bool isColor() const override { return color; }
-    void close() override;
-    
-    // FLIR-specific configuration methods
-    bool configureExposure(float exposureTime);
-    bool configureGain(float gain);
-    bool configureFrameRate(float frameRate);
-    bool configureROI(int w, int h, int offsetX, int offsetY);
-    bool configureChunkData(bool enable, bool verbose = false);
-    bool getLineStatus();
-    
-    Spinnaker::GenApi::INodeMap* getNodeMap() { return nodeMapPtr; }
+  FlirCameraSource(int cameraId = 0, bool flipView = true, int flipCode = -2);
+  ~FlirCameraSource();
+  
+  bool startAcquisition();
+  bool stopAcquisition();
+  bool isStreaming() const { return pCam && pCam->IsStreaming(); }
+  
+  bool getNextFrame(cv::Mat& frame, FrameMetadata& metadata) override;
+  bool isOpen() const override;
+  float getFrameRate() const override { return fps; }
+  int getWidth() const override { return width; }
+  int getHeight() const override { return height; }
+  bool isColor() const override { return color; }
+  void close() override;
+  
+  // FLIR-specific configuration methods
+  bool configureExposure(float exposureTime);
+  bool configureGain(float gain);
+  bool configureFrameRate(float frameRate);
+  bool configureROI(int w, int h, int offsetX, int offsetY);
+  bool configureChunkData(bool enable, bool verbose = false);
+  bool getLineStatus();
+  
+  Spinnaker::GenApi::INodeMap* getNodeMap() { return nodeMapPtr; }
 };
 
 #endif // USE_FLIR

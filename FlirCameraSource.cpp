@@ -79,10 +79,41 @@ bool FlirCameraSource::initializeCamera() {
         fps = static_cast<float>(ptrAcquisitionFrameRate->GetValue());
     }
     
-    // Start acquisition
-    pCam->BeginAcquisition();
-    
     return true;
+}
+
+bool FlirCameraSource::startAcquisition() {
+    if (!pCam || !pCam->IsValid()) {
+        return false;
+    }
+    
+    if (pCam->IsStreaming()) {
+        return true; // Already streaming
+    }
+    
+    try {
+        pCam->BeginAcquisition();
+        std::cout << "FLIR camera acquisition started" << std::endl;
+        return true;
+    } catch (Spinnaker::Exception &e) {
+        std::cerr << "Error starting acquisition: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+bool FlirCameraSource::stopAcquisition() {
+    if (!pCam || !pCam->IsStreaming()) {
+        return true;
+    }
+    
+    try {
+        pCam->EndAcquisition();
+        std::cout << "FLIR camera acquisition stopped" << std::endl;
+        return true;
+    } catch (Spinnaker::Exception &e) {
+        std::cerr << "Error stopping acquisition: " << e.what() << std::endl;
+        return false;
+    }
 }
 
 bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
@@ -150,21 +181,19 @@ bool FlirCameraSource::isOpen() const {
 }
 
 void FlirCameraSource::close() {
-    if (pCam && pCam->IsStreaming()) {
-        pCam->EndAcquisition();
-    }
-    
-    if (pCam && pCam->IsInitialized()) {
-        pCam->DeInit();
-    }
-    
-    pCam = nullptr;
-    camList.Clear();
-    
-    if (system) {
-        system->ReleaseInstance();
-        system = nullptr;
-    }
+  stopAcquisition();
+  
+  if (pCam && pCam->IsInitialized()) {
+    pCam->DeInit();
+  }
+  
+  pCam = nullptr;
+  camList.Clear();
+  
+  if (system) {
+    system->ReleaseInstance();
+    system = nullptr;
+  }
 }
 
 bool FlirCameraSource::getLineStatus() {
