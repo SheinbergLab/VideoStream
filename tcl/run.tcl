@@ -264,7 +264,7 @@ proc review_mode {} {
     review_gui
 }
 
-proc collect_samples { { n 16 } { interval_ms 700 } } {
+proc collect_samples { { n 8 } { interval_ms 700 } } {
     set random 1
     run_mode
     vstream::reviewClear
@@ -349,17 +349,11 @@ proc toggle_recording {} {
     }
 }
 
-proc rewind_playback {} {
-    vstream::stopSource
-    vstream::startSource flir
-    puts "⏮  Rewound to beginning"
-}
-
 # ============================================================================
-# PLAYBACK MODE
+# RUN MODE
 # ============================================================================
 
-proc playback_mode { { filename {} } } {
+proc run_mode { { filename {} } } {
     if { $filename == "" } {
         set filename $::source_file
     } else {
@@ -379,7 +373,6 @@ proc playback_mode { { filename {} } } {
     
     # Button row
     add_button -100 -50 80 40 Setup collect_samples
-    add_button -260 -50 80 40 Rewind rewind_playback
     
     # Save button - main feature
     set save_btn [add_button -180 -50 80 40 "Save Run" toggle_recording]
