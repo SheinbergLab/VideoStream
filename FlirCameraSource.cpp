@@ -13,14 +13,14 @@ using namespace cv;
 
 extern std::atomic<int> frame_width, frame_height;
 
-FlirCameraSource::FlirCameraSource(int cameraId, bool flipView, int flipCode)
+FlirCameraSource::FlirCameraSource(int cameraId, bool flipView, int flipCode, int width, int height)
     : camera_id(cameraId)
     , flip_view(flipView)
     , flip_code(flipCode)
+    , width(width)
+    , height(height)
     , nodeMapPtr(nullptr)
     , fps(100.0)
-    , width(1000)
-    , height(500)
     , offset_x(0)
     , offset_y(0)      
     , color(false)

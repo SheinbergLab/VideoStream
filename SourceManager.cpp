@@ -50,7 +50,9 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
         int camera_id = 0;
         bool flip = false;
         int flip_code = -2;
-        
+        int width = 1920;
+	int height = 1200;
+	
         if (params.count("id")) {
             camera_id = std::stoi(params.at("id"));
         }
@@ -60,22 +62,14 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
         if (params.count("flip_code")) {
             flip_code = std::stoi(params.at("flip_code"));
         }
-
-        if (params.count("width") || params.count("height") || 
-            params.count("offset_x") || params.count("offset_y")) {
-	  
-	  int w = params.count("width") ? std::stoi(params["width"]) : 1920;
-	  int h = params.count("height") ? std::stoi(params["height"]) : 1200;
-	  int ox = params.count("offset_x") ? std::stoi(params["offset_x"]) : 0;
-	  int oy = params.count("offset_y") ? std::stoi(params["offset_y"]) : 0;
-          
-	  FlirCameraSource* flirSource = dynamic_cast<FlirCameraSource*>(*fs);
-	  if (flirSource) {
-	    flirSource->configureROI(w, h, ox, oy);
-	  }
+        if (params.count("width")) {
+            width = std::stoi(params.at("width"));
         }
-	
-        return std::make_unique<FlirCameraSource>(camera_id, flip, flip_code);
+        if (params.count("height")) {
+            height = std::stoi(params.at("height"));
+        }
+        
+        return std::make_unique<FlirCameraSource>(camera_id, flip, flip_code, width, height);
     }
 #endif
     
