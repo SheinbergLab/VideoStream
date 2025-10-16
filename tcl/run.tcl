@@ -409,7 +409,7 @@ namespace eval ::ROI {
     proc nudgeUp  { args } { nudge 0 1 }
     proc nudgeDown  { args } { nudge 0 -1 }
 
-    proc center_on_pupil {} {
+    proc center_on_pupil { args } {
 	set step [get_step]
 	
 	# Get current ROI
