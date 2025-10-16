@@ -481,6 +481,11 @@ proc run_mode {} {
     add_button -320 -85 30 30 "^" {::ROI::nudge 0 1}
     add_button -350 -67 30 30 "<" {::ROI::nudge -1 0}
     add_button -290 -67 30 30 ">" {::ROI::nudge 1 0}
+
+    bind_key $::keys::RIGHT {::ROI::nudge 1 0}
+    bind_key $::keys::LEFT {::ROI::nudge -1 0}
+    bind_key $::keys::DOWN {::ROI::nudge 0 -1}
+    bind_key $::keys::UP {::ROI::nudge 0 1}
     
     # Button row
     add_button -100 -50 80 40 Setup collect_samples
@@ -506,7 +511,7 @@ proc run_mode {} {
     # Key bindings
     bind_key "s" toggle_recording
     bind_key "r" rewind_playback
-    bind_key "c" center_on_pupil
+    bind_key "c" ::ROI::center_on_pupil
     
     # Show instructions
     puts ""
