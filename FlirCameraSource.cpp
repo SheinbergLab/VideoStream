@@ -301,10 +301,86 @@ bool FlirCameraSource::configureFrameRate(float frameRate) {
     }
 }
 
+bool FlirCameraSource::getROIConstraints(ROIConstraints& constraints) {
+    if (!nodeMapPtr) return false;
+    
+    try {
+        CIntegerPtr ptrWidth = nodeMapPtr->GetNode("Width");
+        if (IsAvailable(ptrWidth) && IsReadable(ptrWidth)) {
+            constraints.width_min = ptrWidth->GetMin();
+            constraints.width_max = ptrWidth->GetMax();
+            constraints.width_inc = ptrWidth->GetInc();
+        }
+        
+        CIntegerPtr ptrHeight = nodeMapPtr->GetNode("Height");
+        if (IsAvailable(ptrHeight) && IsReadable(ptrHeight)) {
+            constraints.height_min = ptrHeight->GetMin();
+            constraints.height_max = ptrHeight->GetMax();
+            constraints.height_inc = ptrHeight->GetInc();
+        }
+        
+        CIntegerPtr ptrOffsetX = nodeMapPtr->GetNode("OffsetX");
+        if (IsAvailable(ptrOffsetX) && IsReadable(ptrOffsetX)) {
+            constraints.offset_x_min = ptrOffsetX->GetMin();
+            constraints.offset_x_max = ptrOffsetX->GetMax();
+            constraints.offset_x_inc = ptrOffsetX->GetInc();
+        }
+        
+        CIntegerPtr ptrOffsetY = nodeMapPtr->GetNode("OffsetY");
+        if (IsAvailable(ptrOffsetY) && IsReadable(ptrOffsetY)) {
+            constraints.offset_y_min = ptrOffsetY->GetMin();
+            constraints.offset_y_max = ptrOffsetY->GetMax();
+            constraints.offset_y_inc = ptrOffsetY->GetInc();
+        }
+        
+        return true;
+    } catch (Spinnaker::Exception &e) {
+        std::cerr << "Error getting ROI constraints: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 bool FlirCameraSource::configureROI(int w, int h, int offsetX, int offsetY) {
     if (!nodeMapPtr) return false;
     
     try {
+        // Get constraints first
+        ROIConstraints constraints;
+        if (!getROIConstraints(constraints)) {
+            std::cerr << "Failed to get ROI constraints" << std::endl;
+            return false;
+        }
+        
+        // Validate and adjust values to meet increment requirements
+        if (w % constraints.width_inc != 0) {
+            int adjusted = (w / constraints.width_inc) * constraints.width_inc;
+            std::cerr << "Warning: Width " << w << " not divisible by " 
+                      << constraints.width_inc << ", adjusting to " << adjusted << std::endl;
+            w = adjusted;
+        }
+        
+        if (h % constraints.height_inc != 0) {
+            int adjusted = (h / constraints.height_inc) * constraints.height_inc;
+            std::cerr << "Warning: Height " << h << " not divisible by " 
+                      << constraints.height_inc << ", adjusting to " << adjusted << std::endl;
+            h = adjusted;
+        }
+        
+        if (offsetX % constraints.offset_x_inc != 0) {
+            int adjusted = (offsetX / constraints.offset_x_inc) * constraints.offset_x_inc;
+            std::cerr << "Warning: OffsetX " << offsetX << " not divisible by " 
+                      << constraints.offset_x_inc << ", adjusting to " << adjusted << std::endl;
+            offsetX = adjusted;
+        }
+        
+        if (offsetY % constraints.offset_y_inc != 0) {
+            int adjusted = (offsetY / constraints.offset_y_inc) * constraints.offset_y_inc;
+            std::cerr << "Warning: OffsetY " << offsetY << " not divisible by " 
+                      << constraints.offset_y_inc << ", adjusting to " << adjusted << std::endl;
+            offsetY = adjusted;
+        }
+        
+        // Now set the values
         CIntegerPtr ptrWidth = nodeMapPtr->GetNode("Width");
         if (!IsAvailable(ptrWidth) || !IsWritable(ptrWidth))
             return false;
@@ -327,11 +403,11 @@ bool FlirCameraSource::configureROI(int w, int h, int offsetX, int offsetY) {
         
         width = w;
         height = h;
-
-        // Update global frame dimensions (for widget creation)
+        
+        // Update global frame dimensions
         frame_width = w;
-        frame_height = h;	
-	
+        frame_height = h;
+        
         return true;
     } catch (Spinnaker::Exception &e) {
         std::cerr << "Error configuring ROI: " << e.what() << std::endl;

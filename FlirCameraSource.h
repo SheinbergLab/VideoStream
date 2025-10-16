@@ -42,6 +42,15 @@ public:
   void close() override;
   
   // FLIR-specific configuration methods
+  struct ROIConstraints {
+    int width_min, width_max, width_inc;
+    int height_min, height_max, height_inc;
+    int offset_x_min, offset_x_max, offset_x_inc;
+    int offset_y_min, offset_y_max, offset_y_inc;
+  };
+  
+  bool getROIConstraints(ROIConstraints& constraints);
+  
   bool configureExposure(float exposureTime);
   bool configureGain(float gain);
   bool configureFrameRate(float frameRate);
