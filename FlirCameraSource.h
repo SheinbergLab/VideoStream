@@ -28,7 +28,7 @@ private:
     
 public:
   FlirCameraSource(int cameraId = 0, bool flipView = true, int flipCode = -2,
-		   int width = 1920, height = 1200);
+		   int width = 1920, int height = 1200);
   ~FlirCameraSource();
   
   bool startAcquisition();
