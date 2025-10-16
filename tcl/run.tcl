@@ -56,7 +56,7 @@ proc onEvent {event data} {
             puts "📹 End of video reached"
             if {$::Registry::recording_state eq "recording"} {
                 puts "💾 Auto-saving recording..."
-                stop_metadata_recording
+                stop_recording
             }
 	}
 	
@@ -277,11 +277,11 @@ proc collect_samples { { n 8 } { interval_ms 700 } } {
 }
 
 # ============================================================================
-# METADATA RECORDING FUNCTIONS
+# RECORDING FUNCTIONS
 # ============================================================================
 
-proc start_metadata_recording {} {
-    set base_name [file rootname [file tail $::source_file]]
+proc start_recording {} {
+    set base_name EyeTracking
     set timestamp [clock format [clock seconds] -format "%Y%m%d_%H%M%S"]
     set metadata_name "${base_name}_${timestamp}"
     
@@ -319,7 +319,7 @@ proc start_metadata_recording {} {
     vstream::startSource flir
 }
 
-proc stop_metadata_recording {} {
+proc stop_recording {} {
     if {[catch {vstream::fileClose} err]} {
         puts "❌ Failed to close recording: $err"
     } else {
@@ -343,9 +343,9 @@ proc stop_metadata_recording {} {
 
 proc toggle_recording {} {
     if {$::Registry::recording_state eq "idle"} {
-        start_metadata_recording
+        start_recording
     } else {
-        stop_metadata_recording
+        stop_recording
     }
 }
 
@@ -353,16 +353,11 @@ proc toggle_recording {} {
 # RUN MODE
 # ============================================================================
 
-proc run_mode { { filename {} } } {
-    if { $filename == "" } {
-        set filename $::source_file
-    } else {
-        set ::source_file $filename
-    }
+proc run_mode {} {
     
     # Stop any existing recording when switching modes
     if {$::Registry::recording_state ne "idle"} {
-        stop_metadata_recording
+        stop_recording
     }
     
     clear_widgets
