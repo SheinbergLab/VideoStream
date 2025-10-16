@@ -488,8 +488,8 @@ proc run_mode {} {
     flir::startAcquisition
 
     # ROI control buttons (compact arrows)
-    add_button -320 -50 30 30 "^" {::ROI::nudge 0 -1}
-    add_button -320 -85 30 30 "v" {::ROI::nudge 0 1}
+    add_button -320 -50 30 30 "v" {::ROI::nudge 0 -1}
+    add_button -320 -85 30 30 "^" {::ROI::nudge 0 1}
     add_button -350 -67 30 30 "<" {::ROI::nudge -1 0}
     add_button -290 -67 30 30 ">" {::ROI::nudge 1 0}
     
