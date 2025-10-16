@@ -60,7 +60,21 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
         if (params.count("flip_code")) {
             flip_code = std::stoi(params.at("flip_code"));
         }
-        
+
+        if (params.count("width") || params.count("height") || 
+            params.count("offset_x") || params.count("offset_y")) {
+	  
+	  int w = params.count("width") ? std::stoi(params["width"]) : 1440;
+	  int h = params.count("height") ? std::stoi(params["height"]) : 1080;
+	  int ox = params.count("offset_x") ? std::stoi(params["offset_x"]) : 0;
+	  int oy = params.count("offset_y") ? std::stoi(params["offset_y"]) : 0;
+          
+	  FlirCameraSource* flirSource = dynamic_cast<FlirCameraSource*>(*fs);
+	  if (flirSource) {
+	    flirSource->configureROI(w, h, ox, oy);
+	  }
+        }
+	
         return std::make_unique<FlirCameraSource>(camera_id, flip, flip_code);
     }
 #endif
