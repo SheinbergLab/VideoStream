@@ -59,6 +59,7 @@ public:
   bool configureGain(float gain);
   bool configureFrameRate(float frameRate);
   bool configureROI(int w, int h, int offsetX, int offsetY);
+  bool setROIOffset(int offsetX, int offsetY);  
   bool configureChunkData(bool enable, bool verbose = false);
   bool getLineStatus();
   

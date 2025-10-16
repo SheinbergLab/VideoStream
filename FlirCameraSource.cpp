@@ -342,6 +342,62 @@ bool FlirCameraSource::getROIConstraints(ROIConstraints& constraints) {
     }
 }
 
+bool FlirCameraSource::setROIOffset(int offsetX, int offsetY) {
+    if (!nodeMapPtr) return false;
+    
+    try {
+        // Get constraints
+        ROIConstraints constraints;
+        if (!getROIConstraints(constraints)) {
+            std::cerr << "Failed to get ROI constraints" << std::endl;
+            return false;
+        }
+        
+        // Align to increment
+        offsetX = (offsetX / constraints.offset_x_inc) * constraints.offset_x_inc;
+        offsetY = (offsetY / constraints.offset_y_inc) * constraints.offset_y_inc;
+        
+        // Get sensor and current ROI dimensions
+        CIntegerPtr ptrWidthMax = nodeMapPtr->GetNode("WidthMax");
+        CIntegerPtr ptrHeightMax = nodeMapPtr->GetNode("HeightMax");
+        int sensor_width = (IsAvailable(ptrWidthMax) && IsReadable(ptrWidthMax)) ? 
+                          ptrWidthMax->GetValue() : 1920;
+        int sensor_height = (IsAvailable(ptrHeightMax) && IsReadable(ptrHeightMax)) ? 
+                           ptrHeightMax->GetValue() : 1200;
+        
+        // Clamp to valid range
+        int max_offset_x = sensor_width - width;
+        int max_offset_y = sensor_height - height;
+        
+        offsetX = std::max(0, std::min(offsetX, max_offset_x));
+        offsetY = std::max(0, std::min(offsetY, max_offset_y));
+        
+        // Re-align after clamping
+        offsetX = (offsetX / constraints.offset_x_inc) * constraints.offset_x_inc;
+        offsetY = (offsetY / constraints.offset_y_inc) * constraints.offset_y_inc;
+        
+        // Set offsets ONLY (width/height unchanged, safe during streaming)
+        CIntegerPtr ptrOffsetX = nodeMapPtr->GetNode("OffsetX");
+        if (!IsAvailable(ptrOffsetX) || !IsWritable(ptrOffsetX))
+            return false;
+        ptrOffsetX->SetValue(offsetX);
+        
+        CIntegerPtr ptrOffsetY = nodeMapPtr->GetNode("OffsetY");
+        if (!IsAvailable(ptrOffsetY) || !IsWritable(ptrOffsetY))
+            return false;
+        ptrOffsetY->SetValue(offsetY);
+        
+        // Update cached values
+        offset_x = offsetX;
+        offset_y = offsetY;
+        
+        return true;
+    } catch (Spinnaker::Exception &e) {
+        std::cerr << "Error setting ROI offset: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 bool FlirCameraSource::configureROI(int w, int h, int offsetX, int offsetY) {
     if (!nodeMapPtr) return false;
     

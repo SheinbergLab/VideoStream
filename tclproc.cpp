@@ -1511,6 +1511,41 @@ static int getROICmd(ClientData clientData, Tcl_Interp *interp,
 #endif
 }
 
+static int setROIOffsetCmd(ClientData clientData, Tcl_Interp *interp,
+                           int argc, char *argv[])
+{
+    if (argc != 3) {
+        Tcl_AppendResult(interp, "usage: ", argv[0], " offset_x offset_y", NULL);
+        return TCL_ERROR;
+    }
+    
+    int offset_x, offset_y;
+    if (Tcl_GetInt(interp, argv[1], &offset_x) != TCL_OK ||
+        Tcl_GetInt(interp, argv[2], &offset_y) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+#ifdef USE_FLIR
+    extern IFrameSource* g_frameSource;
+    FlirCameraSource* flirSource = 
+        dynamic_cast<FlirCameraSource*>(g_frameSource);
+    
+    if (!flirSource) {
+        Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+        return TCL_ERROR;
+    }
+    
+    if (flirSource->setROIOffset(offset_x, offset_y)) {
+        return TCL_OK;
+    } else {
+        Tcl_AppendResult(interp, argv[0], ": failed to set offset", NULL);
+        return TCL_ERROR;
+    }
+#else
+    Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
+    return TCL_ERROR;
+#endif
+}
 
 /*********************************************************************/
 /*                       Shutdown Command                            */
@@ -1651,6 +1686,9 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "flir::getROI",
 		    (Tcl_CmdProc *) getROICmd, 
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "flir::setROIOffset",
+		    (Tcl_CmdProc *) setROIOffsetCmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);  
   
   
