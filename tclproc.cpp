@@ -1392,6 +1392,64 @@ static int configureFrameRateCmd(ClientData clientData, Tcl_Interp *interp,
 }
 
 
+static int getROIConstraintsCmd(ClientData clientData, Tcl_Interp *interp,
+                                int argc, char *argv[])
+{
+#ifdef USE_FLIR
+    extern IFrameSource* g_frameSource;
+    FlirCameraSource* flirSource = 
+        dynamic_cast<FlirCameraSource*>(g_frameSource);
+    
+    if (!flirSource) {
+        Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+        return TCL_ERROR;
+    }
+    
+    FlirCameraSource::ROIConstraints constraints;
+    if (!flirSource->getROIConstraints(constraints)) {
+        Tcl_AppendResult(interp, argv[0], ": failed to get constraints", NULL);
+        return TCL_ERROR;
+    }
+    
+    // Return as a dict
+    Tcl_Obj* resultDict = Tcl_NewDictObj();
+    
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("width_min", -1),
+                   Tcl_NewIntObj(constraints.width_min));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("width_max", -1),
+                   Tcl_NewIntObj(constraints.width_max));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("width_inc", -1),
+                   Tcl_NewIntObj(constraints.width_inc));
+    
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("height_min", -1),
+                   Tcl_NewIntObj(constraints.height_min));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("height_max", -1),
+                   Tcl_NewIntObj(constraints.height_max));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("height_inc", -1),
+                   Tcl_NewIntObj(constraints.height_inc));
+    
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_x_min", -1),
+                   Tcl_NewIntObj(constraints.offset_x_min));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_x_max", -1),
+                   Tcl_NewIntObj(constraints.offset_x_max));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_x_inc", -1),
+                   Tcl_NewIntObj(constraints.offset_x_inc));
+    
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_y_min", -1),
+                   Tcl_NewIntObj(constraints.offset_y_min));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_y_max", -1),
+                   Tcl_NewIntObj(constraints.offset_y_max));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_y_inc", -1),
+                   Tcl_NewIntObj(constraints.offset_y_inc));
+    
+    Tcl_SetObjResult(interp, resultDict);
+    return TCL_OK;
+#else
+    Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
+    return TCL_ERROR;
+#endif
+}
+
 static int configureROICmd(ClientData clientData, Tcl_Interp *interp,
                int argc, char *argv[])
 {
@@ -1422,6 +1480,38 @@ static int configureROICmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+static int getROICmd(ClientData clientData, Tcl_Interp *interp,
+                     int argc, char *argv[])
+{
+#ifdef USE_FLIR
+    extern IFrameSource* g_frameSource;
+    FlirCameraSource* flirSource = 
+        dynamic_cast<FlirCameraSource*>(g_frameSource);
+    
+    if (!flirSource) {
+        Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+        return TCL_ERROR;
+    }
+    
+    // Get current dimensions from the camera
+    int width = flirSource->getWidth();
+    int height = flirSource->getHeight();
+    
+    // You'll need to add offset tracking to FlirCameraSource
+    // For now, return what we know
+    Tcl_Obj* resultDict = Tcl_NewDictObj();
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("width", -1),
+                   Tcl_NewIntObj(width));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("height", -1),
+                   Tcl_NewIntObj(height));
+    
+    Tcl_SetObjResult(interp, resultDict);
+    return TCL_OK;
+#else
+    Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
+    return TCL_ERROR;
+#endif
+}
 
 
 /*********************************************************************/
@@ -1555,9 +1645,15 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateCommand(interp, "flir::configureFrameRate",
 		    (Tcl_CmdProc *) configureFrameRateCmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "flir::getROIConstraints",
+                  (Tcl_CmdProc *) getROIConstraintsCmd, 
+                  (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);  
   Tcl_CreateCommand(interp, "flir::configureROI",
 		    (Tcl_CmdProc *) configureROICmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "flir::getROI",
+		    (Tcl_CmdProc *) getROICmd, 
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);  
   
   
   Tcl_CreateCommand(interp, "vstream::shutdown", (Tcl_CmdProc *) shutdownCmd, 
