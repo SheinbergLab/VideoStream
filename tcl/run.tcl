@@ -398,12 +398,12 @@ namespace eval ::ROI {
 	if {[catch {
 	    flir::setROIOffset $new_x $new_y
 	} err]} {
-	    puts "ROI offset update failed: $err"
+#	    puts "ROI offset update failed: $err"
 	} else {
-	    puts "ROI offset: ($new_x, $new_y)"
+#	    puts "ROI offset: ($new_x, $new_y)"
 	}
     }
-    
+
     proc center_on_pupil {} {
 	set step [get_step]
 	
@@ -411,8 +411,6 @@ namespace eval ::ROI {
 	set roi [flir::getROI]
 	set w [dict get $roi width]
 	set h [dict get $roi height]
-	set x [dict get $roi offset_x]
-	set y [dict get $roi offset_y]
 	
 	# Get latest results from existing command
 	set results [eyetracking::getResults]
@@ -432,21 +430,21 @@ namespace eval ::ROI {
 	set px [dict get $pupil x]
 	set py [dict get $pupil y]
 	
-	# Calculate new offset to center pupil
+	# Current pupil position is in SENSOR coordinates (includes current offset)
+	# We want pupil at center of ROI, so:
+	# new_offset = current_pupil_position - ROI_size/2
+	
 	set center_x [expr {$w / 2}]
 	set center_y [expr {$h / 2}]
 	
 	set new_x [expr {int($px - $center_x)}]
 	set new_y [expr {int($py - $center_y)}]
 	
-	# Align to increment
-	set new_x [expr {($new_x / $step) * $step}]
-	set new_y [expr {($new_y / $step) * $step}]
-	
 	puts "Centering pupil at sensor ($px, $py)..."
 	
+	# Use offset-only command (safe during streaming)
 	if {[catch {
-	    flir::configureROI $w $h $new_x $new_y
+	    flir::setROIOffset $new_x $new_y
 	} err]} {
 	    puts "ROI center failed: $err"
 	} else {
@@ -508,6 +506,7 @@ proc run_mode {} {
     # Key bindings
     bind_key "s" toggle_recording
     bind_key "r" rewind_playback
+    bind_key "c" center_on_pupil
     
     # Show instructions
     puts ""
