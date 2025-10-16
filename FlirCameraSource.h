@@ -21,7 +21,8 @@ private:
     bool color;
     bool flip_view;
     int flip_code;
-    
+  int offset_x, offset_y;
+  
     bool initializeCamera();
     void configureCameraDefaults();
     
@@ -48,7 +49,9 @@ public:
     int offset_x_min, offset_x_max, offset_x_inc;
     int offset_y_min, offset_y_max, offset_y_inc;
   };
-  
+
+  int getOffsetX() const { return offset_x; }
+  int getOffsetY() const { return offset_y; }
   bool getROIConstraints(ROIConstraints& constraints);
   
   bool configureExposure(float exposureTime);

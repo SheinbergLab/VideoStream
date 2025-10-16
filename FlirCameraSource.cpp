@@ -21,6 +21,8 @@ FlirCameraSource::FlirCameraSource(int cameraId, bool flipView, int flipCode)
     , fps(100.0)
     , width(1000)
     , height(500)
+    , offset_x(0)
+    , offset_y(0)      
     , color(false)
 {
     processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
@@ -403,7 +405,9 @@ bool FlirCameraSource::configureROI(int w, int h, int offsetX, int offsetY) {
         
         width = w;
         height = h;
-        
+	offset_x = offsetX;
+	offset_y = offsetY;
+	
         // Update global frame dimensions
         frame_width = w;
         frame_height = h;
