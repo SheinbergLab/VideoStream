@@ -1240,8 +1240,78 @@ static int hideCmd(ClientData clientData, Tcl_Interp *interp,
 
 
 /*********************************************************************/
-/*                       Configure Commands                          */
+/*                  FLIR Configure Commands                          */
 /*********************************************************************/
+
+static int startAcquisitionCmd(ClientData clientData, Tcl_Interp *interp,
+                int argc, char *argv[])
+{
+  int res = 0;
+#ifdef USE_FLIR
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* flirSource = 
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+  if (flirSource) {
+    res = flirSource->startAcquisition() ? 1 : -1;
+  } else {
+    Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+    return TCL_ERROR;
+  }
+#else
+  Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
+  return TCL_ERROR;
+#endif
+  
+  if (res < 0) {
+    Tcl_AppendResult(interp, argv[0], ": error starting acquisition", NULL);
+    return TCL_ERROR;
+  }
+  return TCL_OK;
+}
+
+static int stopAcquisitionCmd(ClientData clientData, Tcl_Interp *interp,
+                int argc, char *argv[])
+{
+  int res = 0;
+#ifdef USE_FLIR
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* flirSource = 
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+  if (flirSource) {
+    res = flirSource->stopAcquisition() ? 1 : -1;
+  } else {
+    Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+    return TCL_ERROR;
+  }
+#else
+  Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
+  return TCL_ERROR;
+#endif
+  
+  if (res < 0) {
+    Tcl_AppendResult(interp, argv[0], ": error stopping acquisition", NULL);
+    return TCL_ERROR;
+  }
+  return TCL_OK;
+}
+
+static int isStreamingCmd(ClientData clientData, Tcl_Interp *interp,
+                int argc, char *argv[])
+{
+#ifdef USE_FLIR
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* flirSource = 
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+  if (flirSource) {
+    Tcl_SetResult(interp, (char*)(flirSource->isStreaming() ? "1" : "0"), TCL_STATIC);
+  } else {
+    Tcl_SetResult(interp, "0", TCL_STATIC);
+  }
+#else
+  Tcl_SetResult(interp, "0", TCL_STATIC);
+#endif
+  return TCL_OK;
+}
 
 static int configureExposureCmd(ClientData clientData, Tcl_Interp *interp,
                 int argc, char *argv[])
@@ -1467,18 +1537,28 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateCommand(interp, "vstream::displayClose", (Tcl_CmdProc *) hideCmd, 
 		    (ClientData) p, (Tcl_CmdDeleteProc *) NULL);
 
-  Tcl_CreateCommand(interp, "vstream::configureExposure",
-            (Tcl_CmdProc *) configureExposureCmd, 
-            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "vstream::configureGain",
-            (Tcl_CmdProc *) configureGainCmd, 
-            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "vstream::configureFrameRate",
-            (Tcl_CmdProc *) configureFrameRateCmd, 
-            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "vstream::configureROI",
-            (Tcl_CmdProc *) configureROICmd, 
-            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "flir::startAcquisition",
+		    (Tcl_CmdProc *) startAcquisitionCmd, 
+		    (ClientData)NULL, (Tcl_CmdDeleteProc *)NULL);
+  Tcl_CreateCommand(interp, "flir::stopAcquisition",
+		    (Tcl_CmdProc *) stopAcquisitionCmd, 
+		    (ClientData)NULL, (Tcl_CmdDeleteProc *)NULL);
+  Tcl_CreateCommand(interp, "flir::isStreaming",
+		    (Tcl_CmdProc *) isStreamingCmd, 
+		    (ClientData)NULL, (Tcl_CmdDeleteProc *)NULL);  
+  Tcl_CreateCommand(interp, "flir::configureExposure",
+		    (Tcl_CmdProc *) configureExposureCmd, 
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "flir::configureGain",
+		    (Tcl_CmdProc *) configureGainCmd, 
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "flir::configureFrameRate",
+		    (Tcl_CmdProc *) configureFrameRateCmd, 
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "flir::configureROI",
+		    (Tcl_CmdProc *) configureROICmd, 
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  
   
   Tcl_CreateCommand(interp, "vstream::shutdown", (Tcl_CmdProc *) shutdownCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
