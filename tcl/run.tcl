@@ -428,7 +428,7 @@ vstream::onlySaveInObs 0
 vstream::configureROI 720 450 200 200
 vstream::configureExposure 2000
 vstream::configureGain 0.9
-vstream::frameRate 60
+vstream::configureFrameRate 60
 
 # Run
 run_mode
