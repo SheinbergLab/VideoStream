@@ -365,6 +365,11 @@ proc run_mode {} {
     clear_key_bindings
 
     vstream::startSource flir
+    flir::configureExposure 2500.0
+    flir::configureGain 6.0
+    flir::configureROI 720 450 10 10; # width, height, shift left, shift up
+    flir::configureFrameRate 60
+    flir::startAcquisition
     
     # Button row
     add_button -100 -50 80 40 Setup collect_samples
@@ -424,11 +429,6 @@ eyetracking::resetP4Model
 
 # For now, save metadata/analysis for all frames
 vstream::onlySaveInObs 0
-
-vstream::configureExposure 2500.0
-vstream::configureGain 6.0
-vstream::configureROI 960 780 280 100; # width, height, shift left, shift up
-vstream::configureFrameRate 60
 
 # Run
 run_mode
