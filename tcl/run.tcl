@@ -404,7 +404,12 @@ namespace eval ::ROI {
 	}
     }
 
-    proc center_on_pupil {} {
+    proc nudgeLeft  { args } { nudge -1 0 }
+    proc nudgeRight { args } { nudge 1 0 }
+    proc nudgeLeft  { args } { nudge 0 1 }
+    proc nudgeDown  { args } { nudge 0 -1 }
+
+    proc center_on_pupil { args } {
 	set step [get_step]
 	
 	# Get current ROI
@@ -477,15 +482,15 @@ proc run_mode {} {
     flir::startAcquisition
 
     # ROI control buttons (compact arrows)
-    add_button -320 -50 30 30 "v" {::ROI::nudge 0 -1}
-    add_button -320 -85 30 30 "^" {::ROI::nudge 0 1}
-    add_button -350 -67 30 30 "<" {::ROI::nudge -1 0}
-    add_button -290 -67 30 30 ">" {::ROI::nudge 1 0}
+    add_button -320 -50 30 30 "v" {::ROI::nudgeDown}
+    add_button -320 -85 30 30 "^" {::ROI::nudgeUp}
+    add_button -350 -67 30 30 "<" {::ROI::nudgeLeft}
+    add_button -290 -67 30 30 ">" {::ROI::nudgeRight}
 
-    bind_key $::keys::RIGHT {::ROI::nudge 1 0}
-    bind_key $::keys::LEFT {::ROI::nudge -1 0}
-    bind_key $::keys::DOWN {::ROI::nudge 0 -1}
-    bind_key $::keys::UP {::ROI::nudge 0 1}
+    bind_key $::keys::DOWN {::ROI::nudgeDown}
+    bind_key $::keys::UP {::ROI::nudgeUp}
+    bind_key $::keys::LEFT {::ROI::nudgeLeft}
+    bind_key $::keys::RIGHT {::ROI::nudgeRight}
     
     # Button row
     add_button -100 -50 80 40 Setup collect_samples
