@@ -381,38 +381,29 @@ namespace eval ::ROI {
         
         return $step
     }
-    
-    proc nudge {dx dy} {
-        set step [get_step]
-        
-        # Scale the deltas by step size
-        set dx [expr {$dx * $step}]
-        set dy [expr {$dy * $step}]
-        
-        set roi [flir::getROI]
-        set w [dict get $roi width]
-        set h [dict get $roi height]
-        set x [dict get $roi offset_x]
-        set y [dict get $roi offset_y]
-        
-        # Adjust offsets
-        set new_x [expr {$x + $dx}]
-        set new_y [expr {$y + $dy}]
-        
-        # Ensure alignment (should already be aligned, but be safe)
-        set new_x [expr {($new_x / $step) * $step}]
-        set new_y [expr {($new_y / $step) * $step}]
-        
-        # Apply
-        if {[catch {
-            flir::configureROI $w $h $new_x $new_y
-        } err]} {
-            puts "ROI update failed: $err"
-        } else {
-            puts "ROI offset: ($new_x, $new_y)"
-        }
-    }
 
+    proc nudge {dx dy} {
+	set step [get_step]
+	set dx [expr {$dx * $step}]
+	set dy [expr {$dy * $step}]
+	
+	set roi [flir::getROI]
+	set x [dict get $roi offset_x]
+	set y [dict get $roi offset_y]
+	
+	set new_x [expr {$x + $dx}]
+	set new_y [expr {$y + $dy}]
+	
+	# Use the offset-only command (safe during streaming)
+	if {[catch {
+	    flir::setROIOffset $new_x $new_y
+	} err]} {
+	    puts "ROI offset update failed: $err"
+	} else {
+	    puts "ROI offset: ($new_x, $new_y)"
+	}
+    }
+    
     proc center_on_pupil {} {
 	set step [get_step]
 	
