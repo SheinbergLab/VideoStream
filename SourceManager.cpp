@@ -64,8 +64,8 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
         if (params.count("width") || params.count("height") || 
             params.count("offset_x") || params.count("offset_y")) {
 	  
-	  int w = params.count("width") ? std::stoi(params["width"]) : 1440;
-	  int h = params.count("height") ? std::stoi(params["height"]) : 1080;
+	  int w = params.count("width") ? std::stoi(params["width"]) : 1920;
+	  int h = params.count("height") ? std::stoi(params["height"]) : 1200;
 	  int ox = params.count("offset_x") ? std::stoi(params["offset_x"]) : 0;
 	  int oy = params.count("offset_y") ? std::stoi(params["offset_y"]) : 0;
           
