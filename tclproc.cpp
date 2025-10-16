@@ -1493,17 +1493,15 @@ static int getROICmd(ClientData clientData, Tcl_Interp *interp,
         return TCL_ERROR;
     }
     
-    // Get current dimensions from the camera
-    int width = flirSource->getWidth();
-    int height = flirSource->getHeight();
-    
-    // You'll need to add offset tracking to FlirCameraSource
-    // For now, return what we know
     Tcl_Obj* resultDict = Tcl_NewDictObj();
     Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("width", -1),
-                   Tcl_NewIntObj(width));
+                   Tcl_NewIntObj(flirSource->getWidth()));
     Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("height", -1),
-                   Tcl_NewIntObj(height));
+                   Tcl_NewIntObj(flirSource->getHeight()));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_x", -1),
+                   Tcl_NewIntObj(flirSource->getOffsetX()));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_y", -1),
+                   Tcl_NewIntObj(flirSource->getOffsetY()));
     
     Tcl_SetObjResult(interp, resultDict);
     return TCL_OK;
