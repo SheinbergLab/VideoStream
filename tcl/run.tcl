@@ -350,6 +350,122 @@ proc toggle_recording {} {
 }
 
 # ============================================================================
+# ROI Control
+# ============================================================================
+
+namespace eval ::ROI {
+    variable step -1  ;# Will be set from camera constraints
+    
+    proc init {} {
+        variable step
+        
+        # Get increment from camera
+        if {[catch {flir::getROIConstraints} c]} {
+            puts "Warning: Could not get ROI constraints, using default step=8"
+            set step 8
+            return
+        }
+        
+        # Use offset increment (usually same for x and y)
+        set step [dict get $c offset_x_inc]
+        puts "ROI nudge step set to $step (from camera constraints)"
+    }
+    
+    proc get_step {} {
+        variable step
+        
+        # Lazy initialization
+        if {$step == -1} {
+            init
+        }
+        
+        return $step
+    }
+    
+    proc nudge {dx dy} {
+        set step [get_step]
+        
+        # Scale the deltas by step size
+        set dx [expr {$dx * $step}]
+        set dy [expr {$dy * $step}]
+        
+        set roi [flir::getROI]
+        set w [dict get $roi width]
+        set h [dict get $roi height]
+        set x [dict get $roi offset_x]
+        set y [dict get $roi offset_y]
+        
+        # Adjust offsets
+        set new_x [expr {$x + $dx}]
+        set new_y [expr {$y + $dy}]
+        
+        # Ensure alignment (should already be aligned, but be safe)
+        set new_x [expr {($new_x / $step) * $step}]
+        set new_y [expr {($new_y / $step) * $step}]
+        
+        # Apply
+        if {[catch {
+            flir::configureROI $w $h $new_x $new_y
+        } err]} {
+            puts "ROI update failed: $err"
+        } else {
+            puts "ROI offset: ($new_x, $new_y)"
+        }
+    }
+
+    proc center_on_pupil {} {
+	set step [get_step]
+	
+	# Get current ROI
+	set roi [flir::getROI]
+	set w [dict get $roi width]
+	set h [dict get $roi height]
+	set x [dict get $roi offset_x]
+	set y [dict get $roi offset_y]
+	
+	# Get latest results from existing command
+	set results [eyetracking::getResults]
+	
+	if {$results eq "no results"} {
+	    puts "⚠️  No tracking results available"
+	    return
+	}
+	
+	# Check if pupil was detected
+	if {![dict exists $results pupil]} {
+	    puts "⚠️  No valid pupil detected"
+	    return
+	}
+	
+	set pupil [dict get $results pupil]
+	set px [dict get $pupil x]
+	set py [dict get $pupil y]
+	
+	# Calculate new offset to center pupil
+	set center_x [expr {$w / 2}]
+	set center_y [expr {$h / 2}]
+	
+	set new_x [expr {int($px - $center_x)}]
+	set new_y [expr {int($py - $center_y)}]
+	
+	# Align to increment
+	set new_x [expr {($new_x / $step) * $step}]
+	set new_y [expr {($new_y / $step) * $step}]
+	
+	puts "Centering pupil at sensor ($px, $py)..."
+	
+	if {[catch {
+	    flir::configureROI $w $h $new_x $new_y
+	} err]} {
+	    puts "ROI center failed: $err"
+	} else {
+	    puts "✅ ROI centered at offset ($new_x, $new_y)"
+	}
+    }    
+}
+
+
+# ============================================================================
 # RUN MODE
 # ============================================================================
 
@@ -367,9 +483,15 @@ proc run_mode {} {
     vstream::startSource flir
     flir::configureExposure 2500.0
     flir::configureGain 6.0
-    flir::configureROI 720 450 10 10; # width, height, shift left, shift up
+    flir::configureROI 720 450 24 24; # width, height, shift left, shift up
     flir::configureFrameRate 60
     flir::startAcquisition
+
+    # ROI control buttons (compact arrows)
+    add_button -320 -50 30 30 "^" {::ROI::nudge 0 -1}
+    add_button -320 -85 30 30 "_" {::ROI::nudge 0 1}
+    add_button -350 -67 30 30 "<" {::ROI::nudge -1 0}
+    add_button -290 -67 30 30 ">" {::ROI::nudge 1 0}
     
     # Button row
     add_button -100 -50 80 40 Setup collect_samples
