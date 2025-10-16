@@ -9,6 +9,9 @@ using namespace Spinnaker::GenApi;
 using namespace Spinnaker::GenICam;
 using namespace cv;
 
+
+extern std::atomic<int> frame_width, frame_height;
+
 FlirCameraSource::FlirCameraSource(int cameraId, bool flipView, int flipCode)
     : camera_id(cameraId)
     , flip_view(flipView)
@@ -78,6 +81,21 @@ bool FlirCameraSource::initializeCamera() {
     if (IsAvailable(ptrAcquisitionFrameRate) && IsReadable(ptrAcquisitionFrameRate)) {
         fps = static_cast<float>(ptrAcquisitionFrameRate->GetValue());
     }
+
+    // Get initial frame dimensions
+    CIntegerPtr ptrWidth = nodeMap.GetNode("Width");
+    if (IsAvailable(ptrWidth) && IsReadable(ptrWidth)) {
+        width = static_cast<int>(ptrWidth->GetValue());
+    }
+    
+    CIntegerPtr ptrHeight = nodeMap.GetNode("Height");
+    if (IsAvailable(ptrHeight) && IsReadable(ptrHeight)) {
+        height = static_cast<int>(ptrHeight->GetValue());
+    }
+    
+    // Update global dimensions immediately
+    frame_width = width;
+    frame_height = height;    
     
     return true;
 }
@@ -308,6 +326,11 @@ bool FlirCameraSource::configureROI(int w, int h, int offsetX, int offsetY) {
         
         width = w;
         height = h;
+
+        // Update global frame dimensions (for widget creation)
+        frame_width = w;
+        frame_height = h;	
+	
         return true;
     } catch (Spinnaker::Exception &e) {
         std::cerr << "Error configuring ROI: " << e.what() << std::endl;
