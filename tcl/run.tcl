@@ -425,7 +425,7 @@ eyetracking::resetP4Model
 # For now, save metadata/analysis for all frames
 vstream::onlySaveInObs 0
 
-vstream::configureROI 720 450 200 200
+vstream::configureROI 720 450 0 0
 vstream::configureExposure 2000
 vstream::configureGain 0.9
 vstream::configureFrameRate 60
