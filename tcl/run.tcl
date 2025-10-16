@@ -403,7 +403,7 @@ proc run_mode {} {
     puts "5. Adjust parameters for next run"
     puts "6. Repeat!"
     puts ""
-    puts "Files saved as: [file tail $filename]_YYYYMMDD_HHMMSS.db"
+    puts "Files saved as: EyeTracking_YYYYMMDD_HHMMSS.db"
     puts "============================================"
     puts ""
 }
@@ -422,13 +422,6 @@ eyetracking::setPupilThreshold 45
 eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
 
-# Start with first video
-run_mode
-
-# We have already calibrated this P4 model
-eyetracking::setP4Model .421 169.5
-eyetracking::setDetectionMode full
-
 # For now, save metadata/analysis for all frames
 vstream::onlySaveInObs 0
 
@@ -436,3 +429,7 @@ vstream::configureROI 720 450 200 200
 vstream::configureExposure 2000
 vstream::configureGain 0.9
 vstream::frameRate 60
+
+# Run
+run_mode
+
