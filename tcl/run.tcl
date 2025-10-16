@@ -406,18 +406,20 @@ namespace eval ::ROI {
 
     proc nudgeLeft  { args } { nudge -1 0 }
     proc nudgeRight { args } { nudge 1 0 }
-    proc nudgeLeft  { args } { nudge 0 1 }
+    proc nudgeUp  { args } { nudge 0 1 }
     proc nudgeDown  { args } { nudge 0 -1 }
 
-    proc center_on_pupil { args } {
+    proc center_on_pupil {} {
 	set step [get_step]
 	
 	# Get current ROI
 	set roi [flir::getROI]
 	set w [dict get $roi width]
 	set h [dict get $roi height]
+	set current_offset_x [dict get $roi offset_x]
+	set current_offset_y [dict get $roi offset_y]
 	
-	# Get latest results from existing command
+	# Get latest results
 	set results [eyetracking::getResults]
 	
 	if {$results eq "no results"} {
@@ -425,7 +427,6 @@ namespace eval ::ROI {
 	    return
 	}
 	
-	# Check if pupil was detected
 	if {![dict exists $results pupil]} {
 	    puts "⚠️  No valid pupil detected"
 	    return
@@ -435,27 +436,31 @@ namespace eval ::ROI {
 	set px [dict get $pupil x]
 	set py [dict get $pupil y]
 	
-	# Current pupil position is in SENSOR coordinates (includes current offset)
-	# We want pupil at center of ROI, so:
-	# new_offset = current_pupil_position - ROI_size/2
+	# Pupil position is in ROI-local coordinates!
+	# Convert to sensor coordinates:
+	set pupil_sensor_x [expr {$current_offset_x + $px}]
+	set pupil_sensor_y [expr {$current_offset_y + $py}]
 	
+	puts "Pupil in ROI coords: ($px, $py)"
+	puts "Pupil in sensor coords: ($pupil_sensor_x, $pupil_sensor_y)"
+	
+	# Calculate new offset to center pupil in ROI
 	set center_x [expr {$w / 2}]
 	set center_y [expr {$h / 2}]
 	
-	set new_x [expr {int($px - $center_x)}]
-	set new_y [expr {int($py - $center_y)}]
+	set new_offset_x [expr {int($pupil_sensor_x - $center_x)}]
+	set new_offset_y [expr {int($pupil_sensor_y - $center_y)}]
 	
-	puts "Centering pupil at sensor ($px, $py)..."
+	puts "Centering pupil..."
 	
-	# Use offset-only command (safe during streaming)
 	if {[catch {
-	    flir::setROIOffset $new_x $new_y
+	    flir::setROIOffset $new_offset_x $new_offset_y
 	} err]} {
 	    puts "ROI center failed: $err"
 	} else {
-	    puts "✅ ROI centered at offset ($new_x, $new_y)"
+	    puts "✅ ROI centered at offset ($new_offset_x, $new_offset_y)"
 	}
-    }    
+    }
 }
 
 
