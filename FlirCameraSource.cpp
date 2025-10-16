@@ -3,6 +3,7 @@
 #ifdef USE_FLIR
 
 #include <iostream>
+#include <atomic>
 
 using namespace Spinnaker;
 using namespace Spinnaker::GenApi;
