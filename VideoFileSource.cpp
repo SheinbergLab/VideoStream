@@ -20,6 +20,7 @@ VideoFileSource::VideoFileSource(const std::string& videoFile,
     , rate_limit(rateLimited)
     , loop_playback(loopPlayback)
     , default_frameID(0)
+    , paused(false)
     , has_metadata(false)
 {
     cap.open(videoFile);
@@ -49,46 +50,81 @@ bool VideoFileSource::loadMetadata(const std::string& dgzFile) {
   return true;
 }
 
+void VideoFileSource::seekToFrame(int frame_number) {
+    if (frame_number < 0) frame_number = 0;
+    
+    int total = getTotalFrames();
+    if (total > 0 && frame_number >= total) {
+        frame_number = total - 1;
+    }
+    
+    cap.set(cv::CAP_PROP_POS_FRAMES, frame_number);
+    current_idx = frame_number;
+    default_frameID = frame_number;  // Keep frameID in sync
+    
+    // Adjust playback timing
+    if (rate_limit) {
+        playback_start = std::chrono::high_resolution_clock::now() - 
+            std::chrono::microseconds((int64_t)(current_idx * 1e6 / (fps * playback_speed)));
+    }
+}
+
+int VideoFileSource::getTotalFrames() const {
+    return (int)cap.get(cv::CAP_PROP_FRAME_COUNT);
+}
+
+void VideoFileSource::stepFrame(int delta) {
+    seekToFrame(current_idx + delta);
+}
+
 bool VideoFileSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
-  // Rate limiting for realistic playback
-  if (rate_limit && current_idx > 0) {
-    auto target_time = playback_start + 
-      std::chrono::microseconds((int64_t)(current_idx * 1e6 / (fps * playback_speed)));
-    std::this_thread::sleep_until(target_time);
-  }
-  
-  cap >> frame;
-  if (frame.empty()) {
-    if (loop_playback) {
-      rewind();
-      cap >> frame;
-      
-      // If still empty after rewind, file is unreadable
-      if (frame.empty()) {
-	return false;
-      }
+    // If paused, re-read the SAME frame (don't advance)
+    if (paused) {
+        // Seek back to current position to re-read same frame
+        cap.set(cv::CAP_PROP_POS_FRAMES, current_idx);
     } else {
-      return false;
-    }    
-  }
-  
-  metadata.systemTime = std::chrono::high_resolution_clock::now();
-  
-  if (has_metadata && current_idx < metadata_length) {
-    // Use stored metadata
-    metadata.frameID = stored_frameIDs[current_idx];
-    metadata.timestamp = stored_timestamps[current_idx];
-    metadata.lineStatus = stored_linestatus ? 
-      (bool)stored_linestatus[current_idx] : false;
-  } else {
-    // Generate default metadata
-    metadata.frameID = default_frameID++;
-    metadata.timestamp = (int64_t)(current_idx * 1e9 / fps);
-    metadata.lineStatus = false;
-  }
-  
-  current_idx++;
-  return true;
+        // Rate limiting for normal playback
+        if (rate_limit && current_idx > 0) {
+            auto target_time = playback_start + 
+                std::chrono::microseconds((int64_t)(current_idx * 1e6 / (fps * playback_speed)));
+            std::this_thread::sleep_until(target_time);
+        }
+    }
+    
+    cap >> frame;
+    if (frame.empty()) {
+        if (loop_playback && !paused) {  // Don't auto-loop when paused
+            rewind();
+            cap >> frame;
+            
+            if (frame.empty()) {
+                return false;
+            }
+        } else {
+            return false;
+        }    
+    }
+    
+    metadata.systemTime = std::chrono::high_resolution_clock::now();
+    
+    if (has_metadata && current_idx < metadata_length) {
+        metadata.frameID = stored_frameIDs[current_idx];
+        metadata.timestamp = stored_timestamps[current_idx];
+        metadata.lineStatus = stored_linestatus ? 
+            (bool)stored_linestatus[current_idx] : false;
+    } else {
+        metadata.frameID = default_frameID;
+        metadata.timestamp = (int64_t)(current_idx * 1e9 / fps);
+        metadata.lineStatus = false;
+    }
+    
+    // Only advance if not paused
+    if (!paused) {
+        current_idx++;
+        default_frameID++;
+    }
+    
+    return true;
 }
 
 void VideoFileSource::rewind() {

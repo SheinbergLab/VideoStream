@@ -28,6 +28,7 @@ private:
   float playback_speed;
   bool rate_limit;
   bool loop_playback;
+  bool paused;
   
   int64_t default_frameID;
   
@@ -49,12 +50,19 @@ public:
   int getHeight() const override { return height; }
   bool isColor() const override { return color; }
   void close() override { cap.release(); }
+
+  void setPaused(bool status) { paused = status; }
+  bool isPaused() const { return paused; }
   
   void setPlaybackSpeed(float speed) { playback_speed = speed; }
   void setRateLimiting(bool enable) { rate_limit = enable; }
   void setLooping(bool enable) { loop_playback = enable; }
   void rewind();
   bool hasMetadata() const { return has_metadata; }
+  void seekToFrame(int frame_number);
+  int getCurrentFrameIndex() const { return current_idx; }
+  int getTotalFrames() const;
+  void stepFrame(int delta);  // Step forward (+1) or backward (-1)  
   
   bool isPlaybackMode() const override { return true; }
   bool isLooping() const override { return loop_playback; }
