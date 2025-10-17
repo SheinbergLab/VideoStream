@@ -5,6 +5,7 @@ namespace eval ::Registry {
     variable current_metadata_base ""
     variable blink_indicator -1
     variable p1_lost_indicator -1
+    variable paused 0     
 }
 
 # proc to clear all
@@ -146,6 +147,107 @@ proc onEvent {event data} {
         }
     }
 }
+
+
+proc toggle_pause { args } {
+    set ::Registry::paused [expr {!$::Registry::paused}]
+    
+    if {$::Registry::paused} {
+        vstream::pause 1
+        puts "⏸️  PAUSED - Use arrow keys to step frame-by-frame"
+        
+        # Add visual indicator
+        if {![dict exists $::Registry::widgets pause_indicator]} {
+            set indicator [add_text 20 120 "PAUSED" {255 255 100} 1.0 2]
+            dict set ::Registry::widgets pause_indicator $indicator
+        }
+    } else {
+        vstream::pause 0
+        puts "▶️  Playing"
+        
+        # Remove indicator
+        if {[dict exists $::Registry::widgets pause_indicator]} {
+            remove_widget [dict get $::Registry::widgets pause_indicator]
+            dict unset ::Registry::widgets pause_indicator
+        }
+    }
+}
+
+# Step forward
+proc step_forward { code } {
+    if {!$::Registry::paused} {
+        puts "⚠️  Pause first (press Space)"
+        return
+    }
+    
+    vstream::step 1
+    set frame [vstream::getCurrentFrame]
+    puts "→ Frame $frame"
+}
+
+# Step backward
+proc step_backward { code } {
+    if {!$::Registry::paused} {
+        puts "⚠️  Pause first (press Space)"
+        return
+    }
+    
+    vstream::step -1
+    set frame [vstream::getCurrentFrame]
+    puts "← Frame $frame"
+}
+
+# Show current frame info
+proc show_frame_info { code } {
+    set frame [vstream::getCurrentFrame]
+    set total [vstream::getTotalFrames]
+    set results [eyetracking::getResults]
+    
+    puts "\n════════════════════════════════════════"
+    puts "Frame $frame / $total"
+    puts "════════════════════════════════════════"
+    
+    if {$results eq "no results"} {
+        puts "No tracking results available"
+        return
+    }
+    
+    # Pupil
+    if {[dict exists $results pupil]} {
+        set pupil [dict get $results pupil]
+        puts "Pupil: ([format %.1f [dict get $pupil x]], [format %.1f [dict get $pupil y]]) r=[format %.1f [dict get $pupil radius]]"
+    } else {
+        puts "Pupil: NOT DETECTED"
+    }
+    
+    # P1
+    if {[dict exists $results p1]} {
+        set p1 [dict get $results p1]
+        puts "P1: ([format %.1f [dict get $p1 x]], [format %.1f [dict get $p1 y]])"
+    } else {
+        puts "P1: NOT DETECTED"
+    }
+    
+    # P4
+    if {[dict exists $results p4]} {
+        set p4 [dict get $results p4]
+        puts "P4: ([format %.1f [dict get $p4 x]], [format %.1f [dict get $p4 y]])"
+    } else {
+        puts "P4: NOT DETECTED"
+    }
+    
+    # Blink
+    if {[dict exists $results in_blink]} {
+        puts "Blink: [expr {[dict get $results in_blink] ? 1 : 0 }]"
+    }
+    
+    eyetracking::debugNextFrame
+    
+    puts "════════════════════════════════════════\n"
+}
+
+
+
 
 proc accept_p4_sample { code } {
     if {[catch {eyetracking::acceptP4Sample} result]} {
@@ -371,6 +473,8 @@ proc playback_mode { { filename {} } } {
         stop_metadata_recording
     }
     
+    set ::Registry::paused 0  ;# Reset pause state
+    
     clear_widgets
     clearRegistry
     clear_key_bindings
@@ -402,18 +506,27 @@ proc playback_mode { { filename {} } } {
     # Key bindings
     bind_key "s" toggle_recording
     bind_key "r" rewind_playback
+    bind_key " " toggle_pause              ;# SPACE to pause/resume
+    bind_key $::keys::RIGHT step_forward   ;# Arrow to step when paused
+    bind_key $::keys::LEFT step_backward   ;# Arrow to step when paused
+    bind_key "i" show_frame_info           ;# 'i' for info
     
     # Show instructions
     puts ""
     puts "============================================"
-    puts "Metadata Recording Mode"
+    puts "Playback Controls"
     puts "============================================"
+    puts "SPACE - Pause/Resume playback"
+    puts "→/←   - Step forward/backward (when paused)"
+    puts "i     - Show current frame info"
+    puts "s     - Start/stop recording"
+    puts "r     - Rewind to beginning"
+    puts ""
+    puts "Metadata Recording:"
     puts "1. Adjust parameters with sliders"
-    puts "2. Click 'Save Run' (or press 's')"
-    puts "3. Video rewinds and plays through"
-    puts "4. Click 'Save Run' again when done"
-    puts "5. Adjust parameters for next run"
-    puts "6. Repeat!"
+    puts "2. Press 's' to start recording"
+    puts "3. Video plays through automatically"
+    puts "4. Press 's' again when done"
     puts ""
     puts "Files saved as: [file tail $filename]_YYYYMMDD_HHMMSS.db"
     puts "============================================"
@@ -435,7 +548,7 @@ if { [file exists /home/lab] } {
 set files [list \
 	       [file join $video_folder OpenIris-2025Jun23-131340-Right.mp4] \
 	       [file join $video_folder OpenIris-2025Oct03-143614-Right.mkv] \
-	       [file join $video_folder glen_dual_purkinje.mp4] \
+	       [file join $video_folder glen_2.mkv] \
 	      ]
 
 # Default parameters
@@ -447,10 +560,11 @@ eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
 
 # Start with first video
-playback_mode [lindex $files 1]
+playback_mode [lindex $files 2]
 
 # We have already calibrated this P4 model
-eyetracking::setP4Model .421 169.5
+#eyetracking::setP4Model .421 169.5
+eyetracking::setP4Model 0.829 -154.0
 eyetracking::setDetectionMode full
 
 # For now, save metadata/analysis for all frames
