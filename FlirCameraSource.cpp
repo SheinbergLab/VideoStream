@@ -281,26 +281,60 @@ bool FlirCameraSource::configureGain(float gain) {
     }
 }
 
-bool FlirCameraSource::configureFrameRate(float frameRate) {
+bool FlirCameraSource::getFrameRateRange(float& min, float& max) {
     if (!nodeMapPtr) return false;
     
     try {
-        CBooleanPtr ptrFrameRateEnable = nodeMapPtr->GetNode("AcquisitionFrameRateEnable");
-        if (!IsAvailable(ptrFrameRateEnable) || !IsWritable(ptrFrameRateEnable))
-            return false;
-        ptrFrameRateEnable->SetValue(true);
-        
         CFloatPtr ptrFrameRate = nodeMapPtr->GetNode("AcquisitionFrameRate");
-        if (!IsAvailable(ptrFrameRate) || !IsWritable(ptrFrameRate))
-            return false;
-        
-        ptrFrameRate->SetValue(frameRate);
-        fps = frameRate;
-        return true;
-    } catch (Spinnaker::Exception &e) {
-        std::cerr << "Error configuring frame rate: " << e.what() << std::endl;
-        return false;
+        if (IsAvailable(ptrFrameRate) && IsReadable(ptrFrameRate)) {
+            min = static_cast<float>(ptrFrameRate->GetMin());
+            max = static_cast<float>(ptrFrameRate->GetMax());
+            return true;
+        }
+    } catch (...) {}
+    return false;
+}
+
+bool FlirCameraSource::configureFrameRate(float frameRate, float* actualRate) {
+  if (!nodeMapPtr) return false;
+  
+  try {
+    CBooleanPtr ptrFrameRateEnable = nodeMapPtr->GetNode("AcquisitionFrameRateEnable");
+    if (!IsAvailable(ptrFrameRateEnable) || !IsWritable(ptrFrameRateEnable))
+      return false;
+    ptrFrameRateEnable->SetValue(true);
+    
+    CFloatPtr ptrFrameRate = nodeMapPtr->GetNode("AcquisitionFrameRate");
+    if (!IsAvailable(ptrFrameRate) || !IsWritable(ptrFrameRate))
+      return false;
+    
+    ptrFrameRate->SetValue(frameRate);
+    
+    // Read back actual value
+    fps = static_cast<float>(ptrFrameRate->GetValue());
+    if (actualRate) *actualRate = fps;
+    
+    std::cout << "Frame rate - Requested: " << frameRate 
+	      << " Hz, Actual: " << fps << " Hz" << std::endl;
+    
+    return true;
+  } catch (Spinnaker::Exception &e) {
+    std::cerr << "Error configuring frame rate: " << e.what() << std::endl;
+    return false;
+  }
+}
+
+float FlirCameraSource::getFrameRate() const {
+  if (!nodeMapPtr) return fps;  // Return cached value
+  
+  try {
+    CFloatPtr ptrFrameRate = nodeMapPtr->GetNode("AcquisitionFrameRate");
+    if (IsAvailable(ptrFrameRate) && IsReadable(ptrFrameRate)) {
+      return static_cast<float>(ptrFrameRate->GetValue());
     }
+  } catch (...) {}
+  
+  return fps;  // Fallback to cached value
 }
 
 bool FlirCameraSource::getROIConstraints(ROIConstraints& constraints) {

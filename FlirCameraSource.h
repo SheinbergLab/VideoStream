@@ -57,7 +57,9 @@ public:
   
   bool configureExposure(float exposureTime);
   bool configureGain(float gain);
-  bool configureFrameRate(float frameRate);
+  bool configureFrameRate(float frameRate, float* actualRate = nullptr);
+  float getFrameRate() const override;  // Already exists, but ensure it reads from camera  
+  bool getFrameRateRange(float& min, float& max);  
   bool configureROI(int w, int h, int offsetX, int offsetY);
   bool setROIOffset(int offsetX, int offsetY);  
   bool configureChunkData(bool enable, bool verbose = false);

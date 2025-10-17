@@ -1366,32 +1366,78 @@ static int configureGainCmd(ClientData clientData, Tcl_Interp *interp,
 }
 
 static int configureFrameRateCmd(ClientData clientData, Tcl_Interp *interp,
-                 int argc, char *argv[])
+                                 int argc, char *argv[])
 {
-  int res  = 0;
-  double fr;
-
-  if (argc < 2) {
-    Tcl_AppendResult(interp, "usage: ", argv[0], " framerate", TCL_STATIC);
-    return TCL_ERROR;
-  }
-  if (Tcl_GetDouble(interp, argv[1], &fr) != TCL_OK) return TCL_ERROR;
 #ifdef USE_FLIR
-  extern IFrameSource* g_frameSource;
-  FlirCameraSource* flirSource = 
-    dynamic_cast<FlirCameraSource*>(g_frameSource);
-  if (flirSource) {
-    res = flirSource->configureFrameRate(fr);
-  }
-#endif
-  if (res < 0) {
-    Tcl_AppendResult(interp, argv[0], ": error configuring framerate", NULL);
+    extern IFrameSource* g_frameSource;
+    FlirCameraSource* flirSource = 
+        dynamic_cast<FlirCameraSource*>(g_frameSource);
+    
+    if (!flirSource) {
+        Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+        return TCL_ERROR;
+    }
+    
+    // If no argument, return current frame rate
+    if (argc < 2) {
+        float current_fps = flirSource->getFrameRate();
+        Tcl_SetObjResult(interp, Tcl_NewDoubleObj(current_fps));
+        return TCL_OK;
+    }
+    
+    // Set frame rate and return actual achieved rate
+    double requested_fr;
+    if (Tcl_GetDouble(interp, argv[1], &requested_fr) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    float actual_fr;
+    if (flirSource->configureFrameRate(requested_fr, &actual_fr)) {
+        Tcl_SetObjResult(interp, Tcl_NewDoubleObj(actual_fr));
+        return TCL_OK;
+    } else {
+        Tcl_AppendResult(interp, argv[0], ": error configuring frame rate", NULL);
+        return TCL_ERROR;
+    }
+#else
+    Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
     return TCL_ERROR;
-  }
-  return TCL_OK;
+#endif
 }
 
-
+static int getFrameRateRangeCmd(ClientData clientData, Tcl_Interp *interp,
+                                int argc, char *argv[])
+{
+#ifdef USE_FLIR
+    extern IFrameSource* g_frameSource;
+    FlirCameraSource* flirSource = 
+        dynamic_cast<FlirCameraSource*>(g_frameSource);
+    
+    if (!flirSource) {
+        Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+        return TCL_ERROR;
+    }
+    
+    float min_fps, max_fps;
+    if (!flirSource->getFrameRateRange(min_fps, max_fps)) {
+        Tcl_AppendResult(interp, argv[0], ": failed to get frame rate range", NULL);
+        return TCL_ERROR;
+    }
+    
+    // Return as a dict
+    Tcl_Obj* resultDict = Tcl_NewDictObj();
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("min", -1),
+                   Tcl_NewDoubleObj(min_fps));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("max", -1),
+                   Tcl_NewDoubleObj(max_fps));
+    
+    Tcl_SetObjResult(interp, resultDict);
+    return TCL_OK;
+#else
+    Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
+    return TCL_ERROR;
+#endif
+}
 static int getROIConstraintsCmd(ClientData clientData, Tcl_Interp *interp,
                                 int argc, char *argv[])
 {
@@ -1678,9 +1724,12 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateCommand(interp, "flir::configureFrameRate",
 		    (Tcl_CmdProc *) configureFrameRateCmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "flir::getFrameRateRange",
+		    (Tcl_CmdProc *) getFrameRateRangeCmd, 
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "flir::getROIConstraints",
-                  (Tcl_CmdProc *) getROIConstraintsCmd, 
-                  (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);  
+		    (Tcl_CmdProc *) getROIConstraintsCmd, 
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);  
   Tcl_CreateCommand(interp, "flir::configureROI",
 		    (Tcl_CmdProc *) configureROICmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
