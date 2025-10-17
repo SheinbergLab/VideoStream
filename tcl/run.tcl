@@ -258,8 +258,8 @@ proc review_gui {} {
 }
 
 proc review_mode {} {
-	eyetracking::resetP4Model
-	eyetracking::setDetectionMode pupil_p1
+    eyetracking::resetP4Model
+    eyetracking::setDetectionMode pupil_p1
     vstream::startSource review
     review_gui
 }
@@ -480,6 +480,15 @@ proc run_mode {} {
     clear_key_bindings
 
     vstream::startSource flir
+
+    if { !$::initialized } {
+	flir::configureExposure 2750.0
+	flir::configureGain 10.0
+	flir::configureROI 720 450 24 24; # width, height, shift left, shift up
+	flir::configureImageOrientation 1 0; # flip image horizontal
+	set ::initialized 1
+    }
+    
     flir::startAcquisition
 
     # ROI control buttons (compact arrows)
@@ -552,13 +561,7 @@ eyetracking::resetP4Model
 
 # For now, save metadata/analysis for all frames
 vstream::onlySaveInObs 0
+set initialized 0
 
-# Run
-
-flir::configureExposure 3400.0
-flir::configureGain 11.0
-flir::configureROI 720 450 24 24; # width, height, shift left, shift up
-flir::configureFrameRate 250
-flir::configureImageOrientation 1 0; # flip image horizontal
 run_mode
 
