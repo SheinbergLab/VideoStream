@@ -37,7 +37,6 @@ public:
   
   bool getNextFrame(cv::Mat& frame, FrameMetadata& metadata) override;
   bool isOpen() const override;
-  float getFrameRate() const override { return fps; }
   int getWidth() const override { return width; }
   int getHeight() const override { return height; }
   bool isColor() const override { return color; }
