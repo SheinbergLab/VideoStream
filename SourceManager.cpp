@@ -56,12 +56,6 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
         if (params.count("id")) {
             camera_id = std::stoi(params.at("id"));
         }
-        if (params.count("flip")) {
-            flip = (params.at("flip") == "1" || params.at("flip") == "true");
-        }
-        if (params.count("flip_code")) {
-            flip_code = std::stoi(params.at("flip_code"));
-        }
         if (params.count("width")) {
             width = std::stoi(params.at("width"));
         }
@@ -69,7 +63,7 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
             height = std::stoi(params.at("height"));
         }
         
-        return std::make_unique<FlirCameraSource>(camera_id, flip, flip_code, width, height);
+        return std::make_unique<FlirCameraSource>(camera_id, width, height);
     }
 #endif
     
