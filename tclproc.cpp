@@ -25,6 +25,7 @@
 #include "FlirCameraSource.h"
 #include "ReviewModeSource.h"
 #include "SamplingManager.h"
+#include "VideoFileSource.h"
 #include "FrameBufferManager.h"
 #include "KeyboardCallbackRegistry.h"
 #include "Widget.h"
@@ -1016,6 +1017,147 @@ static int reviewIndexCmd(ClientData data, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+
+static int vstreamPauseCmd(ClientData clientData, Tcl_Interp *interp,
+                           int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    if (objc > 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "?0|1?");
+        return TCL_ERROR;
+    }
+    
+    IFrameSource* source = p->sourceManager->getCurrentSource();
+    if (!source || !source->isPlaybackMode()) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("Not in playback mode", -1));
+        return TCL_ERROR;
+    }
+    
+    VideoFileSource* fileSource = dynamic_cast<VideoFileSource*>(source);
+    if (!fileSource) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("Not a file source", -1));
+        return TCL_ERROR;
+    }
+    
+    if (objc == 1) {
+        // Query current state
+        Tcl_SetObjResult(interp, Tcl_NewBooleanObj(fileSource->isPaused()));
+        return TCL_OK;
+    }
+    
+    // Set paused state
+    int pause_val;
+    if (Tcl_GetIntFromObj(interp, objv[1], &pause_val) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    fileSource->setPaused(pause_val != 0);
+    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(fileSource->isPaused()));
+    return TCL_OK;
+}
+
+static int vstreamSeekCmd(ClientData clientData, Tcl_Interp *interp,
+                          int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "frame_number");
+        return TCL_ERROR;
+    }
+    
+    int frame_num;
+    if (Tcl_GetIntFromObj(interp, objv[1], &frame_num) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    IFrameSource* source = p->sourceManager->getCurrentSource();
+    if (!source || !source->isPlaybackMode()) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("Not in playback mode", -1));
+        return TCL_ERROR;
+    }
+    
+    VideoFileSource* fileSource = dynamic_cast<VideoFileSource*>(source);
+    if (fileSource) {
+        fileSource->seekToFrame(frame_num);
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(frame_num));
+        return TCL_OK;
+    }
+    
+    Tcl_SetObjResult(interp, Tcl_NewStringObj("Failed to seek", -1));
+    return TCL_ERROR;
+}
+
+static int vstreamStepCmd(ClientData clientData, Tcl_Interp *interp,
+                         int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "delta");
+        return TCL_ERROR;
+    }
+    
+    int delta;
+    if (Tcl_GetIntFromObj(interp, objv[1], &delta) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    IFrameSource* source = p->sourceManager->getCurrentSource();
+    if (!source || !source->isPlaybackMode()) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("Not in playback mode", -1));
+        return TCL_ERROR;
+    }
+    
+    VideoFileSource* fileSource = dynamic_cast<VideoFileSource*>(source);
+    if (fileSource) {
+        fileSource->stepFrame(delta);
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(fileSource->getCurrentFrameIndex()));
+        return TCL_OK;
+    }
+    
+    Tcl_SetObjResult(interp, Tcl_NewStringObj("Failed to step", -1));
+    return TCL_ERROR;
+}
+
+static int vstreamGetCurrentFrameCmd(ClientData clientData, Tcl_Interp *interp,
+                                     int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    IFrameSource* source = p->sourceManager->getCurrentSource();
+    if (!source || !source->isPlaybackMode()) {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(-1));
+        return TCL_OK;
+    }
+    
+    VideoFileSource* fileSource = dynamic_cast<VideoFileSource*>(source);
+    if (fileSource) {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(fileSource->getCurrentFrameIndex()));
+        return TCL_OK;
+    }
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(-1));
+    return TCL_OK;
+}
+
+static int vstreamGetTotalFramesCmd(ClientData clientData, Tcl_Interp *interp,
+                                    int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    IFrameSource* source = p->sourceManager->getCurrentSource();
+    if (!source || !source->isPlaybackMode()) {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(-1));
+        return TCL_OK;
+    }
+    
+    VideoFileSource* fileSource = dynamic_cast<VideoFileSource*>(source);
+    if (fileSource) {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(fileSource->getTotalFrames()));
+        return TCL_OK;
+    }
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(-1));
+    return TCL_OK;
+}
+
 /*********************************************************************/
 /*                         FileIO Commands                           */
 /*********************************************************************/
@@ -1694,6 +1836,17 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateObjCommand(interp, "::vstream::reviewIndex", reviewIndexCmd,
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
 
+  Tcl_CreateObjCommand(interp, "::vstream::pause", vstreamPauseCmd, 
+		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::seek", vstreamSeekCmd, 
+                      (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::step", vstreamStepCmd,
+                      (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::getCurrentFrame", vstreamGetCurrentFrameCmd,
+                      (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::getTotalFrames", vstreamGetTotalFramesCmd,
+                      (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
+  
   
   Tcl_CreateObjCommand(interp, "vstream::fileOpen", openFileCmd, 
 		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
