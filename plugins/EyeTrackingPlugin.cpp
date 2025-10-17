@@ -529,9 +529,10 @@ private:
     int frame_count_;
     
     // Debug control
-    int debug_level_;
-    int profile_flags_;
-
+  int debug_level_;
+  int profile_flags_;
+  std::atomic<bool> debug_next_frame_;
+  
     // ========================================================================
     // BUFFER MANAGEMENT
     // ========================================================================
@@ -641,131 +642,177 @@ private:
     // P1 MAIN DETECTION
     // ========================================================================
     
-    cv::Point2f detectP1(const cv::Mat& gray_roi, 
-                        const cv::Point2f& pupil_center_local,
-                        float pupil_radius) {
-        
-        float search_radius = pupil_radius * 1.2f;
-        
-        cv::Rect p1_search_rect(
-            pupil_center_local.x - search_radius,
-            pupil_center_local.y - search_radius,
-            search_radius * 2,
-            search_radius * 2
-        );
-        
-        p1_search_rect &= cv::Rect(0, 0, gray_roi.cols, gray_roi.rows);
-        
-        if (p1_search_rect.area() == 0) {
-            return cv::Point2f(-1, -1);
-        }
-        
-        cv::Mat p1_region = gray_roi(p1_search_rect);
-        
-        std::vector<int> thresholds = {220, 200, 180, 160, 140};
-        cv::Point2f best_candidate(-1, -1);
-        float best_score = 0;
-        
-        int total_candidates = 0;
-        
-        for (int thresh : thresholds) {
-            if (thresh < p1_min_intensity_) continue;
-            
-            cv::Mat p1_thresh;
-            cv::threshold(p1_region, p1_thresh, thresh, 255, cv::THRESH_BINARY);
-            
-            std::vector<std::vector<cv::Point>> contours;
-            cv::findContours(p1_thresh.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-            
-            for (const auto& contour : contours) {
-                float area = cv::contourArea(contour);
-                
-                if (area < 1 || area > 400) continue;
-                
-                total_candidates++;
-                
-                cv::Moments m = cv::moments(contour);
-                if (m.m00 < 1) continue;
-                
-                cv::Point2f center_rel(m.m10 / m.m00, m.m01 / m.m00);
-                
-                float perimeter = cv::arcLength(contour, true);
-                float circularity = 0;
-                if (perimeter > 0) {
-                    circularity = 4 * M_PI * area / (perimeter * perimeter);
-                    circularity = std::max(0.0f, std::min(1.0f, circularity));
-                }
-                
-                float circularity_threshold = (area > 100) ? 0.3f : 0.5f;
-                if (circularity < circularity_threshold) continue;
-                
-                cv::Rect bbox = cv::boundingRect(contour);
-                float compactness = (bbox.width > 0 && bbox.height > 0) ? 
-                                    area / (bbox.width * bbox.height) : 0;
-                
-                bbox &= cv::Rect(0, 0, p1_region.cols, p1_region.rows);
-                if (bbox.area() == 0) continue;
-                
-                cv::Mat spot_region = p1_region(bbox);
-                cv::Mat spot_mask = p1_thresh(bbox);
-                
-                double max_intensity;
-                cv::minMaxLoc(spot_region, nullptr, &max_intensity, nullptr, nullptr, spot_mask);
-                
-                cv::Scalar mean_intensity = cv::mean(spot_region, spot_mask);
-                
-                double effective_intensity = (max_intensity >= 254) ? 
-                                            mean_intensity[0] * 1.2 : max_intensity;
-                
-                cv::Point2f spot_global = center_rel + cv::Point2f(p1_search_rect.x, p1_search_rect.y);
-                float vertical_bias = (spot_global.y > pupil_center_local.y) ? 1.2f : 1.0f;
-                
-                float size_penalty = (area > 150) ? 0.8f : 1.0f;
-                
-                float score = effective_intensity * circularity * compactness * 
-                             vertical_bias * size_penalty;
-                
-                if (score > best_score) {
-                    best_score = score;
-                    best_candidate = center_rel;
-                }
-            }
-            
-            if (best_score > 0 && thresh > 180) break;
-        }
-        
-        if (debug_level_ >= DEBUG_VERBOSE) {
-            std::cout << "P1: " << total_candidates << " candidates, score=" << best_score << std::endl;
-        }
-        
-        if (best_candidate.x < 0) {
-            return cv::Point2f(-1, -1);
-        }
-        
-        cv::Point2f refined = refineP1SubPixel(gray_roi, p1_search_rect, best_candidate);
-        
-        cv::Point2f p1_local(
-            p1_search_rect.x + refined.x,
-            p1_search_rect.y + refined.y
-        );
-        
-        float dist = cv::norm(p1_local - pupil_center_local);
-        if (dist > pupil_radius * 1.5f) {
-            if (debug_level_ >= DEBUG_VERBOSE) {
-                std::cout << "P1 rejected: dist=" << dist 
-                          << " > " << (pupil_radius * 1.5f) << std::endl;
-            }
-            return cv::Point2f(-1, -1);
-        }
-        
-        return p1_local;
-    }
-
-    // ========================================================================
-    // P4 BRIGHT SPOT DETECTION
-    // ========================================================================
+  cv::Point2f detectP1(const cv::Mat& gray_roi, 
+		       const cv::Point2f& pupil_center_local,
+		       float pupil_radius) {
     
-    cv::Point2f findP4ByBrightestSpot(const cv::Mat& search_region,
+    float search_radius = pupil_radius * 1.2f;
+    
+    cv::Rect p1_search_rect(
+			    pupil_center_local.x - search_radius,
+			    pupil_center_local.y - search_radius,
+			    search_radius * 2,
+			    search_radius * 2
+			    );
+    
+    p1_search_rect &= cv::Rect(0, 0, gray_roi.cols, gray_roi.rows);
+    
+    if (p1_search_rect.area() == 0) {
+      return cv::Point2f(-1, -1);
+    }
+    
+    cv::Mat p1_region = gray_roi(p1_search_rect);
+    
+    std::vector<int> thresholds = {220, 200, 180, 160, 140};
+    
+    // NEW: Store candidates with their scores
+    struct P1Candidate {
+      cv::Point2f position;
+      float score;
+      
+      bool operator<(const P1Candidate& other) const {
+	return score > other.score;  // Sort descending
+      }
+    };
+    std::vector<P1Candidate> candidates;
+    
+    int total_candidates = 0;
+    
+    for (int thresh : thresholds) {
+      if (thresh < p1_min_intensity_) continue;
+      
+      cv::Mat p1_thresh;
+      cv::threshold(p1_region, p1_thresh, thresh, 255, cv::THRESH_BINARY);
+      
+      std::vector<std::vector<cv::Point>> contours;
+      cv::findContours(p1_thresh.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+      
+      for (const auto& contour : contours) {
+	float area = cv::contourArea(contour);
+        
+	if (area < 1 || area > 400) continue;
+        
+	total_candidates++;
+        
+	cv::Moments m = cv::moments(contour);
+	if (m.m00 < 1) continue;
+        
+	cv::Point2f center_rel(m.m10 / m.m00, m.m01 / m.m00);
+        
+	float perimeter = cv::arcLength(contour, true);
+	float circularity = 0;
+	if (perimeter > 0) {
+	  circularity = 4 * M_PI * area / (perimeter * perimeter);
+	  circularity = std::max(0.0f, std::min(1.0f, circularity));
+	}
+        
+	float circularity_threshold = (area > 100) ? 0.3f : 0.5f;
+	if (circularity < circularity_threshold) continue;
+        
+	cv::Rect bbox = cv::boundingRect(contour);
+	float compactness = (bbox.width > 0 && bbox.height > 0) ? 
+	  area / (bbox.width * bbox.height) : 0;
+	
+	bbox &= cv::Rect(0, 0, p1_region.cols, p1_region.rows);
+	if (bbox.area() == 0) continue;
+        
+	cv::Mat spot_region = p1_region(bbox);
+	cv::Mat spot_mask = p1_thresh(bbox);
+        
+	double max_intensity;
+	cv::minMaxLoc(spot_region, nullptr, &max_intensity, nullptr, nullptr, spot_mask);
+        
+	cv::Scalar mean_intensity = cv::mean(spot_region, spot_mask);
+        
+	double effective_intensity = (max_intensity >= 254) ? 
+	  mean_intensity[0] * 1.2 : max_intensity;
+	
+	cv::Point2f spot_global = center_rel + cv::Point2f(p1_search_rect.x, p1_search_rect.y);
+	float vertical_bias = (spot_global.y > pupil_center_local.y) ? 1.2f : 1.0f;
+        
+	float size_penalty = (area > 150) ? 0.8f : 1.0f;
+        
+	float score = effective_intensity * circularity * compactness * 
+	  vertical_bias * size_penalty;
+	
+	// Add to candidate list instead of immediately picking best
+	candidates.push_back({center_rel, score});
+      }
+    }
+    
+    if (debug_level_ >= DEBUG_VERBOSE) {
+      std::cout << "P1: " << total_candidates << " candidates" << std::endl;
+    }
+    
+    if (candidates.empty()) {
+      return cv::Point2f(-1, -1);
+    }
+    
+    // Sort candidates by score
+    std::sort(candidates.begin(), candidates.end());
+    
+    // Try candidates in order until one passes validation
+    for (size_t i = 0; i < candidates.size(); ++i) {
+      cv::Point2f refined = refineP1SubPixel(gray_roi, p1_search_rect, candidates[i].position);
+      
+      cv::Point2f p1_local(
+			   p1_search_rect.x + refined.x,
+			   p1_search_rect.y + refined.y
+			   );
+      
+      // Distance check
+      float dist = cv::norm(p1_local - pupil_center_local);
+      if (dist > pupil_radius * 1.5f) {
+	if (debug_level_ >= DEBUG_VERBOSE && i == 0) {
+	  std::cout << "P1 candidate #" << (i+1) << " rejected: dist=" << dist 
+		    << " > " << (pupil_radius * 1.5f) << std::endl;
+	}
+	continue;  // Try next candidate
+      }
+      
+      // Convert to full frame coordinates for validator
+      cv::Point2f p1_full = p1_local;
+      if (roi_enabled_) {
+	p1_full.x += current_roi_.x;
+	p1_full.y += current_roi_.y;
+      }
+      
+      // Validator check - if rejected, try next candidate
+      if (!p1_validator_.isValid(p1_full)) {
+	if (debug_level_ >= DEBUG_VERBOSE && i == 0) {
+	  std::cout << "⚠️  P1 candidate #" << (i+1) << " rejected: "
+		    << "jump=" << std::fixed << std::setprecision(1) 
+		    << p1_validator_.getJumpDistance() << "px "
+		    << "(max=" << p1_validator_.getMaxJump() << "px, "
+		    << (p1_validator_.getJumpDistance() / p1_validator_.getMaxJump() * 100) 
+		    << "% over) "
+		    << "pos=(" << p1_full.x << "," << p1_full.y << ")" << std::endl;
+	}
+	continue;  // Try next candidate
+      }
+      
+      // Found a valid candidate!
+      if (debug_level_ >= DEBUG_VERBOSE && i > 0) {
+	std::cout << "✓ P1 candidate #" << (i+1) << " accepted (score=" 
+		  << candidates[i].score << ")" << std::endl;
+      }
+      
+      return p1_local;
+    }
+    
+    // All candidates rejected
+    if (debug_level_ >= DEBUG_VERBOSE) {
+      std::cout << "⚠️  All " << candidates.size() << " P1 candidates rejected" << std::endl;
+    }
+    
+    return cv::Point2f(-1, -1);
+  }
+
+  // ========================================================================
+  // P4 BRIGHT SPOT DETECTION
+  // ========================================================================
+  
+  cv::Point2f findP4ByBrightestSpot(const cv::Mat& search_region,
                                        const cv::Mat& search_mask) {
         if (search_region.empty()) {
             return cv::Point2f(-1, -1);
@@ -1085,7 +1132,15 @@ private:
                 }
                 
                 ensureBuffersAllocated(frame_data.frame);
-                
+
+		// Handle one-shot debug
+		int saved_debug_level = debug_level_;
+		if (debug_next_frame_.exchange(false)) {  // Atomic swap to false
+		  debug_level_ = DEBUG_VERBOSE;
+		  std::cout << "\n🔍 ════════ FRAME " << frame_data.frame_idx 
+			    << " DEBUG ════════" << std::endl;
+		}
+		
                 auto start = std::chrono::high_resolution_clock::now();
                 
                 PupilData pupil = detectPupil(frame_data.frame);
@@ -1114,6 +1169,11 @@ private:
 
 		forwardResults(frame_data.frame_idx, frame_data.metadata,
 			       pupil, purkinje);
+		
+		if (debug_level_ == DEBUG_VERBOSE && saved_debug_level != DEBUG_VERBOSE) {
+		  std::cout << "════════════════════════════════════════\n" << std::endl;
+		  debug_level_ = saved_debug_level;
+		}
 		
                 blink_detector_.decrementRecovery();
                 
@@ -1592,7 +1652,18 @@ static int getP4ModelStatusCmd(ClientData clientData, Tcl_Interp *interp,
         
         return TCL_OK;
     }
+
+  static int debugNextFrameCmd(ClientData clientData, Tcl_Interp *interp,
+                              int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
     
+    plugin->debug_next_frame_.store(true);
+    
+    Tcl_SetObjResult(interp, Tcl_NewStringObj(
+        "Next frame will be analyzed with verbose debug output", -1));
+    return TCL_OK;
+}
+  
     static int setDebugLevelCmd(ClientData clientData, Tcl_Interp *interp,
                                  int objc, Tcl_Obj *const objv[]) {
         EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
@@ -1722,6 +1793,7 @@ public:
           frame_count_(0),
           buffers_initialized_(false),
           debug_level_(DEBUG_CRITICAL),
+	  debug_next_frame_(false),	  
           profile_flags_(PROFILE_NONE) {
         latest_results_.valid = false;
     }
@@ -1797,13 +1869,15 @@ public:
         Tcl_CreateObjCommand(interp, "::eyetracking::setP1MaxJump", 
                             setP1MaxJumpCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP4MaxJump", 
-                            setP4MaxJumpCmd, this, NULL);
+			     setP4MaxJumpCmd, this, NULL);
+	Tcl_CreateObjCommand(interp, "::eyetracking::debugNextFrame", 
+			     debugNextFrameCmd, this, NULL);	
         Tcl_CreateObjCommand(interp, "::eyetracking::setDebugLevel", 
-                            setDebugLevelCmd, this, NULL);
+			     setDebugLevelCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::enableProfiling", 
-                            enableProfilingCmd, this, NULL);
+			     enableProfilingCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::getResults",
-                            getResultsCmd, this, NULL);
+			     getResultsCmd, this, NULL);
     }
     
     const char* getName() override { return "eye_tracking"; }
