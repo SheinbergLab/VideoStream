@@ -13,10 +13,8 @@ using namespace cv;
 
 extern std::atomic<int> frame_width, frame_height;
 
-FlirCameraSource::FlirCameraSource(int cameraId, bool flipView, int flipCode, int width, int height)
+FlirCameraSource::FlirCameraSource(int cameraId, int width, int height)
     : camera_id(cameraId)
-    , flip_view(flipView)
-    , flip_code(flipCode)
     , width(width)
     , height(height)
     , nodeMapPtr(nullptr)
@@ -179,14 +177,7 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
                        CV_8UC1, convertedImage->GetData(),
                        convertedImage->GetStride());
         
-        // Apply flip if requested
-        if (flip_view) {
-            Mat flipped = Mat(cvimg.rows, cvimg.cols, CV_8UC1);
-            cv::flip(cvimg, flipped, flip_code);
-            frame = flipped.clone();
-        } else {
-            frame = cvimg.clone();
-        }
+	frame = cvimg.clone();
         
         pResultImage->Release();
         return true;
@@ -229,6 +220,27 @@ bool FlirCameraSource::getLineStatus() {
         return false;
     }
     return false;
+}
+
+bool FlirCameraSource::configureImageOrientation(bool reverseX, bool reverseY) {
+    if (!nodeMapPtr) return false;
+    
+    try {
+        CBooleanPtr ptrReverseX = nodeMapPtr->GetNode("ReverseX");
+        if (IsAvailable(ptrReverseX) && IsWritable(ptrReverseX)) {
+            ptrReverseX->SetValue(reverseX);
+        }
+        
+        CBooleanPtr ptrReverseY = nodeMapPtr->GetNode("ReverseY");
+        if (IsAvailable(ptrReverseY) && IsWritable(ptrReverseY)) {
+            ptrReverseY->SetValue(reverseY);
+        }
+        
+        return true;
+    } catch (Spinnaker::Exception &e) {
+        std::cerr << "Error configuring image orientation: " << e.what() << std::endl;
+        return false;
+    }
 }
 
 bool FlirCameraSource::configureExposure(float exposureTime) {

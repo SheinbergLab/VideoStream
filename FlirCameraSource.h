@@ -9,26 +9,23 @@
 
 class FlirCameraSource : public IFrameSource {
 private:
-    Spinnaker::SystemPtr system;
-    Spinnaker::CameraList camList;
-    Spinnaker::CameraPtr pCam;
-    Spinnaker::GenApi::INodeMap* nodeMapPtr;
-    Spinnaker::ImageProcessor processor;
-    
-    int camera_id;
-    float fps;
-    int width, height;
-    bool color;
-    bool flip_view;
-    int flip_code;
+  Spinnaker::SystemPtr system;
+  Spinnaker::CameraList camList;
+  Spinnaker::CameraPtr pCam;
+  Spinnaker::GenApi::INodeMap* nodeMapPtr;
+  Spinnaker::ImageProcessor processor;
+  
+  int camera_id;
+  float fps;
+  int width, height;
+  bool color;
   int offset_x, offset_y;
   
     bool initializeCamera();
     void configureCameraDefaults();
     
 public:
-  FlirCameraSource(int cameraId = 0, bool flipView = true, int flipCode = -2,
-		   int width = 1920, int height = 1200);
+  FlirCameraSource(int cameraId = 0, int width = 1920, int height = 1200);
   ~FlirCameraSource();
   
   bool startAcquisition();
@@ -54,6 +51,7 @@ public:
   int getOffsetY() const { return offset_y; }
   bool getROIConstraints(ROIConstraints& constraints);
   
+  bool configureImageOrientation(bool reverseX, bool reverseY);
   bool configureExposure(float exposureTime);
   bool configureGain(float gain);
   bool configureFrameRate(float frameRate, float* actualRate = nullptr);

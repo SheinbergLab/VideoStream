@@ -1313,6 +1313,42 @@ static int isStreamingCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+static int configureImageOrientationCmd(ClientData clientData, Tcl_Interp *interp,
+                                        int argc, char *argv[])
+{
+#ifdef USE_FLIR
+    if (argc != 3) {
+        Tcl_AppendResult(interp, "usage: ", argv[0], " reverseX reverseY", NULL);
+        return TCL_ERROR;
+    }
+    
+    int reverseX, reverseY;
+    if (Tcl_GetInt(interp, argv[1], &reverseX) != TCL_OK ||
+        Tcl_GetInt(interp, argv[2], &reverseY) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    extern IFrameSource* g_frameSource;
+    FlirCameraSource* flirSource = 
+        dynamic_cast<FlirCameraSource*>(g_frameSource);
+    
+    if (!flirSource) {
+        Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+        return TCL_ERROR;
+    }
+    
+    if (flirSource->configureImageOrientation(reverseX, reverseY)) {
+        return TCL_OK;
+    } else {
+        Tcl_AppendResult(interp, argv[0], ": failed to configure orientation", NULL);
+        return TCL_ERROR;
+    }
+#else
+    Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
+    return TCL_ERROR;
+#endif
+}
+
 static int configureExposureCmd(ClientData clientData, Tcl_Interp *interp,
                 int argc, char *argv[])
 {
@@ -1714,7 +1750,10 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 		    (ClientData)NULL, (Tcl_CmdDeleteProc *)NULL);
   Tcl_CreateCommand(interp, "flir::isStreaming",
 		    (Tcl_CmdProc *) isStreamingCmd, 
-		    (ClientData)NULL, (Tcl_CmdDeleteProc *)NULL);  
+		    (ClientData)NULL, (Tcl_CmdDeleteProc *)NULL);
+  Tcl_CreateCommand(interp, "flir::configureImageOrientation",
+		    (Tcl_CmdProc *) configureImageOrientationCmd, 
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "flir::configureExposure",
 		    (Tcl_CmdProc *) configureExposureCmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);

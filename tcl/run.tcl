@@ -480,10 +480,6 @@ proc run_mode {} {
     clear_key_bindings
 
     vstream::startSource flir
-    flir::configureExposure 2500.0
-    flir::configureGain 6.0
-    flir::configureROI 720 450 24 24; # width, height, shift left, shift up
-    flir::configureFrameRate 60
     flir::startAcquisition
 
     # ROI control buttons (compact arrows)
@@ -558,5 +554,11 @@ eyetracking::resetP4Model
 vstream::onlySaveInObs 0
 
 # Run
+
+flir::configureExposure 3400.0
+flir::configureGain 11.0
+flir::configureROI 720 450 24 24; # width, height, shift left, shift up
+flir::configureFrameRate 250
+flir::configureImageOrientation 1 0; # flip image horizontal
 run_mode
 
