@@ -201,18 +201,68 @@
                     e.preventDefault();
                     navigateHistory(1);
                     break;
-                case 'c':
+              case 'p':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        navigateHistory(-1);
+                    }
+                    break;
+                case 'n':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        navigateHistory(1);
+                    }
+        break;
+        case 'c':
                     if (e.ctrlKey) {
                         e.preventDefault();
                         inputElement.value = '';
                     }
-                    break;
+                break;
+		
                 case 'l':
                     if (e.ctrlKey) {
                         e.preventDefault();
                         clearTerminal();
                     }
+        break;
+               case 'a':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        inputElement.setSelectionRange(0, 0);
+                    }
                     break;
+                case 'e':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        const length = inputElement.value.length;
+                        inputElement.setSelectionRange(length, length);
+                    }
+                    break;
+                case 'u':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        inputElement.value = '';
+                    }
+                    break;
+                case 'k':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        const cursorPos = inputElement.selectionStart;
+                        inputElement.value = inputElement.value.substring(0, cursorPos);
+                    }
+                    break;
+                case 'w':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        const cursorPos = inputElement.selectionStart;
+                        const beforeCursor = inputElement.value.substring(0, cursorPos);
+                        const lastSpace = beforeCursor.trimEnd().lastIndexOf(' ');
+                        const afterCursor = inputElement.value.substring(cursorPos);
+                        inputElement.value = beforeCursor.substring(0, lastSpace + 1) + afterCursor;
+                        inputElement.setSelectionRange(lastSpace + 1, lastSpace + 1);
+                    }
+                    break;	
             }
         }
         
