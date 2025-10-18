@@ -28,7 +28,6 @@ private:
   float playback_speed;
   bool rate_limit;
   bool loop_playback;
-  bool paused;
   
   int64_t default_frameID;
   
@@ -51,9 +50,6 @@ public:
   bool isColor() const override { return color; }
   void close() override { cap.release(); }
 
-  void setPaused(bool status) { paused = status; }
-  bool isPaused() const { return paused; }
-  
   void setPlaybackSpeed(float speed) { playback_speed = speed; }
   void setRateLimiting(bool enable) { rate_limit = enable; }
   void setLooping(bool enable) { loop_playback = enable; }

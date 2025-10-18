@@ -23,7 +23,14 @@ public:
   virtual bool isColor() const = 0;
   virtual void close() = 0;
   virtual bool isPlaybackMode() const { return false; }
-  virtual bool isLooping() const { return true; }  
+  virtual bool isLooping() const { return true; }
+
+  virtual void setPaused(bool status) { paused_ = status; }
+  virtual bool isPaused() const { return paused_; }
+  virtual bool supportsPause() const { return false; }  
+
+protected:
+  bool paused_ = false;
 };
 
 #endif

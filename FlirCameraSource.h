@@ -47,6 +47,8 @@ public:
     int offset_y_min, offset_y_max, offset_y_inc;
   };
 
+  bool supportsPause() const override { return true; }
+
   int getOffsetX() const { return offset_x; }
   int getOffsetY() const { return offset_y; }
   bool getROIConstraints(ROIConstraints& constraints);

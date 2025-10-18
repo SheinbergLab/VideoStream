@@ -41,8 +41,16 @@ bool WebcamSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
         return false;
     }
     
-    // Capture frame
-    cap >> frame;
+   // Always grab to keep buffer fresh
+    cap.grab();
+    
+    // If paused, don't retrieve the frame
+    if (paused_) {
+        return false;
+    }
+    
+    // Retrieve the grabbed frame
+    cap.retrieve(frame);
     
     if (frame.empty()) {
         return false;

@@ -20,7 +20,6 @@ VideoFileSource::VideoFileSource(const std::string& videoFile,
     , rate_limit(rateLimited)
     , loop_playback(loopPlayback)
     , default_frameID(0)
-    , paused(false)
     , has_metadata(false)
 {
     cap.open(videoFile);
@@ -79,7 +78,7 @@ void VideoFileSource::stepFrame(int delta) {
 
 bool VideoFileSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
     // If paused, re-read the SAME frame (don't advance)
-    if (paused) {
+    if (paused_) {
         // Seek back to current position to re-read same frame
         cap.set(cv::CAP_PROP_POS_FRAMES, current_idx);
     } else {
@@ -93,7 +92,7 @@ bool VideoFileSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
     
     cap >> frame;
     if (frame.empty()) {
-        if (loop_playback && !paused) {  // Don't auto-loop when paused
+        if (loop_playback && !paused_) {  // Don't auto-loop when paused
             rewind();
             cap >> frame;
             
@@ -119,7 +118,7 @@ bool VideoFileSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
     }
     
     // Only advance if not paused
-    if (!paused) {
+    if (!paused_) {
         current_idx++;
         default_frameID++;
     }

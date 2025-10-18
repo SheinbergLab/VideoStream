@@ -150,7 +150,12 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
             pResultImage->Release();
             return false;
         }
-        
+
+	if (paused_) {
+	  pResultImage->Release();
+	  return false;
+        }
+  
         // Get line status
         metadata.lineStatus = getLineStatus();
         

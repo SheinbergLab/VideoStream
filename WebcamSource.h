@@ -31,6 +31,8 @@ public:
     // Optional: Allow runtime property changes
     bool setResolution(int w, int h);
     bool setFrameRate(float targetFps);
+
+  bool supportsPause() const override { return true; }
 };
 
 #endif // WEBCAM_SOURCE_H
