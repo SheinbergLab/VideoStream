@@ -243,15 +243,28 @@ else()
     message(WARNING "terminal.html NOT FOUND at ${WEB_ASSETS_DIR}/terminal.html")
 endif()
 
+if(EXISTS ${WEB_ASSETS_DIR}/interface.html)
+    message(STATUS "Found interface.html")
+else()
+    message(WARNING "interface.html NOT FOUND at ${WEB_ASSETS_DIR}/interface.html")
+endif()
+
 embed_resource(
     ${WEB_ASSETS_DIR}/terminal.html
     ${CMAKE_CURRENT_BINARY_DIR}/embedded_terminal.h
     terminal_html
 )
 
+embed_resource(
+    ${WEB_ASSETS_DIR}/interface.html
+    ${CMAKE_CURRENT_BINARY_DIR}/embedded_interface.h
+    interface_html
+)
+
 # Create list of all embedded headers that will be generated
 set(EMBEDDED_HEADERS
     ${CMAKE_CURRENT_BINARY_DIR}/embedded_terminal.h
+    ${CMAKE_CURRENT_BINARY_DIR}/embedded_interface.h
 )
 
 # Debug: Print what headers we expect to generate
@@ -284,6 +297,7 @@ add_dependencies(VideoStream generate_embedded_headers)
 # Create list of embedded source files for VideoStream target
 set(VSTREAM_EMBEDDED_SOURCES
     ${CMAKE_CURRENT_BINARY_DIR}/embedded_terminal.h 
+    ${CMAKE_CURRENT_BINARY_DIR}/embedded_interface.h
 )
 
 target_sources(VideoStream PRIVATE ${VSTREAM_EMBEDDED_SOURCES})
