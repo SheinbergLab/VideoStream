@@ -367,6 +367,7 @@
                             <option value="webcam">Webcam</option>
                             <option value="playback">Video File</option>
                             <option value="review">Review Mode</option>
+			    <option value="flir">FLIR Camera</option>
                         </select>
                     </div>
 
@@ -397,6 +398,21 @@
                         <button id="start-source-btn">Start Source</button>
                         <button id="stop-source-btn" class="danger" disabled>Stop Source</button>
                     </div>
+
+<div class="input-group" id="flir-id-group" style="display: none;">
+    <label>Camera ID</label>
+    <input type="number" id="flir-id" value="0" min="0">
+</div>
+
+<div class="input-group" id="flir-width-group" style="display: none;">
+    <label>Width</label>
+    <input type="number" id="flir-width" value="1920">
+</div>
+
+<div class="input-group" id="flir-height-group" style="display: none;">
+    <label>Height</label>
+    <input type="number" id="flir-height" value="1200">
+</div>		    
                 </div>
 
                 <div class="control-row">
@@ -569,18 +585,32 @@
             });
         });
 
-        // Source type change handler
-        sourceTypeSelect.addEventListener('change', (e) => {
-            const type = e.target.value;
-            document.getElementById('webcam-id-group').style.display = 
-                type === 'webcam' ? 'flex' : 'none';
-            document.getElementById('playback-file-group').style.display = 
-                type === 'playback' ? 'flex' : 'none';
-            document.getElementById('playback-speed-group').style.display = 
-                type === 'playback' ? 'flex' : 'none';
-            document.getElementById('playback-loop-group').style.display = 
-                type === 'playback' ? 'flex' : 'none';
-        });
+      // Source type change handler
+sourceTypeSelect.addEventListener('change', (e) => {
+    const type = e.target.value;
+    
+    // Hide all groups first
+    document.getElementById('webcam-id-group').style.display = 'none';
+    document.getElementById('playback-file-group').style.display = 'none';
+    document.getElementById('playback-speed-group').style.display = 'none';
+    document.getElementById('playback-loop-group').style.display = 'none';
+    document.getElementById('flir-id-group').style.display = 'none';
+    document.getElementById('flir-width-group').style.display = 'none';
+    document.getElementById('flir-height-group').style.display = 'none';
+    
+    // Show relevant groups
+    if (type === 'webcam') {
+        document.getElementById('webcam-id-group').style.display = 'flex';
+    } else if (type === 'playback') {
+        document.getElementById('playback-file-group').style.display = 'flex';
+        document.getElementById('playback-speed-group').style.display = 'flex';
+        document.getElementById('playback-loop-group').style.display = 'flex';
+    } else if (type === 'flir') {
+        document.getElementById('flir-id-group').style.display = 'flex';
+        document.getElementById('flir-width-group').style.display = 'flex';
+        document.getElementById('flir-height-group').style.display = 'flex';
+    }
+});      
 
         // Button handlers
         document.getElementById('start-source-btn').addEventListener('click', startSource);
@@ -667,7 +697,12 @@ function toggleEventPause() {
                 isPlaybackMode = true;
             } else if (sourceType === 'review') {
                 command = `vstream::startSource review`;
-            }
+            } else if (sourceType === 'flir') {
+    const cameraId = document.getElementById('flir-id').value;
+    const width = document.getElementById('flir-width').value;
+    const height = document.getElementById('flir-height').value;
+    command = `vstream::startSource flir id ${cameraId} width ${width} height ${height}`;
+}
 
             sendCommand(command);
             setTimeout(querySourceStatus, 500);
@@ -715,14 +750,14 @@ function toggleEventPause() {
             showInfo(`Started metadata recording: ${basename}.db`);
         }
 
-        function togglePause() {
-            if (!isPlaybackMode) return;
-            
-            isPaused = !isPaused;
-            sendCommand(`vstream::pause ${isPaused ? 1 : 0}`);
-            document.getElementById('pause-btn').textContent = isPaused ? 'Resume' : 'Pause';
-            updatePlaybackControls();
-        }
+function togglePause() {
+    if (!sourceActive) return;  // Check if ANY source is active, not just playback
+    
+    isPaused = !isPaused;
+    sendCommand(`vstream::pause ${isPaused ? 1 : 0}`);
+    document.getElementById('pause-btn').textContent = isPaused ? 'Resume' : 'Pause';
+    updatePlaybackControls();
+}
 
         function stepFrame(delta) {
             if (!isPlaybackMode || !isPaused) return;
@@ -753,15 +788,19 @@ function querySourceStatus() {
             sendCommand('vstream::getTotalFrames');
         }
 
-        function updatePlaybackControls() {
-            const pauseBtn = document.getElementById('pause-btn');
-            const stepBackBtn = document.getElementById('step-back-btn');
-            const stepForwardBtn = document.getElementById('step-forward-btn');
-            
-            pauseBtn.disabled = !isPlaybackMode;
-            stepBackBtn.disabled = !isPlaybackMode || !isPaused;
-            stepForwardBtn.disabled = !isPlaybackMode || !isPaused;
-        }
+	function updatePlaybackControls() {
+    const pauseBtn = document.getElementById('pause-btn');
+    const stepBackBtn = document.getElementById('step-back-btn');
+    const stepForwardBtn = document.getElementById('step-forward-btn');
+    
+    // Enable for playback OR any paused live source
+    const canPause = (isPlaybackMode || sourceActive);
+    pauseBtn.disabled = !canPause;
+    
+    // Step only works when actually paused (not for live sources)
+    stepBackBtn.disabled = !isPlaybackMode || !isPaused;
+    stepForwardBtn.disabled = !isPlaybackMode || !isPaused;
+}
 
         function updateSourceStatus(active, text, statusData = null) {
             sourceActive = active;
