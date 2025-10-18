@@ -1,0 +1,1293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VideoStream Control Panel</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        #header {
+            background: #2d2d30;
+            padding: 12px 20px;
+            border-bottom: 1px solid #3e3e42;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #header h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #cccccc;
+        }
+
+        .header-info {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            font-size: 12px;
+            color: #999;
+        }
+
+        #status {
+            font-size: 12px;
+            padding: 6px 14px;
+            border-radius: 4px;
+            background: #0e639c;
+            color: white;
+            font-weight: 500;
+        }
+
+        #status.disconnected {
+            background: #a1260d;
+        }
+
+        /* Control Panel */
+        #control-panel {
+            background: #252526;
+            padding: 20px;
+            border-bottom: 1px solid #3e3e42;
+            max-height: 50vh;
+            overflow-y: auto;
+        }
+
+        .control-section {
+            margin-bottom: 24px;
+        }
+
+        .control-section h2 {
+            font-size: 14px;
+            font-weight: 600;
+            color: #cccccc;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .control-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+
+        .control-group {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: flex-start;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #1177bb;
+        }
+
+        button:active {
+            background: #0d5a8a;
+        }
+
+        button.secondary {
+            background: #3e3e42;
+        }
+
+        button.secondary:hover {
+            background: #4e4e52;
+        }
+
+        button.danger {
+            background: #a1260d;
+        }
+
+        button.danger:hover {
+            background: #c1360d;
+        }
+
+        button:disabled {
+            background: #3e3e42;
+            color: #888;
+            cursor: not-allowed;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .input-group label {
+            font-size: 12px;
+            color: #999;
+            font-weight: 500;
+        }
+
+        .input-group input,
+        .input-group select {
+            background: #3c3c3c;
+            border: 1px solid #555;
+            color: #e0e0e0;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 13px;
+            min-width: 120px;
+        }
+
+        .input-group input:focus,
+        .input-group select:focus {
+            outline: none;
+            border-color: #0e639c;
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: #3c3c3c;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #666;
+        }
+
+        .status-dot.active {
+            background: #4ec9b0;
+            box-shadow: 0 0 8px rgba(78, 201, 176, 0.5);
+        }
+
+        .status-dot.recording {
+            background: #f48771;
+            box-shadow: 0 0 8px rgba(244, 135, 113, 0.5);
+        }
+
+        .tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 16px;
+            border-bottom: 1px solid #3e3e42;
+        }
+
+        .tab {
+            padding: 8px 16px;
+            background: transparent;
+            border: none;
+            color: #999;
+            cursor: pointer;
+            font-size: 13px;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab:hover {
+            color: #cccccc;
+        }
+
+        .tab.active {
+            color: #0e639c;
+            border-bottom-color: #0e639c;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Terminal Section */
+        #terminal-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        #terminal-header {
+            background: #2d2d30;
+            padding: 8px 20px;
+            border-bottom: 1px solid #3e3e42;
+            font-size: 12px;
+            color: #999;
+            font-weight: 500;
+        }
+
+        #terminal {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            user-select: text;
+            cursor: text;
+            background: #1e1e1e;
+        }
+
+        .output-line {
+            margin: 2px 0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            user-select: text;
+        }
+
+        .command-line {
+            color: #569cd6;
+        }
+
+        .result-line {
+            color: #d4d4d4;
+        }
+
+        .error-line {
+            color: #f48771;
+        }
+
+        .info-line {
+            color: #608b4e;
+            font-style: italic;
+        }
+
+        .warning-line {
+            color: #dcdcaa;
+        }
+
+        .input-container {
+            display: flex;
+            align-items: center;
+            margin-top: 4px;
+        }
+
+        .prompt {
+            color: #569cd6;
+            margin-right: 8px;
+            user-select: none;
+        }
+
+        #input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #d4d4d4;
+            font-family: inherit;
+            font-size: inherit;
+            outline: none;
+            caret-color: #d4d4d4;
+        }
+
+        ::selection {
+            background: #264f78;
+            color: inherit;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #424242;
+            border-radius: 5px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4a4a4a;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>VideoStream Control Panel</h1>
+        <div class="header-info">
+            <span id="frame-info">—</span>
+            <span id="status" class="disconnected">Disconnected</span>
+        </div>
+    </div>
+
+    <div id="control-panel">
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" data-tab="source">Source</button>
+            <button class="tab" data-tab="recording">Recording</button>
+            <button class="tab" data-tab="playback">Playback</button>
+	    <button class="tab" data-tab="events">Events</button>
+        </div>
+
+        <!-- Source Tab -->
+        <div class="tab-content active" id="tab-source">
+            <div class="control-section">
+                <h2>Video Source</h2>
+                <div class="control-row">
+                    <div class="input-group">
+                        <label>Source Type</label>
+                        <select id="source-type">
+                            <option value="webcam">Webcam</option>
+                            <option value="playback">Video File</option>
+                            <option value="review">Review Mode</option>
+                        </select>
+                    </div>
+
+                    <div class="input-group" id="webcam-id-group">
+                        <label>Camera ID</label>
+                        <input type="number" id="webcam-id" value="0" min="0">
+                    </div>
+
+                    <div class="input-group" id="playback-file-group" style="display: none;">
+                        <label>Video File Path</label>
+                        <input type="text" id="playback-file" placeholder="/path/to/video.mp4" style="min-width: 300px;">
+                    </div>
+
+                    <div class="input-group" id="playback-speed-group" style="display: none;">
+                        <label>Speed</label>
+                        <input type="number" id="playback-speed" value="1.0" min="0.1" max="10" step="0.1" style="width: 80px;">
+                    </div>
+
+                    <div class="input-group" id="playback-loop-group" style="display: none;">
+                        <label>Loop</label>
+                        <select id="playback-loop" style="width: 80px;">
+                            <option value="1">Yes</option>
+                            <option value="0">No</option>
+                        </select>
+                    </div>
+
+                    <div class="button-group" style="align-self: flex-end;">
+                        <button id="start-source-btn">Start Source</button>
+                        <button id="stop-source-btn" class="danger" disabled>Stop Source</button>
+                    </div>
+                </div>
+
+                <div class="control-row">
+                    <div class="status-indicator">
+                        <span class="status-dot" id="source-status-dot"></span>
+                        <span id="source-status-text">No source active</span>
+                    </div>
+                    <button class="secondary" onclick="querySourceStatus()">Refresh Status</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recording Tab -->
+        <div class="tab-content" id="tab-recording">
+            <div class="control-section">
+                <h2>Recording</h2>
+                <div class="control-row">
+                    <div class="input-group">
+                        <label>Output File</label>
+                        <input type="text" id="output-file" placeholder="output.avi" style="min-width: 250px;">
+                    </div>
+
+                    <div class="input-group">
+                        <label>Format</label>
+                        <select id="format-select">
+                            <option value="XVID">XVID</option>
+                            <option value="mp4v">MP4V</option>
+                            <option value="H264">H264</option>
+                            <option value="MJPG">MJPG</option>
+                        </select>
+                    </div>
+
+                    <div class="button-group" style="align-self: flex-end;">
+                        <button id="start-recording-btn" disabled>Start Recording</button>
+                        <button id="stop-recording-btn" class="danger" disabled>Stop Recording</button>
+                    </div>
+                </div>
+
+                <div class="control-row">
+                    <div class="status-indicator">
+                        <span class="status-dot" id="recording-status-dot"></span>
+                        <span id="recording-status-text">Not recording</span>
+                    </div>
+                </div>
+
+                <div class="control-row">
+                    <label style="font-size: 12px; color: #999;">
+                        <input type="checkbox" id="only-in-obs"> Only save frames during observation periods
+                    </label>
+                </div>
+            </div>
+
+<div class="tab-content" id="tab-events">
+    <div class="control-section">
+        <h2>Event Log</h2>
+        <div id="event-log" style="
+            background: #1e1e1e;
+            padding: 12px;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 12px;
+            line-height: 1.6;
+        ">
+            <div style="color: #608b4e; font-style: italic;">
+                Waiting for events...
+            </div>
+        </div>
+        <div class="control-row" style="margin-top: 12px;">
+            <button class="secondary" onclick="clearEventLog()">Clear Log</button>
+            <button class="secondary" onclick="toggleEventPause()">
+                <span id="event-pause-text">Pause</span>
+            </button>
+        </div>
+    </div>
+</div>	    
+            <div class="control-section">
+                <h2>Metadata-Only Recording</h2>
+                <div class="control-row">
+                    <div class="input-group">
+                        <label>Metadata Base Name</label>
+                        <input type="text" id="metadata-basename" placeholder="trial_001" style="min-width: 200px;">
+                    </div>
+                    <div class="input-group">
+                        <label>Source Video Reference</label>
+                        <input type="text" id="metadata-source" placeholder="/path/to/source.mp4" style="min-width: 300px;">
+                    </div>
+                    <div class="button-group" style="align-self: flex-end;">
+                        <button id="start-metadata-btn" disabled>Start Metadata Recording</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Playback Tab -->
+        <div class="tab-content" id="tab-playback">
+            <div class="control-section">
+                <h2>Playback Controls</h2>
+                <div class="control-row">
+                    <button id="pause-btn" disabled>Pause</button>
+                    <button id="step-back-btn" disabled>← Step Back</button>
+                    <button id="step-forward-btn" disabled>Step Forward →</button>
+                </div>
+
+                <div class="control-row">
+                    <div class="input-group">
+                        <label>Seek to Frame</label>
+                        <input type="number" id="seek-frame" min="0" placeholder="Frame #" style="width: 120px;">
+                    </div>
+                    <button style="align-self: flex-end;" onclick="seekToFrame()">Go</button>
+                </div>
+
+                <div class="control-row">
+                    <span id="playback-info" style="font-size: 12px; color: #999;">
+                        Not in playback mode
+                    </span>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h2>Review Mode</h2>
+                <div class="control-row">
+                    <button onclick="sendCommand('vstream::reviewClear')">Clear Review Frames</button>
+                    <button onclick="sendCommand('vstream::reviewSample')">Sample Current Frame</button>
+                    <button onclick="sendCommand('vstream::reviewNext')">Next Review Frame</button>
+                    <button onclick="sendCommand('vstream::reviewPrevious')">Previous Review Frame</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="terminal-container">
+        <div id="terminal-header">
+            Terminal Output
+        </div>
+        <div id="terminal">
+            <div class="info-line">VideoStream Control Panel - Connected to WebSocket server</div>
+            <div class="info-line">Type Tcl commands or use the controls above</div>
+        </div>
+    </div>
+
+    <script>
+        const terminal = document.getElementById('terminal');
+        const statusElement = document.getElementById('status');
+        const frameInfo = document.getElementById('frame-info');
+        const sourceTypeSelect = document.getElementById('source-type');
+        
+        let ws = null;
+        let history = JSON.parse(localStorage.getItem('VideoStream-history') || '[]');
+        let historyIndex = history.length;
+        let inputElement = null;
+        
+        let sourceActive = false;
+        let recordingActive = false;
+        let isPlaybackMode = false;
+        let isPaused = false;
+
+        let eventLogPaused = false;
+        const maxEventLogEntries = 100;
+      
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                
+                tab.classList.add('active');
+                document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        // Source type change handler
+        sourceTypeSelect.addEventListener('change', (e) => {
+            const type = e.target.value;
+            document.getElementById('webcam-id-group').style.display = 
+                type === 'webcam' ? 'flex' : 'none';
+            document.getElementById('playback-file-group').style.display = 
+                type === 'playback' ? 'flex' : 'none';
+            document.getElementById('playback-speed-group').style.display = 
+                type === 'playback' ? 'flex' : 'none';
+            document.getElementById('playback-loop-group').style.display = 
+                type === 'playback' ? 'flex' : 'none';
+        });
+
+        // Button handlers
+        document.getElementById('start-source-btn').addEventListener('click', startSource);
+        document.getElementById('stop-source-btn').addEventListener('click', stopSource);
+        document.getElementById('start-recording-btn').addEventListener('click', startRecording);
+        document.getElementById('stop-recording-btn').addEventListener('click', stopRecording);
+        document.getElementById('start-metadata-btn').addEventListener('click', startMetadataRecording);
+        
+        // Playback buttons
+        document.getElementById('pause-btn').addEventListener('click', togglePause);
+        document.getElementById('step-back-btn').addEventListener('click', () => stepFrame(-1));
+        document.getElementById('step-forward-btn').addEventListener('click', () => stepFrame(1));
+
+function addToEventLog(eventType, eventData, level = 'info') {
+    if (eventLogPaused) return;
+    
+    const eventLog = document.getElementById('event-log');
+    if (!eventLog) return;
+    
+    // Remove "waiting" message if present
+    if (eventLog.children.length === 1 && 
+        eventLog.children[0].textContent.includes('Waiting')) {
+        eventLog.innerHTML = '';
+    }
+    
+    const entry = document.createElement('div');
+    entry.style.marginBottom = '4px';
+    
+    const timestamp = new Date().toLocaleTimeString();
+    const colors = {
+        info: '#608b4e',
+        warning: '#dcdcaa',
+        error: '#f48771',
+        success: '#4ec9b0'
+    };
+    
+    entry.style.color = colors[level] || colors.info;
+    entry.innerHTML = `<span style="color: #666;">[${timestamp}]</span> <strong>${eventType}</strong>: ${eventData}`;
+    
+    eventLog.appendChild(entry);
+    
+    // Limit log size
+    while (eventLog.children.length > maxEventLogEntries) {
+        eventLog.removeChild(eventLog.firstChild);
+    }
+    
+    // Auto-scroll to bottom if not paused
+    if (!eventLogPaused) {
+        eventLog.scrollTop = eventLog.scrollHeight;
+    }
+}
+
+function clearEventLog() {
+    const eventLog = document.getElementById('event-log');
+    if (eventLog) {
+        eventLog.innerHTML = '<div style="color: #608b4e; font-style: italic;">Event log cleared</div>';
+    }
+}
+
+function toggleEventPause() {
+    eventLogPaused = !eventLogPaused;
+    const pauseText = document.getElementById('event-pause-text');
+    if (pauseText) {
+        pauseText.textContent = eventLogPaused ? 'Resume' : 'Pause';
+    }
+	}
+	
+        function startSource() {
+            const sourceType = sourceTypeSelect.value;
+            let command;
+
+            if (sourceType === 'webcam') {
+                const cameraId = document.getElementById('webcam-id').value;
+                command = `vstream::startSource webcam id ${cameraId}`;
+            } else if (sourceType === 'playback') {
+                const filePath = document.getElementById('playback-file').value;
+                const speed = document.getElementById('playback-speed').value;
+                const loop = document.getElementById('playback-loop').value;
+                if (!filePath) {
+                    showError('Please enter a video file path');
+                    return;
+                }
+                command = `vstream::startSource playback file "${filePath}" speed ${speed} loop ${loop}`;
+                isPlaybackMode = true;
+            } else if (sourceType === 'review') {
+                command = `vstream::startSource review`;
+            }
+
+            sendCommand(command);
+            setTimeout(querySourceStatus, 500);
+        }
+
+        function stopSource() {
+            sendCommand('vstream::stopSource');
+            isPlaybackMode = false;
+            updateSourceStatus(false, 'Stopped');
+            updatePlaybackControls();
+        }
+
+        function startRecording() {
+            const outputFile = document.getElementById('output-file').value;
+            if (!outputFile) {
+                showError('Please enter an output file name');
+                return;
+            }
+            
+            const format = document.getElementById('format-select').value;
+            const onlyInObs = document.getElementById('only-in-obs').checked;
+            
+            sendCommand(`vstream::fourcc ${format}`);
+            sendCommand(`vstream::onlySaveInObs ${onlyInObs ? 1 : 0}`);
+            sendCommand(`vstream::fileOpen "${outputFile}"`);
+            
+            updateRecordingStatus(true, `Recording to ${outputFile}`);
+        }
+
+        function stopRecording() {
+            sendCommand('vstream::fileClose');
+            updateRecordingStatus(false, 'Stopped');
+        }
+
+        function startMetadataRecording() {
+            const basename = document.getElementById('metadata-basename').value;
+            const source = document.getElementById('metadata-source').value;
+            
+            if (!basename || !source) {
+                showError('Please enter both metadata basename and source video');
+                return;
+            }
+            
+            sendCommand(`vstream::fileOpenMetadata "${basename}" "${source}"`);
+            showInfo(`Started metadata recording: ${basename}.db`);
+        }
+
+        function togglePause() {
+            if (!isPlaybackMode) return;
+            
+            isPaused = !isPaused;
+            sendCommand(`vstream::pause ${isPaused ? 1 : 0}`);
+            document.getElementById('pause-btn').textContent = isPaused ? 'Resume' : 'Pause';
+            updatePlaybackControls();
+        }
+
+        function stepFrame(delta) {
+            if (!isPlaybackMode || !isPaused) return;
+            sendCommand(`vstream::step ${delta}`);
+            updatePlaybackInfo();
+        }
+
+        function seekToFrame() {
+            const frame = document.getElementById('seek-frame').value;
+            if (!frame || !isPlaybackMode) return;
+            sendCommand(`vstream::seek ${frame}`);
+            updatePlaybackInfo();
+        }
+
+function querySourceStatus() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            cmd: 'eval',
+            script: 'vstream::getSourceStatus'
+        }));
+    }
+	}
+	
+        function updatePlaybackInfo() {
+            if (!isPlaybackMode) return;
+            
+            sendCommand('vstream::getCurrentFrame');
+            sendCommand('vstream::getTotalFrames');
+        }
+
+        function updatePlaybackControls() {
+            const pauseBtn = document.getElementById('pause-btn');
+            const stepBackBtn = document.getElementById('step-back-btn');
+            const stepForwardBtn = document.getElementById('step-forward-btn');
+            
+            pauseBtn.disabled = !isPlaybackMode;
+            stepBackBtn.disabled = !isPlaybackMode || !isPaused;
+            stepForwardBtn.disabled = !isPlaybackMode || !isPaused;
+        }
+
+        function updateSourceStatus(active, text, statusData = null) {
+            sourceActive = active;
+            const dot = document.getElementById('source-status-dot');
+            const statusText = document.getElementById('source-status-text');
+            const startBtn = document.getElementById('start-source-btn');
+            const stopBtn = document.getElementById('stop-source-btn');
+            const recordBtn = document.getElementById('start-recording-btn');
+            const metadataBtn = document.getElementById('start-metadata-btn');
+
+            if (active) {
+                dot.classList.add('active');
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                recordBtn.disabled = false;
+                metadataBtn.disabled = false;
+            } else {
+                dot.classList.remove('active');
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+                recordBtn.disabled = true;
+                metadataBtn.disabled = true;
+            }
+
+            statusText.textContent = text;
+            
+            // Update frame info in header
+            if (statusData && statusData.width && statusData.height && statusData.fps) {
+                frameInfo.textContent = `${statusData.width}×${statusData.height} @ ${statusData.fps.toFixed(1)} fps`;
+            } else {
+                frameInfo.textContent = '—';
+            }
+        }
+
+        function updateRecordingStatus(active, text) {
+            recordingActive = active;
+            const dot = document.getElementById('recording-status-dot');
+            const statusText = document.getElementById('recording-status-text');
+            const startBtn = document.getElementById('start-recording-btn');
+            const stopBtn = document.getElementById('stop-recording-btn');
+
+            if (active) {
+                dot.classList.add('recording');
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+            } else {
+                dot.classList.remove('recording');
+                startBtn.disabled = !sourceActive;
+                stopBtn.disabled = true;
+            }
+
+            statusText.textContent = text;
+        }
+
+        function sendCommand(command) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                showCommand(command);
+                ws.send(JSON.stringify({
+                    cmd: 'eval',
+                    script: command
+                }));
+            } else {
+                showError('Not connected to server');
+            }
+        }
+
+        function showCommand(command) {
+            const commandLine = document.createElement('div');
+            commandLine.className = 'output-line command-line';
+            commandLine.textContent = '> ' + command;
+            terminal.appendChild(commandLine);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        function createInputLine() {
+            const container = document.createElement('div');
+            container.className = 'input-container';
+            
+            const prompt = document.createElement('span');
+            prompt.className = 'prompt';
+            prompt.textContent = 'vstream> ';
+            
+            inputElement = document.createElement('input');
+            inputElement.id = 'input';
+            inputElement.type = 'text';
+            inputElement.autocomplete = 'off';
+            inputElement.spellcheck = false;
+            
+            container.appendChild(prompt);
+            container.appendChild(inputElement);
+            terminal.appendChild(container);
+            
+            inputElement.focus();
+            terminal.scrollTop = terminal.scrollHeight;
+            
+            inputElement.addEventListener('keydown', handleKeyDown);
+        }
+        
+function handleServerEvent(eventType, eventData) {
+    console.log('📡 Server event:', eventType, eventData);
+
+	let logLevel = 'info';
+    if (eventType.includes('error') || eventType.includes('lost')) {
+        logLevel = 'error';
+    } else if (eventType.includes('warning')) {
+        logLevel = 'warning';
+    } else if (eventType.includes('complete') || eventType.includes('calibrated')) {
+        logLevel = 'success';
+    }
+    addToEventLog(eventType, eventData, logLevel);
+   	
+    switch(eventType) {
+        case 'client_connected':
+            showInfo(`Client ${eventData} connected`);
+            break;
+
+       case 'source_started':
+            // Parse: "type playback" or "type webcam" or "type review"
+            const typeMatch = eventData.match(/type (\w+)/);
+            if (typeMatch) {
+                const sourceType = typeMatch[1];
+                showInfo(`▶️ Source started: ${sourceType}`);
+                
+                // Check if it's playback mode
+                if (sourceType === 'playback') {
+                    isPlaybackMode = true;
+                    updatePlaybackControls();
+                }
+                
+                // Query full status to update UI
+                setTimeout(querySourceStatus, 100);
+            }
+            break;
+            
+        case 'source_stopped':
+            // Parse: "type webcam" etc.
+            const stopTypeMatch = eventData.match(/type (\w+)/);
+            const stoppedType = stopTypeMatch ? stopTypeMatch[1] : 'unknown';
+            showInfo(`⏹️ Source stopped: ${stoppedType}`);
+            updateSourceStatus(false, 'Stopped');
+            isPlaybackMode = false;
+            updatePlaybackControls();
+            break;
+            
+ 	
+        case 'recording_started':
+            // Parse: "file output.avi"
+            const startFile = eventData.replace('file ', '');
+            updateRecordingStatus(true, `Recording: ${startFile}`);
+            showInfo(`🔴 Recording started: ${startFile}`);
+            break;
+            
+        case 'recording_closed':
+            // Parse: "file output.avi"
+            const stopFile = eventData.replace('file ', '');
+            updateRecordingStatus(false, 'Stopped');
+            showInfo(`⏹️ Recording stopped: ${stopFile}`);
+            break;
+            
+        case 'metadata_recording_started':
+            // Parse: "file basename.db source /path/to/video.mp4"
+            showInfo(`📊 Metadata recording started: ${eventData}`);
+            break;
+            
+        case 'metadata_recording_closed':
+            // Parse: "file basename.db"
+            showInfo(`💾 Metadata recording saved: ${eventData}`);
+            break;
+            
+        case 'video_source_eof':
+            showInfo('🎬 End of video reached');
+            if (isPlaybackMode) {
+                updatePlaybackControls();
+            }
+            break;
+            
+        case 'video_source_rewind':
+            showInfo('⏮️ Video rewound to beginning');
+            break;
+            
+        case 'sampling_progress':
+            // Parse: "sampled N total M"
+            const progMatch = eventData.match(/sampled (\d+) total (\d+)/);
+            if (progMatch) {
+                const [, sampled, total] = progMatch;
+                showInfo(`📸 Sampling progress: ${sampled}/${total} frames`);
+            }
+            break;
+            
+        case 'sampling_complete':
+            // Parse: "sampled N total M"
+            const completeMatch = eventData.match(/sampled (\d+) total (\d+)/);
+            if (completeMatch) {
+                const [, sampled, total] = completeMatch;
+                showInfo(`✅ Sampling complete: ${sampled}/${total} frames`);
+            }
+            break;
+            
+        case 'eyetracking_blink_start':
+            // Parse: "frame N"
+            const blinkFrame = eventData.match(/frame (\d+)/);
+            if (blinkFrame) {
+                showInfo(`👁️ Blink detected at frame ${blinkFrame[1]}`);
+            }
+            break;
+            
+        case 'eyetracking_blink_end':
+            showInfo('👁️ Blink ended');
+            break;
+            
+        case 'eyetracking_p1_lost':
+            const p1LostFrame = eventData.match(/frame (\d+)/);
+            if (p1LostFrame) {
+                showWarning(`⚠️ P1 tracking lost at frame ${p1LostFrame[1]}`);
+            }
+            break;
+            
+        case 'eyetracking_p1_recovered':
+            const p1RecFrame = eventData.match(/frame (\d+)/);
+            if (p1RecFrame) {
+                showInfo(`✅ P1 tracking recovered at frame ${p1RecFrame[1]}`);
+            }
+            break;
+            
+        case 'eyetracking_p4_calibrated':
+            // Parse: "samples N magnitude M angle A"
+            showInfo(`🎯 P4 calibration complete: ${eventData}`);
+            break;
+            
+        default:
+            // Log unknown events for debugging
+            showInfo(`Event: ${eventType} - ${eventData}`);
+            break;
+    }
+	}
+	
+        function handleKeyDown(e) {
+            switch(e.key) {
+                case 'Enter':
+                    e.preventDefault();
+                    submitCommand();
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    navigateHistory(-1);
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    navigateHistory(1);
+                    break;
+                case 'c':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        inputElement.value = '';
+                    }
+                    break;
+                case 'l':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        clearTerminal();
+                    }
+                    break;
+                case 'a':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        inputElement.setSelectionRange(0, 0);
+                    }
+                    break;
+                case 'e':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        const length = inputElement.value.length;
+                        inputElement.setSelectionRange(length, length);
+                    }
+                    break;
+                case 'u':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        inputElement.value = '';
+                    }
+                    break;
+                case 'k':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        const cursorPos = inputElement.selectionStart;
+                        inputElement.value = inputElement.value.substring(0, cursorPos);
+                    }
+                    break;
+                case 'w':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        const cursorPos = inputElement.selectionStart;
+                        const beforeCursor = inputElement.value.substring(0, cursorPos);
+                        const lastSpace = beforeCursor.trimEnd().lastIndexOf(' ');
+                        const afterCursor = inputElement.value.substring(cursorPos);
+                        inputElement.value = beforeCursor.substring(0, lastSpace + 1) + afterCursor;
+                        inputElement.setSelectionRange(lastSpace + 1, lastSpace + 1);
+                    }
+                    break;
+                case 'p':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        navigateHistory(-1);
+                    }
+                    break;
+                case 'n':
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        navigateHistory(1);
+                    }
+                    break;
+            }
+        }
+        
+        function navigateHistory(direction) {
+            if (history.length === 0) return;
+            
+            historyIndex += direction;
+            historyIndex = Math.max(0, Math.min(history.length, historyIndex));
+            
+            if (historyIndex === history.length) {
+                inputElement.value = '';
+            } else {
+                inputElement.value = history[historyIndex];
+            }
+        }
+        
+        function isBlockedCommand(command) {
+            const normalizedCmd = command.trim().toLowerCase();
+            const blockedCommands = ['exit', 'quit'];
+            return blockedCommands.includes(normalizedCmd);
+        }
+        
+        function submitCommand() {
+            const command = inputElement.value.trim();
+            if (!command) return;
+            
+            if (command !== history[history.length - 1]) {
+                history.push(command);
+                if (history.length > 100) history.shift();
+                localStorage.setItem('VideoStream-history', JSON.stringify(history));
+            }
+            historyIndex = history.length;
+            
+            const commandLine = document.createElement('div');
+            commandLine.className = 'output-line command-line';
+            commandLine.textContent = 'vstream> ' + command;
+            inputElement.parentElement.replaceWith(commandLine);
+            
+            if (isBlockedCommand(command)) {
+                showWarning('No need to type exit, just close your browser window when done');
+                createInputLine();
+                return;
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    cmd: 'eval',
+                    script: command
+                }));
+            } else {
+                showError('Not connected to server');
+                createInputLine();
+            }
+        }
+
+function showResult(data) {
+    const resultLine = document.createElement('div');
+    resultLine.className = 'output-line result-line';
+    
+    if (typeof data === 'object') {
+        if (data.status === 'error' || (data.result && data.result.startsWith('!TCL_ERROR'))) {
+            resultLine.className = 'output-line error-line';
+            resultLine.textContent = data.result || data.error || 'Unknown error';
+        } else {
+            // Handle dict responses from vstream::getSourceStatus
+            const result = data.result || '';
+            if (result.includes('state') && result.includes('type')) {
+                // Parse Tcl dict format: "state running type playback width 1920..."
+                try {
+                    const parts = result.trim().split(/\s+/);
+                    const dict = {};
+                    
+                    // Parse key-value pairs
+                    for (let i = 0; i < parts.length - 1; i += 2) {
+                        dict[parts[i]] = parts[i + 1];
+                    }
+                    
+                    if (dict.state) {
+                        const state = dict.state;
+                        const type = dict.type || 'unknown';
+                        
+                        const statusData = {};
+                        if (dict.width) statusData.width = parseInt(dict.width);
+                        if (dict.height) statusData.height = parseInt(dict.height);
+                        if (dict.fps) statusData.fps = parseFloat(dict.fps);
+                        
+                        const active = state === 'running';
+                        updateSourceStatus(active, `${state} (${type})`, statusData);
+                        
+                        // Update the source type dropdown to match current source
+                        const sourceTypeSelect = document.getElementById('source-type');
+                        if (sourceTypeSelect && type !== 'unknown') {
+                            sourceTypeSelect.value = type;
+                            sourceTypeSelect.dispatchEvent(new Event('change'));
+                        }
+                        
+                        // Update playback mode
+                        isPlaybackMode = (type === 'playback');
+                        updatePlaybackControls();
+                    }
+                } catch (e) {
+                    console.error('Error parsing status:', e);
+                    // Fallback to regular display
+                    resultLine.textContent = result;
+                }
+            } else {
+                resultLine.textContent = result;
+            }
+        }
+    } else {
+        resultLine.textContent = data;
+    }
+    
+    if (resultLine.textContent) {
+        terminal.appendChild(resultLine);
+    }
+    createInputLine();
+}	
+					
+        function showError(message) {
+            const errorLine = document.createElement('div');
+            errorLine.className = 'output-line error-line';
+            errorLine.textContent = 'Error: ' + message;
+            terminal.appendChild(errorLine);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+        
+        function showInfo(message) {
+            const infoLine = document.createElement('div');
+            infoLine.className = 'output-line info-line';
+            infoLine.textContent = message;
+            terminal.appendChild(infoLine);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+        
+        function showWarning(message) {
+            const warningLine = document.createElement('div');
+            warningLine.className = 'output-line warning-line';
+            warningLine.textContent = message;
+            terminal.appendChild(warningLine);
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+        
+        function clearTerminal() {
+            terminal.innerHTML = '';
+            showInfo('Terminal cleared');
+            createInputLine();
+        }
+        
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.hostname}:${window.location.port}/ws`;
+            
+            try {
+                ws = new WebSocket(wsUrl);
+                
+                ws.onopen = () => {
+                    statusElement.textContent = 'Connected';
+                    statusElement.classList.remove('disconnected');
+                    showInfo('Connected to VideoStream WebSocket');
+                    createInputLine();
+                    
+                    // Auto-query status on connect
+                    setTimeout(querySourceStatus, 500);
+                };
+                
+	ws.onmessage = (event) => {
+	try {
+        const data = JSON.parse(event.data);
+        
+        // Check if this is a server-pushed event
+        if (data.type === 'event') {
+        handleServerEvent(data.event, data.data);
+        } else {
+        // Normal command response
+        showResult(data);
+        }
+	} catch (e) {
+        showResult(event.data);
+	}
+	};
+        
+        ws.onerror = (error) => {
+                    showError('WebSocket error');
+                };
+                
+                ws.onclose = () => {
+                    statusElement.textContent = 'Disconnected';
+                    statusElement.classList.add('disconnected');
+                    showInfo('Disconnected from server. Reconnecting in 3 seconds...');
+                    updateSourceStatus(false, 'Disconnected');
+                    updateRecordingStatus(false, 'Disconnected');
+                    setTimeout(connect, 3000);
+                };
+                
+            } catch (error) {
+                showError('Failed to connect: ' + error.message);
+                setTimeout(connect, 3000);
+            }
+        }
+        
+        // Start connection
+        connect();
+        
+        // Click handler for terminal
+        terminal.addEventListener('click', (e) => {
+            const selection = window.getSelection();
+            if (selection && selection.toString().length > 0) {
+                return;
+            }
+            
+            if (e.target === terminal || e.target.classList.contains('output-line')) {
+                if (inputElement) inputElement.focus();
+            }
+        });
+    </script>
+</body>
+</html>
