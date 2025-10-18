@@ -173,6 +173,8 @@ bool SourceManager::stopSource()
     if (state_ != SOURCE_RUNNING && state_ != SOURCE_PAUSED) {
         return false;
     }
+
+    std::string source_type = current_source_type_;
     
     if (current_source_) {
       if (current_source_.get() != review_source_.get()) {
@@ -182,9 +184,8 @@ bool SourceManager::stopSource()
       current_source_.release();
     }
 
-    // source_stopped callback can react...
-    std::string data = "type " + getSourceType();
-    fireEvent("source_stopped", data);    
+    std::string data = "type " + source_type;
+    fireEvent("source_stopped", data);      
     
     state_ = SOURCE_IDLE;
     return true;
