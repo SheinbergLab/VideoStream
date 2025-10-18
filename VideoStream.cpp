@@ -57,6 +57,7 @@
 
 // our minified html pages (in www/*.html)
 #include "embedded_terminal.h"
+#include "embedded_interface.h"
 
 using namespace std;
 using namespace cv;
@@ -73,6 +74,9 @@ IFrameSource* g_frameSource = nullptr;
 // Analysis registry support for plugins
 #include "AnalysisPluginRegistry.h"
 AnalysisPluginRegistry g_pluginRegistry;
+
+class WebSocketThread;
+WebSocketThread* g_wsServer = nullptr;
 
 std::thread processThreadID;
 SharedQueue<int> process_queue;
@@ -105,13 +109,8 @@ struct Event {
 
 SharedQueue<Event> event_queue;
 
-// Helper function to fire events
 std::atomic<bool> events_ready{false};
-void fireEvent(const std::string& type, const std::string& data = "") {
-  if (events_ready.load()) {
-    event_queue.push_back(Event(type, data));
-  }  
-}
+void fireEvent(const std::string& type, const std::string& data);
 
 Tcl_Interp *interp = NULL;
 
@@ -536,7 +535,6 @@ private:
   }
 };
 
-
 class WebSocketThread
 {
 private:
@@ -553,8 +551,36 @@ public:
   
   void shutdown() {
     m_bDone = true;
-    // uWebSockets handles cleanup internally
+    // uWebsockets handles cleanup internally
   }
+
+  void broadcastEvent(const std::string& event_type, const std::string& event_data) {
+    std::lock_guard<std::mutex> lock(ws_connections_mutex);
+    
+    if (ws_connections.empty()) {
+      return;
+    }
+    
+    // Build JSON event message
+    json_t* event_msg = json_object();
+    json_object_set_new(event_msg, "type", json_string("event"));
+    json_object_set_new(event_msg, "event", json_string(event_type.c_str()));
+    json_object_set_new(event_msg, "data", json_string(event_data.c_str()));
+    
+    char* msg_str = json_dumps(event_msg, 0);
+    std::string message(msg_str);  // Convert to std::string
+    free(msg_str);
+    json_decref(event_msg);
+    
+    // Send to all connected clients
+    for (auto& [name, conn] : ws_connections) {
+      try {
+	conn->send(message, uWS::OpCode::TEXT);  // Use string directly, no length
+      } catch (...) {
+	// Client may have disconnected
+      }
+    }
+  }  
   
   void startWebSocketServer(void) {
     ws_loop = uWS::Loop::get();
@@ -565,7 +591,7 @@ public:
     app.get("/", [](auto *res, auto *req) {
       res->writeHeader("Content-Type", "text/html; charset=utf-8")
          ->writeHeader("Cache-Control", "no-cache")
-         ->end("<html><body><h1>VideoStream WebSocket Server</h1></body></html>");
+         ->end(embedded::interface_html);
     });
     
     app.get("/terminal", [](auto *res, auto *req) {
@@ -613,111 +639,113 @@ public:
         snprintf(client_id, sizeof(client_id), "ws_%p", (void*)ws);
         userData->client_name = std::string(client_id);
         
-        // Store connection
+        // Store connection for broadcasting
         {
           std::lock_guard<std::mutex> lock(this->ws_connections_mutex);
           this->ws_connections[userData->client_name] = ws;
         }
         
         std::cout << "WebSocket client connected: " << userData->client_name << std::endl;
+        
+        // Send welcome event
+        this->broadcastEvent("client_connected", userData->client_name);
       },
       
-	.message = [this](auto *ws, std::string_view message, uWS::OpCode opCode) {
-	  WSPerSocketData *userData = (WSPerSocketData *) ws->getUserData();
-	  
-	  if (!userData || !userData->rqueue) {
-	    std::cerr << "ERROR: Invalid userData in message handler" << std::endl;
-	    ws->close();
-	    return;
-	  }
-	  
-	  // Handle JSON protocol for web clients
-	  if (message.length() > 0 && message[0] == '{') {
-	    // Create null-terminated string for jansson
-	    std::string json_str(message.data(), message.length());
-	    
-	    json_error_t error;
-	    json_t *root = json_loads(json_str.c_str(), 0, &error);
-	    
-	    if (!root) {
-	      json_t *error_response = json_object();
-	      json_object_set_new(error_response, "error", json_string("Invalid JSON"));
-	      char *error_str = json_dumps(error_response, 0);
-	      ws->send(error_str, uWS::OpCode::TEXT);
-	      free(error_str);
-	      json_decref(error_response);
-	      return;
-	    }
-	    
-	    json_t *cmd_obj = json_object_get(root, "cmd");
-	    if (!cmd_obj || !json_is_string(cmd_obj)) {
-	      json_t *error_response = json_object();
-	      json_object_set_new(error_response, "error", json_string("Missing 'cmd' field"));
-	      char *error_str = json_dumps(error_response, 0);
-	      ws->send(error_str, uWS::OpCode::TEXT);
-	      free(error_str);
-	      json_decref(error_response);
-	      json_decref(root);
-	      return;
-	    }
-	    
-	    const char *cmd = json_string_value(cmd_obj);
-	    
-	    if (strcmp(cmd, "eval") == 0) {
-	      // Handle Tcl script evaluation
-	      json_t *script_obj = json_object_get(root, "script");
-	      json_t *requestId_obj = json_object_get(root, "requestId");
-	      
-	      if (script_obj && json_is_string(script_obj)) {
-		const char *script = json_string_value(script_obj);
-		
-		// Use your existing thread-safe tcl_eval function
-		std::string result;
-		int retcode = tcl_eval(std::string(script), result);
-		
-		// Create JSON response
-		json_t *response = json_object();
-		if (retcode != TCL_OK) {
-		  json_object_set_new(response, "status", json_string("error"));
-		  json_object_set_new(response, "error", json_string(result.c_str()));
-		} else {
-		  json_object_set_new(response, "status", json_string("ok"));
-		  json_object_set_new(response, "result", json_string(result.c_str()));
-		}
-		
-		// If a requestId was provided, include it in the response
-		if (requestId_obj && json_is_string(requestId_obj)) {
-		  json_object_set(response, "requestId", requestId_obj);
-		}
-		
-		char *response_str = json_dumps(response, 0);
-		ws->send(response_str, uWS::OpCode::TEXT);
-		free(response_str);
-		json_decref(response);
-	      }
-	    }
-	    
-	    json_decref(root);
-	  }
-	  else {
-	    // Handle legacy text protocol (newline-terminated commands)
-	    std::string script(message);
-	    
-	    // Remove trailing newline if present
-	    if (!script.empty() && script.back() == '\n') {
-	      script.pop_back();
-	    }
-	    
-	    // Use thread-safe tcl_eval
-	    std::string result;
-	    tcl_eval(script, result);
-	    
-	    // For text protocol, send plain response
-	    ws->send(result, uWS::OpCode::TEXT);
-	  }
-	},
+      .message = [this](auto *ws, std::string_view message, uWS::OpCode opCode) {
+        WSPerSocketData *userData = (WSPerSocketData *) ws->getUserData();
+        
+        if (!userData || !userData->rqueue) {
+          std::cerr << "ERROR: Invalid userData in message handler" << std::endl;
+          ws->close();
+          return;
+        }
+        
+        // Handle JSON protocol for web clients
+        if (message.length() > 0 && message[0] == '{') {
+          std::string json_str(message.data(), message.length());
+          
+          json_error_t error;
+          json_t *root = json_loads(json_str.c_str(), 0, &error);
+          
+          if (!root) {
+            json_t *error_response = json_object();
+            json_object_set_new(error_response, "error", json_string("Invalid JSON"));
+            char *error_str = json_dumps(error_response, 0);
+            ws->send(error_str, uWS::OpCode::TEXT);
+            free(error_str);
+            json_decref(error_response);
+            return;
+          }
+          
+          json_t *cmd_obj = json_object_get(root, "cmd");
+          if (!cmd_obj || !json_is_string(cmd_obj)) {
+            json_t *error_response = json_object();
+            json_object_set_new(error_response, "error", json_string("Missing 'cmd' field"));
+            char *error_str = json_dumps(error_response, 0);
+            ws->send(error_str, uWS::OpCode::TEXT);
+            free(error_str);
+            json_decref(error_response);
+            json_decref(root);
+            return;
+          }
+          
+          const char *cmd = json_string_value(cmd_obj);
+          
+          if (strcmp(cmd, "eval") == 0) {
+            // Handle Tcl script evaluation
+            json_t *script_obj = json_object_get(root, "script");
+            json_t *requestId_obj = json_object_get(root, "requestId");
+            
+            if (script_obj && json_is_string(script_obj)) {
+              const char *script = json_string_value(script_obj);
+              
+              // Use thread-safe tcl_eval function
+              std::string result;
+              int retcode = tcl_eval(std::string(script), result);
+              
+              // Create JSON response
+              json_t *response = json_object();
+              if (retcode != TCL_OK) {
+                json_object_set_new(response, "status", json_string("error"));
+                json_object_set_new(response, "error", json_string(result.c_str()));
+              } else {
+                json_object_set_new(response, "status", json_string("ok"));
+                json_object_set_new(response, "result", json_string(result.c_str()));
+              }
+              
+              // If a requestId was provided, include it in the response
+              if (requestId_obj && json_is_string(requestId_obj)) {
+                json_object_set(response, "requestId", requestId_obj);
+              }
+              
+              char *response_str = json_dumps(response, 0);
+              ws->send(response_str, uWS::OpCode::TEXT);
+              free(response_str);
+              json_decref(response);
+            }
+          }
+          
+          json_decref(root);
+        }
+        else {
+          // Handle legacy text protocol (newline-terminated commands)
+          std::string script(message);
+          
+          // Remove trailing newline if present
+          if (!script.empty() && script.back() == '\n') {
+            script.pop_back();
+          }
+          
+          // Use thread-safe tcl_eval
+          std::string result;
+          tcl_eval(script, result);
+          
+          // For text protocol, send plain response
+          ws->send(result, uWS::OpCode::TEXT);
+        }
+      },
       
-	.drain = [](auto *ws) {
+      .drain = [](auto *ws) {
         if (ws->getBufferedAmount() > 1024 * 1024) {
           ws->close();
         }
@@ -728,7 +756,7 @@ public:
         
         if (!userData) return;
         
-        // Remove from connections
+        // Remove from connections map
         {
           std::lock_guard<std::mutex> lock(this->ws_connections_mutex);
           this->ws_connections.erase(userData->client_name);
@@ -752,6 +780,16 @@ public:
   }
 };
 
+void fireEvent(const std::string& type, const std::string& data = "") {
+  if (events_ready.load()) {
+    event_queue.push_back(Event(type, data));
+    
+    // Also broadcast to WebSocket clients
+    if (g_wsServer) {
+      g_wsServer->broadcastEvent(type, data);
+    }
+  }  
+}
 
 
 class ProcessThread
@@ -2206,9 +2244,11 @@ int main(int argc, char **argv)
   DSTcpipThread dstcpServer;
   dstcpServer.port = port+1;
   dsPort = dstcpServer.port;
-
+  
   WebSocketThread wsServer;
   wsServer.port = ws_port;
+  g_wsServer = &wsServer;
+ 
   if (verbose)
     cout << "Starting WebSocket server on port " << wsServer.port << std::endl;
   std::thread ws_thread(&WebSocketThread::startWebSocketServer, &wsServer);
@@ -2366,6 +2406,7 @@ int main(int argc, char **argv)
   watchdogTimer.m_bDone = true;
   watchdog_thread.join();
 
+  g_wsServer = nullptr;
   
   // Cleanup
   if (g_dataForwarder) {
