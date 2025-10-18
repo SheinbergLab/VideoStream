@@ -20,6 +20,11 @@ private:
   int width, height;
   bool color;
   int offset_x, offset_y;
+
+    // Cache for pause
+    cv::Mat last_frame_;
+    FrameMetadata last_metadata_;
+    bool has_last_frame_;
   
     bool initializeCamera();
     void configureCameraDefaults();

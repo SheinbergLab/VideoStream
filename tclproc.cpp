@@ -1017,7 +1017,6 @@ static int reviewIndexCmd(ClientData data, Tcl_Interp *interp,
   return TCL_OK;
 }
 
-
 static int vstreamPauseCmd(ClientData clientData, Tcl_Interp *interp,
                            int objc, Tcl_Obj *const objv[]) {
     proginfo_t *p = (proginfo_t *)clientData;
@@ -1028,20 +1027,20 @@ static int vstreamPauseCmd(ClientData clientData, Tcl_Interp *interp,
     }
     
     IFrameSource* source = p->sourceManager->getCurrentSource();
-    if (!source || !source->isPlaybackMode()) {
-        Tcl_SetObjResult(interp, Tcl_NewStringObj("Not in playback mode", -1));
+    if (!source) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("No active source", -1));
         return TCL_ERROR;
     }
     
-    VideoFileSource* fileSource = dynamic_cast<VideoFileSource*>(source);
-    if (!fileSource) {
-        Tcl_SetObjResult(interp, Tcl_NewStringObj("Not a file source", -1));
+    // Check if source supports pause
+    if (!source->supportsPause()) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("Source does not support pause", -1));
         return TCL_ERROR;
     }
     
     if (objc == 1) {
         // Query current state
-        Tcl_SetObjResult(interp, Tcl_NewBooleanObj(fileSource->isPaused()));
+        Tcl_SetObjResult(interp, Tcl_NewBooleanObj(source->isPaused()));
         return TCL_OK;
     }
     
@@ -1051,8 +1050,13 @@ static int vstreamPauseCmd(ClientData clientData, Tcl_Interp *interp,
         return TCL_ERROR;
     }
     
-    fileSource->setPaused(pause_val != 0);
-    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(fileSource->isPaused()));
+    source->setPaused(pause_val != 0);
+    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(source->isPaused()));
+    
+    // Fire event
+    std::string event_data = pause_val ? "paused" : "resumed";
+    fireEvent("source_paused", event_data);
+    
     return TCL_OK;
 }
 

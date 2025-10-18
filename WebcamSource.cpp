@@ -1,9 +1,11 @@
 #include "WebcamSource.h"
 #include <iostream>
+#include <thread>
 
 WebcamSource::WebcamSource(int cameraId)
     : camera_id(cameraId)
     , simulated_frameID(0)
+    , has_last_frame_(false)       
 {
     cap.open(camera_id);
     
@@ -41,16 +43,28 @@ bool WebcamSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
         return false;
     }
     
-   // Always grab to keep buffer fresh
-    cap.grab();
-    
-    // If paused, don't retrieve the frame
-    if (paused_) {
+    // Always grab to keep buffer fresh and stay synchronized
+    if (!cap.grab()) {
         return false;
     }
     
+    // If paused, return the last captured frame
+    if (paused_) {
+        if (has_last_frame_) {
+            frame = last_frame_.clone();
+            metadata = last_metadata_;
+            return true;  // Return true with cached frame
+        } else {
+            // No cached frame yet, just sleep
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            return false;
+        }
+    }
+    
     // Retrieve the grabbed frame
-    cap.retrieve(frame);
+    if (!cap.retrieve(frame)) {
+        return false;
+    }
     
     if (frame.empty()) {
         return false;
@@ -63,15 +77,15 @@ bool WebcamSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
     // Generate metadata
     metadata.systemTime = std::chrono::high_resolution_clock::now();
     metadata.frameID = simulated_frameID++;
-    
-    // Calculate timestamp based on frame count and FPS
-    // This simulates camera timestamp behavior
     metadata.timestamp = static_cast<int64_t>(
-        (simulated_frameID * 1000000000LL) / fps  // nanoseconds
+        (simulated_frameID * 1000000000LL) / fps
     );
-    
-    // Webcams don't have hardware line status
     metadata.lineStatus = false;
+    
+    // Cache this frame for potential pause
+    last_frame_ = frame.clone();
+    last_metadata_ = metadata;
+    has_last_frame_ = true;
     
     return true;
 }

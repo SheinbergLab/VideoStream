@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <atomic>
+#include <thread>
 
 using namespace Spinnaker;
 using namespace Spinnaker::GenApi;
@@ -22,6 +23,7 @@ FlirCameraSource::FlirCameraSource(int cameraId, int width, int height)
     , offset_x(0)
     , offset_y(0)      
     , color(false)
+    , has_last_frame(false)
 {
     processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
     
@@ -150,12 +152,22 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
             pResultImage->Release();
             return false;
         }
-
-	if (paused_) {
-	  pResultImage->Release();
-	  return false;
+        
+        // If paused, release this frame and return cached frame
+        if (paused_) {
+            pResultImage->Release();
+            
+            if (has_last_frame_) {
+                frame = last_frame_.clone();
+                metadata = last_metadata_;
+                return true;  // Return true with cached frame
+            } else {
+                // No cached frame yet, sleep and return false
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                return false;
+            }
         }
-  
+        
         // Get line status
         metadata.lineStatus = getLineStatus();
         
@@ -182,7 +194,12 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
                        CV_8UC1, convertedImage->GetData(),
                        convertedImage->GetStride());
         
-	frame = cvimg.clone();
+        frame = cvimg.clone();
+        
+        // Cache this frame for potential pause
+        last_frame_ = frame.clone();
+        last_metadata_ = metadata;
+        has_last_frame_ = true;
         
         pResultImage->Release();
         return true;
@@ -192,6 +209,7 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
         return false;
     }
 }
+
 
 bool FlirCameraSource::isOpen() const {
     return pCam && pCam->IsValid() && pCam->IsStreaming();

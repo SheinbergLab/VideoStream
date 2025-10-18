@@ -15,7 +15,12 @@ private:
     // Frame tracking for metadata generation
     int64_t simulated_frameID;
     std::chrono::high_resolution_clock::time_point start_time;
-    
+
+    // Store last frame for pause
+    cv::Mat last_frame_;
+    FrameMetadata last_metadata_;
+    bool has_last_frame_;
+  
 public:
     WebcamSource(int cameraId = 0);
     ~WebcamSource();

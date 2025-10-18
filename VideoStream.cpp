@@ -2315,6 +2315,16 @@ int main(int argc, char **argv)
 	    if (verbose) {
 	      std::cerr << "Frame acquisition error, retrying..." << std::endl;
 	    }
+
+	    // Frame acquisition failed 
+	    // Process commands so can react
+	    processTclCommands();
+	    processMouseEvents();
+	    processEvents();
+	    
+	    // Sleep to avoid busy-waiting
+	    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	    
 	    continue;
 	  }
 	  
