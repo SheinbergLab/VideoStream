@@ -534,12 +534,14 @@ private:
   int profile_flags_;
   std::atomic<bool> debug_next_frame_;
 
-  // Canonical settings storage
+  // Settings storage
   struct Settings {
     int pupil_threshold = 45;
     float p1_max_jump = 15.0f;
+    int p1_min_intensity = 140;
     float p4_max_jump = 20.0f;
     int p4_min_intensity = 140;
+    float p4_max_prediction_error = 13.0f;
     std::string detection_mode = "pupil_p1";
   } settings_;
   
@@ -552,21 +554,24 @@ private:
         evt.rate_limit_exempt = true;  // Always deliver
         fireEvent(evt);
     }
-    
-    // Fire all current settings (for new clients)
+
     void fireAllSettings() {
         fireSettingChanged("pupil_threshold",
 			   std::to_string(settings_.pupil_threshold));
         fireSettingChanged("p1_max_jump",
 			   std::to_string(settings_.p1_max_jump));
+        fireSettingChanged("p1_min_intensity",
+			   std::to_string(settings_.p1_min_intensity));
         fireSettingChanged("p4_max_jump",
 			   std::to_string(settings_.p4_max_jump));
         fireSettingChanged("p4_min_intensity",
 			   std::to_string(settings_.p4_min_intensity));
+        fireSettingChanged("p4_max_prediction_error",
+			   std::to_string(settings_.p4_max_prediction_error));
         fireSettingChanged("detection_mode",
 			   settings_.detection_mode);
-    }
-  
+    }  
+
     // ========================================================================
     // BUFFER MANAGEMENT
     // ========================================================================
@@ -1620,6 +1625,54 @@ static int setPupilThresholdCmd(ClientData clientData, Tcl_Interp *interp,
     return TCL_OK;
 }
 
+static int setP4MaxPredictionErrorCmd(ClientData clientData, Tcl_Interp *interp,
+                                       int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    
+    if (objc == 1) {
+        Tcl_SetObjResult(interp, Tcl_NewDoubleObj(plugin->p4_max_prediction_error_));
+        return TCL_OK;
+    }
+    
+    double error;
+    if (Tcl_GetDoubleFromObj(interp, objv[1], &error) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    plugin->p4_max_prediction_error_ = error;
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(error));
+    return TCL_OK;
+}
+
+static int setP1MinIntensityCmd(ClientData clientData, Tcl_Interp *interp,
+                                 int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+
+    if (objc == 1) {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(plugin->settings_.p1_min_intensity));
+        return TCL_OK;
+    }
+    
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "intensity");
+        return TCL_ERROR;
+    }
+    
+    int intensity;
+    if (Tcl_GetIntFromObj(interp, objv[1], &intensity) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    plugin->p1_min_intensity_ = intensity;
+    plugin->settings_.p1_min_intensity = intensity;
+    
+    // Fire event
+    plugin->fireSettingChanged("p1_min_intensity", std::to_string(intensity));
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(intensity));
+    return TCL_OK;
+}
+  
 static int setP4MinIntensityCmd(ClientData clientData, Tcl_Interp *interp,
                                  int objc, Tcl_Obj *const objv[]) {
     EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
@@ -1846,12 +1899,20 @@ static int getSettingsCmd(ClientData clientData, Tcl_Interp *interp,
                    Tcl_NewDoubleObj(plugin->settings_.p1_max_jump));
     
     Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("p1_min_intensity", -1),
+                   Tcl_NewIntObj(plugin->settings_.p1_min_intensity));
+    
+    Tcl_DictObjPut(interp, settingsDict,
                    Tcl_NewStringObj("p4_max_jump", -1),
                    Tcl_NewDoubleObj(plugin->settings_.p4_max_jump));
     
     Tcl_DictObjPut(interp, settingsDict,
                    Tcl_NewStringObj("p4_min_intensity", -1),
                    Tcl_NewIntObj(plugin->settings_.p4_min_intensity));
+    
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("p4_max_prediction_error", -1),
+                   Tcl_NewDoubleObj(plugin->settings_.p4_max_prediction_error));
     
     Tcl_DictObjPut(interp, settingsDict,
                    Tcl_NewStringObj("detection_mode", -1),
@@ -1967,6 +2028,10 @@ public:
                             setP4ModelCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::getP4ModelStatus", 
                             getP4ModelStatusCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::setP4MaxPredictionError", 
+                            setP4MaxPredictionErrorCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::setP1MinIntensity", 
+                            setP1MinIntensityCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP4MinIntensity", 
                             setP4MinIntensityCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP1MaxJump", 
@@ -1993,92 +2058,145 @@ bool hasWebUI() const override {
     return true; 
 }
 
+
 std::string getUIHTML() const override {
     return R"EYETRACK_HTML(
-<div class="control-row">
-    <div class="input-group">
-        <label>Detection Mode</label>
-        <select id="et-detection-mode">
-            <option value="pupil_only">Pupil Only</option>
-            <option value="pupil_p1" selected>Pupil + P1</option>
-            <option value="full">Full (P1+P4)</option>
-        </select>
-    </div>
-    
-    <div class="button-group" style="align-self: flex-end;">
-        <button onclick="etApplyMode()">Apply Mode</button>
-        <button class="secondary" onclick="etResetTracking()">Reset Tracking</button>
-    </div>
-</div>
-
-<div class="control-row">
-    <div class="input-group">
-        <label>Pupil Threshold: <span id="et-pupil-thresh-val">45</span></label>
-        <input type="range" id="et-pupil-threshold" min="0" max="255" value="45" 
-               oninput="etUpdateLabel(this, 'et-pupil-thresh-val')" 
-               onchange="etApplyPupilThreshold(this.value)">
+<div class="control-section">
+    <h3>Detection Mode</h3>
+    <div class="control-row">
+        <div class="input-group">
+            <label>Mode</label>
+            <select id="et-detection-mode">
+                <option value="pupil_only">Pupil Only</option>
+                <option value="pupil_p1" selected>Pupil + P1</option>
+                <option value="full">Full (P1+P4)</option>
+            </select>
+        </div>
+        
+        <div class="button-group" style="align-self: flex-end;">
+            <button onclick="etApplyMode()">Apply Mode</button>
+            <button class="secondary" onclick="etResetTracking()">Reset Tracking</button>
+        </div>
     </div>
 </div>
 
-<div class="control-row" id="et-p1-controls">
-    <div class="input-group">
-        <label>P1 Max Jump: <span id="et-p1-jump-val">15.0</span> px</label>
-        <input type="range" id="et-p1-max-jump" min="5" max="50" step="0.5" value="15.0"
-               oninput="etUpdateLabel(this, 'et-p1-jump-val')"
-               onchange="etApplyP1MaxJump(this.value)">
+<div class="control-section">
+    <h3>Detection Parameters</h3>
+    <div class="three-column-grid">
+        <!-- Pupil Column -->
+        <div class="param-column">
+            <h4>Pupil</h4>
+            <div class="param-group">
+                <label>Threshold: <span id="et-pupil-thresh-val">45</span></label>
+                <input type="range" id="et-pupil-threshold" min="0" max="255" value="45" 
+                       oninput="etUpdateLabel(this, 'et-pupil-thresh-val')" 
+                       onchange="etApplyPupilThreshold(this.value)">
+            </div>
+        </div>
+        
+        <!-- P1 Column -->
+        <div class="param-column" id="et-p1-column">
+            <h4>P1</h4>
+            <div class="param-group">
+                <label>Max Jump: <span id="et-p1-jump-val">15.0</span> px</label>
+                <input type="range" id="et-p1-max-jump" min="5" max="50" step="0.5" value="15.0"
+                       oninput="etUpdateLabel(this, 'et-p1-jump-val')"
+                       onchange="etApplyP1MaxJump(this.value)">
+            </div>
+            <div class="param-group">
+                <label>Min Intensity: <span id="et-p1-intensity-val">140</span></label>
+                <input type="range" id="et-p1-min-intensity" min="80" max="250" value="140"
+                       oninput="etUpdateLabel(this, 'et-p1-intensity-val')"
+                       onchange="etApplyP1MinIntensity(this.value)">
+            </div>
+        </div>
+        
+        <!-- P4 Column -->
+        <div class="param-column" id="et-p4-column" style="display: none;">
+            <h4>P4</h4>
+            <div class="param-group">
+                <label>Max Jump: <span id="et-p4-jump-val">20.0</span> px</label>
+                <input type="range" id="et-p4-max-jump" min="5" max="50" step="0.5" value="20.0"
+                       oninput="etUpdateLabel(this, 'et-p4-jump-val')"
+                       onchange="etApplyP4MaxJump(this.value)">
+            </div>
+            <div class="param-group">
+                <label>Min Intensity: <span id="et-p4-intensity-val">140</span></label>
+                <input type="range" id="et-p4-min-intensity" min="80" max="250" value="140"
+                       oninput="etUpdateLabel(this, 'et-p4-intensity-val')"
+                       onchange="etApplyP4MinIntensity(this.value)">
+            </div>
+            <div class="param-group">
+                <label>Max Pred Error: <span id="et-p4-pred-error-val">13.0</span> px</label>
+                <input type="range" id="et-p4-pred-error" min="5" max="30" step="0.5" value="13.0"
+                       oninput="etUpdateLabel(this, 'et-p4-pred-error-val')"
+                       onchange="etApplyP4PredictionError(this.value)">
+            </div>
+        </div>
     </div>
 </div>
 
-<div class="control-row" id="et-p4-controls" style="display: none;">
-    <div class="input-group">
-        <label>P4 Max Jump: <span id="et-p4-jump-val">20.0</span> px</label>
-        <input type="range" id="et-p4-max-jump" min="5" max="50" step="0.5" value="20.0"
-               oninput="etUpdateLabel(this, 'et-p4-jump-val')"
-               onchange="etApplyP4MaxJump(this.value)">
-    </div>
-    
-    <div class="input-group">
-        <label>P4 Min Intensity: <span id="et-p4-intensity-val">140</span></label>
-        <input type="range" id="et-p4-min-intensity" min="80" max="250" value="140"
-               oninput="etUpdateLabel(this, 'et-p4-intensity-val')"
-               onchange="etApplyP4MinIntensity(this.value)">
-    </div>
-</div>
-
-<div class="control-row">
-    <div class="status-indicator">
-        <span class="status-dot" id="et-blink-indicator"></span>
-        <span id="et-blink-text">Tracking active</span>
-    </div>
-    <div class="status-indicator">
-        <span class="status-dot" id="et-p1-indicator"></span>
-        <span id="et-p1-text">P1 tracking</span>
-    </div>
-    <div class="status-indicator">
-        <span class="status-dot" id="et-p4-indicator"></span>
-        <span id="et-p4-text">P4 model</span>
+<div class="control-section">
+    <h3>Status</h3>
+    <div class="status-row">
+        <div class="status-indicator">
+            <span class="status-dot" id="et-blink-indicator"></span>
+            <span id="et-blink-text">Tracking active</span>
+        </div>
+        <div class="status-indicator">
+            <span class="status-dot" id="et-p1-indicator"></span>
+            <span id="et-p1-text">P1 tracking</span>
+        </div>
+        <div class="status-indicator">
+            <span class="status-dot" id="et-p4-indicator"></span>
+            <span id="et-p4-text">P4 model</span>
+        </div>
     </div>
 </div>
 
-<div class="control-row">
-    <div id="et-p4-calibration" style="display: none;">
-        <h3 style="font-size: 13px; margin-bottom: 8px;">P4 Calibration</h3>
+<div class="control-section" id="et-p4-calibration" style="display: none;">
+    <h3>P4 Calibration</h3>
+    <div class="control-row">
         <div class="button-group">
             <button onclick="etCalibrateP4()">Calibrate P4 Model</button>
             <button class="secondary" onclick="etResetP4Model()">Reset P4 Model</button>
         </div>
-        <div id="et-p4-status" style="font-size: 12px; color: #999; margin-top: 8px;"></div>
+    </div>
+    <div class="control-row">
+        <div id="et-p4-status" style="font-size: 12px; color: #999;"></div>
     </div>
 </div>
 
-<div class="control-row">
-    <button class="secondary" onclick="etDebugNextFrame()">Debug Next Frame</button>
-    <span style="font-size: 11px; color: #666; margin-left: 12px;">
-        Verbose debug output for next frame (check terminal)
-    </span>
+<div class="control-section">
+    <h3>Debug</h3>
+    <div class="control-row">
+        <div class="input-group" style="max-width: 300px;">
+            <label>Debug Level: <span id="et-debug-level-val">1</span></label>
+            <input type="range" id="et-debug-level" min="0" max="4" step="1" value="1"
+                   oninput="etUpdateLabel(this, 'et-debug-level-val')"
+                   onchange="etApplyDebugLevel(this.value)">
+            <small style="color: #666; margin-top: 4px; display: block;">
+                0=Silent, 1=Critical, 2=Normal, 3=Verbose, 4=Profile
+            </small>
+        </div>
+    </div>
+    <div class="control-row">
+        <button class="secondary" onclick="etDebugNextFrame()">Debug Next Frame</button>
+        <small style="color: #666; margin-left: 12px; align-self: center;">
+            Verbose debug output for next frame (check terminal)
+        </small>
+    </div>
+    <div class="control-row">
+        <div class="input-group">
+            <label style="display: flex; align-items: center; gap: 8px;">
+                <input type="checkbox" id="et-profiling" onchange="etToggleProfiling(this.checked)">
+                <span>Enable Frame Timing</span>
+            </label>
+        </div>
+    </div>
 </div>
 
-<div class="control-row">
+<div class="control-section">
     <div style="font-size: 11px; color: #666; line-height: 1.6;">
         <strong>Note:</strong> Real-time tracking visualization appears on the OpenCV display window.
         Results are also forwarded to the dataserver if configured.
@@ -2125,6 +2243,14 @@ window.etSyncSettingToUI = function(settingName, value) {
             }
             break;
             
+        case 'p1_min_intensity':
+            const p1IntSlider = document.getElementById('et-p1-min-intensity');
+            if (p1IntSlider && p1IntSlider.value != value) {
+                p1IntSlider.value = value;
+                window.etUpdateLabel(p1IntSlider, 'et-p1-intensity-val');
+            }
+            break;
+            
         case 'p4_max_jump':
             const p4Slider = document.getElementById('et-p4-max-jump');
             if (p4Slider && p4Slider.value != value) {
@@ -2141,6 +2267,14 @@ window.etSyncSettingToUI = function(settingName, value) {
             }
             break;
             
+        case 'p4_max_prediction_error':
+            const p4PredSlider = document.getElementById('et-p4-pred-error');
+            if (p4PredSlider && p4PredSlider.value != value) {
+                p4PredSlider.value = value;
+                window.etUpdateLabel(p4PredSlider, 'et-p4-pred-error-val');
+            }
+            break;
+            
         case 'detection_mode':
             const modeSelect = document.getElementById('et-detection-mode');
             if (modeSelect && modeSelect.value != value) {
@@ -2152,12 +2286,12 @@ window.etSyncSettingToUI = function(settingName, value) {
 };
 
 window.etUpdateModeControls = function(mode) {
-    const p1Controls = document.getElementById('et-p1-controls');
-    const p4Controls = document.getElementById('et-p4-controls');
+    const p1Column = document.getElementById('et-p1-column');
+    const p4Column = document.getElementById('et-p4-column');
     const calibSection = document.getElementById('et-p4-calibration');
     
-    if (p1Controls) p1Controls.style.display = (mode !== 'pupil_only') ? 'flex' : 'none';
-    if (p4Controls) p4Controls.style.display = (mode === 'full') ? 'flex' : 'none';
+    if (p1Column) p1Column.style.display = (mode !== 'pupil_only') ? 'block' : 'none';
+    if (p4Column) p4Column.style.display = (mode === 'full') ? 'block' : 'none';
     if (calibSection) calibSection.style.display = (mode === 'full') ? 'block' : 'none';
 };
 
@@ -2206,6 +2340,12 @@ window.etApplyP1MaxJump = function(value) {
     }
 };
 
+window.etApplyP1MinIntensity = function(value) {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::setP1MinIntensity ' + value);
+    }
+};
+
 window.etApplyP4MaxJump = function(value) {
     if (window.sendCommand) {
         window.sendCommand('eyetracking::setP4MaxJump ' + value);
@@ -2215,6 +2355,24 @@ window.etApplyP4MaxJump = function(value) {
 window.etApplyP4MinIntensity = function(value) {
     if (window.sendCommand) {
         window.sendCommand('eyetracking::setP4MinIntensity ' + value);
+    }
+};
+
+window.etApplyP4PredictionError = function(value) {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::setP4MaxPredictionError ' + value);
+    }
+};
+
+window.etApplyDebugLevel = function(value) {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::setDebugLevel ' + value);
+    }
+};
+
+window.etToggleProfiling = function(enabled) {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::enableProfiling ' + (enabled ? 1 : 0));
     }
 };
 
@@ -2359,34 +2517,183 @@ window.addEventListener('vstream-plugin-tab-active', () => {
 
 console.log('Eye tracking UI script loaded');
 )EYETRACK_JS";
-}  
-  
+}
+
 std::string getUIStyle() const override {
     return R"EYETRACK_CSS(
-#et-p4-calibration {
+.control-section {
+    margin-bottom: 20px;
+    padding: 12px;
     background: #2d2d30;
+    border-radius: 4px;
+}
+
+.control-section h3 {
+    font-size: 13px;
+    margin: 0 0 12px 0;
+    color: #e0e0e0;
+    font-weight: 600;
+}
+
+.control-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    margin-bottom: 8px;
+}
+
+.control-row:last-child {
+    margin-bottom: 0;
+}
+
+/* Three Column Grid for Detection Parameters */
+.three-column-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+}
+
+.param-column {
+    background: #252526;
     padding: 12px;
     border-radius: 4px;
-    margin-top: 8px;
+    border: 1px solid #3c3c3c;
+}
+
+.param-column h4 {
+    font-size: 12px;
+    margin: 0 0 12px 0;
+    color: #4ec9b0;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.param-group {
+    margin-bottom: 12px;
+}
+
+.param-group:last-child {
+    margin-bottom: 0;
+}
+
+.param-group label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 11px;
+    color: #cccccc;
+}
+
+.param-group input[type="range"] {
+    width: 100%;
+}
+
+/* Status Row */
+.status-row {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
+.input-group {
+    flex: 1;
+    min-width: 0;
+}
+
+.input-group label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 12px;
+    color: #cccccc;
+}
+
+.input-group input[type="range"] {
+    width: 100%;
+}
+
+.input-group select {
+    width: 100%;
+    padding: 4px 8px;
+    background: #3c3c3c;
+    border: 1px solid #555;
+    color: #cccccc;
+    border-radius: 3px;
+}
+
+.button-group {
+    display: flex;
+    gap: 8px;
+}
+
+button {
+    padding: 6px 12px;
+    background: #0e639c;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+button:hover {
+    background: #1177bb;
+}
+
+button.secondary {
+    background: #3c3c3c;
+}
+
+button.secondary:hover {
+    background: #505050;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #666;
+}
+
+.status-dot.active {
+    background: #4ec9b0;
+}
+
+.status-dot.recording {
+    background: #f48771;
+    animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
 }
 
 #et-p4-status {
     font-family: 'SF Mono', Monaco, monospace;
 }
 
-.input-group input[type="range"] {
-    width: 200px;
+/* Responsive: Stack columns on narrow screens */
+@media (max-width: 600px) {
+    .three-column-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
-.input-group label {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    width: 100%;
+@media (min-width: 601px) and (max-width: 900px) {
+    .three-column-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
 }
 )EYETRACK_CSS";
 }  
-  
+
   // Format results to be saved with VideoStream metadata
   std::string serializeResults(int frame_idx) override {
     std::lock_guard<std::mutex> lock(results_mutex_);
