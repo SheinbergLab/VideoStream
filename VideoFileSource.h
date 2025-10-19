@@ -62,6 +62,8 @@ public:
   
   bool isPlaybackMode() const override { return true; }
   bool isLooping() const override { return loop_playback; }
+
+  bool supportsPause() const override { return true; }
 };
 
 #endif
