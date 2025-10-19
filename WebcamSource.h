@@ -33,7 +33,6 @@ public:
     bool isColor() const override { return color; }
     void close() override { cap.release(); }
     
-    // Optional: Allow runtime property changes
     bool setResolution(int w, int h);
     bool setFrameRate(float targetFps);
 
