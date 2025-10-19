@@ -648,7 +648,14 @@ function addToEventLog(eventType, eventData, level = 'info') {
     };
     
     entry.style.color = colors[level] || colors.info;
-    entry.innerHTML = `<span style="color: #666;">[${timestamp}]</span> <strong>${eventType}</strong>: ${eventData}`;
+    
+    // Format data properly
+    let dataStr = eventData;
+    if (typeof eventData === 'object') {
+        dataStr = JSON.stringify(eventData);
+    }
+    
+    entry.innerHTML = `<span style="color: #666;">[${timestamp}]</span> <strong>${eventType}</strong>: ${dataStr}`;
     
     eventLog.appendChild(entry);
     
@@ -657,7 +664,6 @@ function addToEventLog(eventType, eventData, level = 'info') {
         eventLog.removeChild(eventLog.firstChild);
     }
     
-    // Auto-scroll to bottom if not paused
     if (!eventLogPaused) {
         eventLog.scrollTop = eventLog.scrollHeight;
     }
@@ -773,8 +779,8 @@ function togglePause() {
         }
 
 function querySourceStatus() {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
+    if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+        window.ws.send(JSON.stringify({
             cmd: 'eval',
             script: 'vstream::getSourceStatus'
         }));
@@ -856,9 +862,9 @@ function querySourceStatus() {
         }
 
         function sendCommand(command) {
-            if (ws && ws.readyState === WebSocket.OPEN) {
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
                 showCommand(command);
-                ws.send(JSON.stringify({
+                window.ws.send(JSON.stringify({
                     cmd: 'eval',
                     script: command
                 }));
@@ -866,7 +872,8 @@ function querySourceStatus() {
                 showError('Not connected to server');
             }
         }
-
+	window.sendCommand = sendCommand;
+	
         function showCommand(command) {
             const commandLine = document.createElement('div');
             commandLine.className = 'output-line command-line';
@@ -902,139 +909,120 @@ function querySourceStatus() {
 function handleServerEvent(eventType, eventData) {
     console.log('📡 Server event:', eventType, eventData);
 
-	let logLevel = 'info';
+    // Determine log level
+    let logLevel = 'info';
     if (eventType.includes('error') || eventType.includes('lost')) {
         logLevel = 'error';
     } else if (eventType.includes('warning')) {
         logLevel = 'warning';
-    } else if (eventType.includes('complete') || eventType.includes('calibrated')) {
+    } else if (eventType.includes('complete') || eventType.includes('calibrated') || 
+               eventType.includes('recovered')) {
         logLevel = 'success';
     }
-    addToEventLog(eventType, eventData, logLevel);
-   	
+    
+    // Always add to event log
+    addToEventLog(eventType, formatEventData(eventData), logLevel);
+    
+    // Handle ONLY core vstream events
+    if (eventType.startsWith('vstream/')) {
+        handleVstreamEvent(eventType, eventData);
+    }
+    
+    // Dispatch for plugins to handle their own events
+    window.dispatchEvent(new CustomEvent('vstream-event', {
+        detail: { type: eventType, data: eventData }
+    }));
+}
+
+// Core vstream event handler - NO plugin-specific code
+function handleVstreamEvent(eventType, eventData) {
     switch(eventType) {
-        case 'client_connected':
+        case 'vstream/client_connected':
             showInfo(`Client ${eventData} connected`);
             break;
 
-       case 'source_started':
-            // Parse: "type playback" or "type webcam" or "type review"
-            const typeMatch = eventData.match(/type (\w+)/);
-            if (typeMatch) {
-                const sourceType = typeMatch[1];
-                showInfo(`▶️ Source started: ${sourceType}`);
-                
-                // Check if it's playback mode
-                if (sourceType === 'playback') {
-                    isPlaybackMode = true;
-                    updatePlaybackControls();
-                }
-                
-                // Query full status to update UI
+        case 'vstream/plugin_registered':
+            showInfo('🔌 Plugin loaded: ' + eventData);
+            setTimeout(loadPluginUIs, 100);
+            break;
+            
+        case 'vstream/plugin_unregistered':
+            showInfo('🔌 Plugin unloaded: ' + eventData);
+            setTimeout(loadPluginUIs, 100);
+            break;
+            
+        case 'vstream/source_started':
+            if (typeof eventData === 'object' && eventData.type) {
+                showInfo(`▶️ Source started: ${eventData.type}`);
+                isPlaybackMode = (eventData.type === 'playback');
                 setTimeout(querySourceStatus, 100);
             }
             break;
             
-        case 'source_stopped':
-            // Parse: "type webcam" etc.
-            const stopTypeMatch = eventData.match(/type (\w+)/);
-            const stoppedType = stopTypeMatch ? stopTypeMatch[1] : 'unknown';
-            showInfo(`⏹️ Source stopped: ${stoppedType}`);
+        case 'vstream/source_stopped':
+            if (typeof eventData === 'object' && eventData.type) {
+                showInfo(`⏹️ Source stopped: ${eventData.type}`);
+            }
             updateSourceStatus(false, 'Stopped');
             isPlaybackMode = false;
             updatePlaybackControls();
             break;
             
- 	
-        case 'recording_started':
-            // Parse: "file output.avi"
-            const startFile = eventData.replace('file ', '');
-            updateRecordingStatus(true, `Recording: ${startFile}`);
-            showInfo(`🔴 Recording started: ${startFile}`);
+        case 'vstream/recording_started':
+            if (typeof eventData === 'string') {
+                const file = eventData.replace('file ', '');
+                updateRecordingStatus(true, `Recording: ${file}`);
+                showInfo(`🔴 Recording started: ${file}`);
+            }
             break;
             
-        case 'recording_closed':
-            // Parse: "file output.avi"
-            const stopFile = eventData.replace('file ', '');
-            updateRecordingStatus(false, 'Stopped');
-            showInfo(`⏹️ Recording stopped: ${stopFile}`);
+        case 'vstream/recording_closed':
+            if (typeof eventData === 'string') {
+                const file = eventData.replace('file ', '');
+                updateRecordingStatus(false, 'Stopped');
+                showInfo(`⏹️ Recording stopped: ${file}`);
+            }
             break;
             
-        case 'metadata_recording_started':
-            // Parse: "file basename.db source /path/to/video.mp4"
-            showInfo(`📊 Metadata recording started: ${eventData}`);
+        case 'vstream/metadata_recording_started':
+            showInfo(`📊 Metadata recording started`);
             break;
             
-        case 'metadata_recording_closed':
-            // Parse: "file basename.db"
-            showInfo(`💾 Metadata recording saved: ${eventData}`);
+        case 'vstream/metadata_recording_closed':
+            showInfo(`💾 Metadata recording saved`);
             break;
             
-        case 'video_source_eof':
+        case 'vstream/source_eof':
             showInfo('🎬 End of video reached');
             if (isPlaybackMode) {
                 updatePlaybackControls();
             }
             break;
             
-        case 'video_source_rewind':
+        case 'vstream/source_rewind':
             showInfo('⏮️ Video rewound to beginning');
             break;
             
-        case 'sampling_progress':
-            // Parse: "sampled N total M"
-            const progMatch = eventData.match(/sampled (\d+) total (\d+)/);
-            if (progMatch) {
-                const [, sampled, total] = progMatch;
-                showInfo(`📸 Sampling progress: ${sampled}/${total} frames`);
+        case 'vstream/sampling_progress':
+            if (typeof eventData === 'object') {
+                showInfo(`📸 Sampling: ${eventData.sampled}/${eventData.total} frames`);
             }
             break;
             
-        case 'sampling_complete':
-            // Parse: "sampled N total M"
-            const completeMatch = eventData.match(/sampled (\d+) total (\d+)/);
-            if (completeMatch) {
-                const [, sampled, total] = completeMatch;
-                showInfo(`✅ Sampling complete: ${sampled}/${total} frames`);
+        case 'vstream/sampling_complete':
+            if (typeof eventData === 'object') {
+                showInfo(`✅ Sampling complete: ${eventData.sampled}/${eventData.total}`);
             }
-            break;
-            
-        case 'eyetracking_blink_start':
-            // Parse: "frame N"
-            const blinkFrame = eventData.match(/frame (\d+)/);
-            if (blinkFrame) {
-                showInfo(`👁️ Blink detected at frame ${blinkFrame[1]}`);
-            }
-            break;
-            
-        case 'eyetracking_blink_end':
-            showInfo('👁️ Blink ended');
-            break;
-            
-        case 'eyetracking_p1_lost':
-            const p1LostFrame = eventData.match(/frame (\d+)/);
-            if (p1LostFrame) {
-                showWarning(`⚠️ P1 tracking lost at frame ${p1LostFrame[1]}`);
-            }
-            break;
-            
-        case 'eyetracking_p1_recovered':
-            const p1RecFrame = eventData.match(/frame (\d+)/);
-            if (p1RecFrame) {
-                showInfo(`✅ P1 tracking recovered at frame ${p1RecFrame[1]}`);
-            }
-            break;
-            
-        case 'eyetracking_p4_calibrated':
-            // Parse: "samples N magnitude M angle A"
-            showInfo(`🎯 P4 calibration complete: ${eventData}`);
-            break;
-            
-        default:
-            // Log unknown events for debugging
-            showInfo(`Event: ${eventType} - ${eventData}`);
             break;
     }
+}
+
+// Helper to format event data for display
+function formatEventData(data) {
+    if (typeof data === 'object') {
+        return JSON.stringify(data, null, 2);
+    }
+    return String(data);
 	}
 	
         function handleKeyDown(e) {
@@ -1146,8 +1134,8 @@ function handleServerEvent(eventType, eventData) {
             historyIndex = history.length;
             
             const commandLine = document.createElement('div');
-            commandLine.className = 'output-line command-line';
-            commandLine.textContent = 'vstream> ' + command;
+        commandLine.className = 'output-line command-line';
+        commandLine.textContent = 'vstream> ' + command;
             inputElement.parentElement.replaceWith(commandLine);
             
             if (isBlockedCommand(command)) {
@@ -1156,8 +1144,8 @@ function handleServerEvent(eventType, eventData) {
                 return;
             }
             
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
+            if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+                window.ws.send(JSON.stringify({
                     cmd: 'eval',
                     script: command
                 }));
@@ -1246,6 +1234,7 @@ function showResult(data) {
             terminal.appendChild(infoLine);
             terminal.scrollTop = terminal.scrollHeight;
         }
+	window.showInfo = showInfo;
         
         function showWarning(message) {
             const warningLine = document.createElement('div');
@@ -1254,6 +1243,7 @@ function showResult(data) {
             terminal.appendChild(warningLine);
             terminal.scrollTop = terminal.scrollHeight;
         }
+	window.showWarning = showWarning;
         
         function clearTerminal() {
             terminal.innerHTML = '';
@@ -1266,39 +1256,60 @@ function showResult(data) {
             const wsUrl = `${protocol}//${window.location.hostname}:${window.location.port}/ws`;
             
             try {
-                ws = new WebSocket(wsUrl);
-                
-                ws.onopen = () => {
-                    statusElement.textContent = 'Connected';
-                    statusElement.classList.remove('disconnected');
-                    showInfo('Connected to VideoStream WebSocket');
-                    createInputLine();
-                    
-                    // Auto-query status on connect
-                    setTimeout(querySourceStatus, 500);
-                };
-                
-	ws.onmessage = (event) => {
-	try {
+                window.ws = new WebSocket(wsUrl);
+
+window.ws.onopen = () => {
+    statusElement.textContent = 'Connected';
+    statusElement.classList.remove('disconnected');
+    showInfo('Connected to VideoStream WebSocket');
+    
+    // Subscribe to core vstream events
+    window.ws.send(JSON.stringify({
+        cmd: 'subscribe',
+        topics: ['vstream/*']
+    }));
+    
+    createInputLine();
+    
+    // Auto-query status on connect
+    setTimeout(querySourceStatus, 500);
+    
+    // Load plugin UIs
+    loadPluginUIs();
+};
+
+window.ws.onmessage = (event) => {
+    try {
         const data = JSON.parse(event.data);
         
-        // Check if this is a server-pushed event
         if (data.type === 'event') {
-        handleServerEvent(data.event, data.data);
+            // Server-pushed event - data is already native type
+            handleServerEvent(data.event, data.data);
+        } else if (data.type === 'welcome') {
+            showInfo(`Client ID: ${data.client_id}`);
+            // Subscribe to core events only
+            window.ws.send(JSON.stringify({
+                cmd: 'subscribe',
+                topics: ['vstream/*']
+            }));
+        } else if (data.requestId) {
+            // Command response
+            showResult(data);
         } else {
-        // Normal command response
-        showResult(data);
+            // Legacy format
+            showResult(data);
         }
-	} catch (e) {
+    } catch (e) {
+        // Plain text response
         showResult(event.data);
-	}
-	};
+    }
+};
         
-        ws.onerror = (error) => {
+        window.ws.onerror = (error) => {
                     showError('WebSocket error');
                 };
                 
-                ws.onclose = () => {
+                window.ws.onclose = () => {
                     statusElement.textContent = 'Disconnected';
                     statusElement.classList.add('disconnected');
                     showInfo('Disconnected from server. Reconnecting in 3 seconds...');
@@ -1315,7 +1326,112 @@ function showResult(data) {
         
         // Start connection
         connect();
+
+	
+        // Plugin UI loader
+        async function loadPluginUIs() {
+            try {
+                const response = await fetch('/api/plugins');
+                if (!response.ok) {
+                    console.warn('Failed to fetch plugins:', response.statusText);
+                    return;
+                }
+                
+                const plugins = await response.json();
+                
+                if (plugins.length === 0) {
+                    console.log('No plugins with UI found');
+                    return;
+                }
+                
+                console.log('Loading', plugins.length, 'plugin UI(s)');
+                
+                // Remove existing plugin tab if present
+                const existingTab = document.querySelector('[data-tab="plugins"]');
+                const existingContent = document.getElementById('tab-plugins');
+                if (existingTab) existingTab.remove();
+                if (existingContent) existingContent.remove();
+                
+                // Create Plugins tab
+                const tabs = document.querySelector('.tabs');
+                const pluginTab = document.createElement('button');
+                pluginTab.className = 'tab';
+                pluginTab.dataset.tab = 'plugins';
+                pluginTab.innerHTML = 'Plugins (' + plugins.length + ')';
+                tabs.appendChild(pluginTab);
+                
+                // Create plugin content container
+                const pluginContent = document.createElement('div');
+                pluginContent.className = 'tab-content';
+                pluginContent.id = 'tab-plugins';
+                document.getElementById('control-panel').appendChild(pluginContent);
+                
+                // Inject each plugin's UI
+                plugins.forEach(plugin => {
+                    console.log('Loading plugin UI:', plugin.name);
+                    
+                    const section = document.createElement('div');
+                    section.className = 'control-section';
+                    section.id = 'plugin-' + plugin.name;
+                    
+                    // Add custom styles if provided
+                    if (plugin.style && plugin.style.trim() !== '') {
+                        const style = document.createElement('style');
+                        style.textContent = plugin.style;
+                        style.id = 'style-' + plugin.name;
+                        // Remove old style if reloading
+                        const oldStyle = document.getElementById('style-' + plugin.name);
+                        if (oldStyle) oldStyle.remove();
+                        document.head.appendChild(style);
+                    }
+                    
+                    // Add HTML content with header
+                    const header = '<h2>' + plugin.name + 
+                                  ' <span style="font-size: 10px; color: #666; font-weight: normal;">v' + 
+                                  plugin.version + '</span></h2>' +
+                                  '<p style="font-size: 12px; color: #999; margin-bottom: 12px;">' + 
+                                  plugin.description + '</p>';
+                    
+                    section.innerHTML = header + (plugin.html || '');
+                    pluginContent.appendChild(section);
+                    
+    // Execute plugin's JavaScript in isolated scope
+    if (plugin.script && plugin.script.trim() !== '') {
+        try {
+            const script = document.createElement('script');
+            script.textContent = '(function() {\n' + plugin.script + '\n})();';
+            script.id = 'script-' + plugin.name;
+            const oldScript = document.getElementById('script-' + plugin.name);
+            if (oldScript) oldScript.remove();
+            document.body.appendChild(script);
+            
+            // Dispatch event after plugin script loads
+            requestAnimationFrame(() => {
+                window.dispatchEvent(new CustomEvent('vstream-plugin-loaded', {
+                    detail: { name: plugin.name }
+                }));
+            });
+        } catch (e) {
+            console.error('Error loading script for plugin', plugin.name, ':', e);
+        }
+    }
+	});
         
+                // Set up tab switching for plugins tab
+                pluginTab.addEventListener('click', () => {
+                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                    pluginTab.classList.add('active');
+                    pluginContent.classList.add('active');
+                });
+                
+                console.log('Plugin UIs loaded successfully');
+   	        window.dispatchEvent(new CustomEvent('vstream-plugin-tab-active'));                
+            } catch (error) {
+                console.error('Error loading plugin UIs:', error);
+            }
+        }
+	
         // Click handler for terminal
         terminal.addEventListener('click', (e) => {
             const selection = window.getSelection();

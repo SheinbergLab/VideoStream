@@ -18,10 +18,9 @@
 #include "AnalysisPluginRegistry.h"
 
 #include "DataserverForwarder.h"
+#include "VstreamEvent.h"
 
 extern AnalysisPluginRegistry g_pluginRegistry;
-
-extern void fireEvent(const std::string& type, const std::string& data);
 
 // ============================================================================
 // DEBUG LEVELS
@@ -471,18 +470,18 @@ struct AnalysisResults {
 
 class EyeTrackingPlugin : public IAnalysisPlugin {
 private:
-    // Threading
-    std::atomic<bool> running_;
-    std::thread analysis_thread_;
-    
-    struct FrameData {
-        cv::Mat frame;
-        int frame_idx;
-        FrameMetadata metadata;
+  // Threading
+  std::atomic<bool> running_;
+  std::thread analysis_thread_;
+  
+  struct FrameData {
+      cv::Mat frame;
+      int frame_idx;
+      FrameMetadata metadata;
     };
-    SharedQueue<FrameData> frame_queue_;
-
-    // Detection Modes
+  SharedQueue<FrameData> frame_queue_;
+  
+  // Detection Modes
   enum DetectionMode {
     MODE_PUPIL_ONLY = 0,
     MODE_PUPIL_P1 = 1,
@@ -490,48 +489,83 @@ private:
   };  
   DetectionMode detection_mode_;
   
-    // Results
-    std::mutex results_mutex_;
-    AnalysisResults latest_results_;
-    
-    // Buffers
-    cv::Mat gray_buffer_;
-    cv::Mat binary_buffer_;
-    cv::Size frame_size_;
-    bool buffers_initialized_;
-    
-    // ROI
-    cv::Rect current_roi_;
-    bool roi_enabled_;
-    
-    // Pupil detection
-    int pupil_threshold_;
-    
-    // Blink detection
-    BlinkDetector blink_detector_;
-    
-    // P1 detection
-    P1Validator p1_validator_;
-    int p1_min_intensity_;
-    float p1_max_distance_ratio_;
-    cv::Size p1_centroid_roi_size_;
-    
-    // P4 detection
-    P4Validator p4_validator_;
-    P1P4RotationalModel p4_model_;
-    cv::Size p4_search_roi_size_;
-    float p4_max_prediction_error_;
-    int p4_min_intensity_;
+  // Results
+  std::mutex results_mutex_;
+  AnalysisResults latest_results_;
+  
+  // Buffers
+  cv::Mat gray_buffer_;
+  cv::Mat binary_buffer_;
+  cv::Size frame_size_;
+  bool buffers_initialized_;
+  
+  // ROI
+  cv::Rect current_roi_;
+  bool roi_enabled_;
+  
+  // Pupil detection
+  int pupil_threshold_;
+  
+  // Blink detection
+  BlinkDetector blink_detector_;
+  
+  // P1 detection
+  P1Validator p1_validator_;
+  int p1_min_intensity_;
+  float p1_max_distance_ratio_;
+  cv::Size p1_centroid_roi_size_;
+  
+  // P4 detection
+  P4Validator p4_validator_;
+  P1P4RotationalModel p4_model_;
+  cv::Size p4_search_roi_size_;
+  float p4_max_prediction_error_;
+  int p4_min_intensity_;
+  
   cv::Point2f p4_last_known_position_;
   bool p4_pending_sample_active_;
   cv::Point2f p4_pending_sample_position_;  
-    // Statistics
-    int frame_count_;
-    
-    // Debug control
+
+  // Statistics
+  int frame_count_;
+  
+  // Debug control
   int debug_level_;
   int profile_flags_;
   std::atomic<bool> debug_next_frame_;
+
+  // Canonical settings storage
+  struct Settings {
+    int pupil_threshold = 45;
+    float p1_max_jump = 15.0f;
+    float p4_max_jump = 20.0f;
+    int p4_min_intensity = 140;
+    std::string detection_mode = "pupil_p1";
+  } settings_;
+  
+    void fireSettingChanged(const std::string& setting_name, const std::string& value) {
+        std::map<std::string, std::string> data;
+        data["name"] = setting_name;
+        data["value"] = value;
+        
+        Event evt("eyetracking/settings", EventData::makeKeyValue(data));
+        evt.rate_limit_exempt = true;  // Always deliver
+        fireEvent(evt);
+    }
+    
+    // Fire all current settings (for new clients)
+    void fireAllSettings() {
+        fireSettingChanged("pupil_threshold",
+			   std::to_string(settings_.pupil_threshold));
+        fireSettingChanged("p1_max_jump",
+			   std::to_string(settings_.p1_max_jump));
+        fireSettingChanged("p4_max_jump",
+			   std::to_string(settings_.p4_max_jump));
+        fireSettingChanged("p4_min_intensity",
+			   std::to_string(settings_.p4_min_intensity));
+        fireSettingChanged("detection_mode",
+			   settings_.detection_mode);
+    }
   
     // ========================================================================
     // BUFFER MANAGEMENT
@@ -975,10 +1009,12 @@ private:
 	
 	if (!was_in_blink && currently_in_blink) {
 	  // Blink started
-	  fireEvent("eyetracking_blink_start", "frame " + std::to_string(frame_idx));
+	  fireEvent(Event("eyetracking/blink_start",
+			  "frame " + std::to_string(frame_idx)));
 	} else if (was_in_blink && !currently_in_blink) {
 	  // Blink ended
-	  fireEvent("eyetracking_blink_end",  "frame " + std::to_string(frame_idx));
+	  fireEvent(Event("eyetracking/blink_end",
+			  "frame " + std::to_string(frame_idx)));
 	}
 	was_in_blink = currently_in_blink;
 	
@@ -989,7 +1025,8 @@ private:
                 p1_validator_.reset();
                 p1_recovery_countdown = P1_RECOVERY_FRAMES;
 
-		fireEvent("eyetracking_p1_lost", "frame " + std::to_string(frame_idx));
+		fireEvent(Event("eyetracking/p1_lost",
+				"frame " + std::to_string(frame_idx)));
 		p1_was_lost = true;		
 
                 if (debug_level_ >= DEBUG_CRITICAL) {
@@ -999,7 +1036,8 @@ private:
         } else {
 	  if (p1_was_lost) {
             // P1 recovered
-	    fireEvent("eyetracking_p1_recovered", "frame " + std::to_string(frame_idx));
+	    fireEvent(Event("eyetracking/p1_recovered",
+			    "frame " + std::to_string(frame_idx)));
             p1_was_lost = false;
 	  }
 	  
@@ -1245,7 +1283,9 @@ static int setDetectionModeCmd(ClientData clientData, Tcl_Interp *interp,
         return TCL_ERROR;
     }
     
-    // If we're downgrading modes, reset appropriate validators
+    plugin->settings_.detection_mode = std::string(mode_str);
+    
+    // Reset validators if downgrading
     if (plugin->detection_mode_ < old_mode) {
         if (plugin->detection_mode_ < MODE_FULL) {
             plugin->p4_validator_.reset();
@@ -1256,6 +1296,9 @@ static int setDetectionModeCmd(ClientData clientData, Tcl_Interp *interp,
             plugin->p1_validator_.reset();
         }
     }
+    
+    // Fire event
+    plugin->fireSettingChanged("detection_mode", mode_str);
     
     if (plugin->debug_level_ >= DEBUG_CRITICAL) {
         const char* mode_names[] = {"PUPIL_ONLY", "PUPIL_P1", "FULL"};
@@ -1299,40 +1342,17 @@ static int resetTrackingStateCmd(ClientData clientData, Tcl_Interp *interp,
     
     // If we were in a blink, fire event to clear UI indicators
     if (was_in_blink) {
-        fireEvent("eyetracking_blink_end", "frame -1");
+      fireEvent(Event("eyetracking/blink_end", "frame -1"));
     }
     
     if (plugin->debug_level_ >= DEBUG_CRITICAL) {
-        std::cout << "🔄 Tracking state reset (validators and blink cleared)" << std::endl;
+      std::cout << "🔄 Tracking state reset (validators and blink cleared)" << std::endl;
     }
     
     Tcl_SetObjResult(interp, Tcl_NewStringObj("Tracking state reset", -1));
     return TCL_OK;
 }
-  
-    static int setPupilThresholdCmd(ClientData clientData, Tcl_Interp *interp,
-                                    int objc, Tcl_Obj *const objv[]) {
-        EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-        
-        if (objc > 2) {
-            Tcl_WrongNumArgs(interp, 1, objv, "?threshold?");
-            return TCL_ERROR;
-        }
-        
-        int last_threshold = plugin->pupil_threshold_;
-        
-        if (objc > 1) {
-            int threshold;
-            if (Tcl_GetIntFromObj(interp, objv[1], &threshold) != TCL_OK) {
-                return TCL_ERROR;
-            }
-            plugin->pupil_threshold_ = threshold;
-        }
-        
-        Tcl_SetObjResult(interp, Tcl_NewIntObj(last_threshold));
-        return TCL_OK;
-    }
-    
+      
     static int setROICmd(ClientData clientData, Tcl_Interp *interp,
                          int objc, Tcl_Obj *const objv[]) {
         EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
@@ -1494,7 +1514,7 @@ static int acceptP4SampleCmd(ClientData clientData, Tcl_Interp *interp,
 	   << " magnitude " << plugin->p4_model_.getMagnitudeRatio()
 	   << " angle " << (plugin->p4_model_.getAngleOffset() * 180.0 / M_PI);
       
-      fireEvent("eyetracking_p4_calibrated", data.str());      
+      fireEvent(Event("eyetracking/p4_calibrated", data.str()));      
       return TCL_OK;
     }
     else {
@@ -1543,7 +1563,7 @@ static int acceptP4SampleCmd(ClientData clientData, Tcl_Interp *interp,
     
     std::ostringstream data;
     data << "magnitude " << mag_ratio << " angle " << angle_deg;
-    fireEvent("eyetracking_p4_model_set", data.str());
+    fireEvent(Event("eyetracking/p4_model_set", data.str()));
     
     Tcl_SetObjResult(interp, Tcl_NewStringObj(msg.str().c_str(), -1));
     return TCL_OK;
@@ -1572,86 +1592,124 @@ static int getP4ModelStatusCmd(ClientData clientData, Tcl_Interp *interp,
     Tcl_SetObjResult(interp, statusDict);
     return TCL_OK;
 }
-    
-    static int setP4MinIntensityCmd(ClientData clientData, Tcl_Interp *interp,
-                                     int objc, Tcl_Obj *const objv[]) {
-        EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
 
-	int old_intensity = plugin->p4_min_intensity_;
-	
-        if (objc == 1) {
-	  Tcl_SetObjResult(interp, Tcl_NewIntObj(old_intensity));
-	  return TCL_OK;
-        }
-	
-        if (objc != 2) {
-            Tcl_WrongNumArgs(interp, 1, objv, "intensity");
-            return TCL_ERROR;
-        }
-        
-        int intensity;
-        if (Tcl_GetIntFromObj(interp, objv[1], &intensity) != TCL_OK) {
-            return TCL_ERROR;
-        }
-        
-        plugin->p4_min_intensity_ = intensity;
-        
-	Tcl_SetObjResult(interp, Tcl_NewIntObj(old_intensity));
-        return TCL_OK;
+static int setPupilThresholdCmd(ClientData clientData, Tcl_Interp *interp,
+                                int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    
+    if (objc > 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "?threshold?");
+        return TCL_ERROR;
     }
     
-    static int setP1MaxJumpCmd(ClientData clientData, Tcl_Interp *interp,
-                                int objc, Tcl_Obj *const objv[]) {
-        EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-        
-        if (objc == 1) {
-	  float current = plugin->p1_validator_.getMaxJump();
-	  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(current));
-	  return TCL_OK;
-        }
-        
-        if (objc != 2) {
-            Tcl_WrongNumArgs(interp, 1, objv, "?pixels?");
+    int last_threshold = plugin->settings_.pupil_threshold;
+    
+    if (objc > 1) {
+        int threshold;
+        if (Tcl_GetIntFromObj(interp, objv[1], &threshold) != TCL_OK) {
             return TCL_ERROR;
         }
+        plugin->pupil_threshold_ = threshold;
+        plugin->settings_.pupil_threshold = threshold;
         
-        double pixels;
-        if (Tcl_GetDoubleFromObj(interp, objv[1], &pixels) != TCL_OK) {
-            return TCL_ERROR;
-        }
-        
-        plugin->p1_validator_.setMaxJump(pixels);
-        
-	Tcl_SetObjResult(interp, Tcl_NewDoubleObj(pixels));
+        // Fire event for all listeners (web UI, widgets, etc.)
+        plugin->fireSettingChanged("pupil_threshold", std::to_string(threshold));
+    }
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(last_threshold));
+    return TCL_OK;
+}
 
+static int setP4MinIntensityCmd(ClientData clientData, Tcl_Interp *interp,
+                                 int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+
+    int old_intensity = plugin->p4_min_intensity_;
+    
+    if (objc == 1) {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(plugin->settings_.p4_min_intensity));
         return TCL_OK;
     }
     
-    static int setP4MaxJumpCmd(ClientData clientData, Tcl_Interp *interp,
-                                int objc, Tcl_Obj *const objv[]) {
-        EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
-        
-        if (objc == 1) {
-	  float current = plugin->p4_validator_.getMaxJump();
-	  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(current));
-	  return TCL_OK;
-        }
-        
-        if (objc != 2) {
-            Tcl_WrongNumArgs(interp, 1, objv, "?pixels?");
-            return TCL_ERROR;
-        }
-        
-        double pixels;
-        if (Tcl_GetDoubleFromObj(interp, objv[1], &pixels) != TCL_OK) {
-            return TCL_ERROR;
-        }
-        
-        plugin->p4_validator_.setMaxJump(pixels);
-	Tcl_SetObjResult(interp, Tcl_NewDoubleObj(pixels));
-        
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "intensity");
+        return TCL_ERROR;
+    }
+    
+    int intensity;
+    if (Tcl_GetIntFromObj(interp, objv[1], &intensity) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    plugin->p4_min_intensity_ = intensity;
+    plugin->settings_.p4_min_intensity = intensity;
+    
+    // Fire event
+    plugin->fireSettingChanged("p4_min_intensity", std::to_string(intensity));
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(old_intensity));
+    return TCL_OK;
+}
+
+static int setP1MaxJumpCmd(ClientData clientData, Tcl_Interp *interp,
+                            int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    
+    if (objc == 1) {
+        float current = plugin->p1_validator_.getMaxJump();
+        Tcl_SetObjResult(interp, Tcl_NewDoubleObj(current));
         return TCL_OK;
     }
+    
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "?pixels?");
+        return TCL_ERROR;
+    }
+    
+    double pixels;
+    if (Tcl_GetDoubleFromObj(interp, objv[1], &pixels) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    plugin->p1_validator_.setMaxJump(pixels);
+    plugin->settings_.p1_max_jump = pixels;
+    
+    // Fire event
+    plugin->fireSettingChanged("p1_max_jump", std::to_string(pixels));
+    
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(pixels));
+    return TCL_OK;
+}
+
+static int setP4MaxJumpCmd(ClientData clientData, Tcl_Interp *interp,
+                            int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    
+    if (objc == 1) {
+        float current = plugin->p4_validator_.getMaxJump();
+        Tcl_SetObjResult(interp, Tcl_NewDoubleObj(current));
+        return TCL_OK;
+    }
+    
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "?pixels?");
+        return TCL_ERROR;
+    }
+    
+    double pixels;
+    if (Tcl_GetDoubleFromObj(interp, objv[1], &pixels) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    plugin->p4_validator_.setMaxJump(pixels);
+    plugin->settings_.p4_max_jump = pixels;
+    
+    // Fire event
+    plugin->fireSettingChanged("p4_max_jump", std::to_string(pixels));
+    
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(pixels));
+    return TCL_OK;
+}  
 
   static int debugNextFrameCmd(ClientData clientData, Tcl_Interp *interp,
                               int objc, Tcl_Obj *const objv[]) {
@@ -1773,6 +1831,46 @@ static int getP4ModelStatusCmd(ClientData clientData, Tcl_Interp *interp,
         return TCL_OK;
     }
 
+static int getSettingsCmd(ClientData clientData, Tcl_Interp *interp,
+                          int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    
+    Tcl_Obj* settingsDict = Tcl_NewDictObj();
+    
+    Tcl_DictObjPut(interp, settingsDict, 
+                   Tcl_NewStringObj("pupil_threshold", -1),
+                   Tcl_NewIntObj(plugin->settings_.pupil_threshold));
+    
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("p1_max_jump", -1),
+                   Tcl_NewDoubleObj(plugin->settings_.p1_max_jump));
+    
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("p4_max_jump", -1),
+                   Tcl_NewDoubleObj(plugin->settings_.p4_max_jump));
+    
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("p4_min_intensity", -1),
+                   Tcl_NewIntObj(plugin->settings_.p4_min_intensity));
+    
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("detection_mode", -1),
+                   Tcl_NewStringObj(plugin->settings_.detection_mode.c_str(), -1));
+    
+    Tcl_SetObjResult(interp, settingsDict);
+    return TCL_OK;
+}
+
+static int refreshSettingsCmd(ClientData clientData, Tcl_Interp *interp,
+                                         int objc, Tcl_Obj *const objv[]) {
+  EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    
+  // Fire events for all current settings
+  plugin->fireAllSettings();
+  
+  return TCL_OK;
+}
+  
 public:
     EyeTrackingPlugin() 
         : running_(false),
@@ -1832,7 +1930,12 @@ public:
     
     void registerTclCommands(Tcl_Interp* interp) override {
         Tcl_Eval(interp, "namespace eval ::eyetracking {}");
-
+	
+	Tcl_CreateObjCommand(interp, "eyetracking::refreshSettings",
+			     refreshSettingsCmd, this, NULL);
+	Tcl_CreateObjCommand(interp, "::eyetracking::getSettings",
+			     getSettingsCmd, this, NULL);
+ 
         Tcl_CreateObjCommand(interp, "::eyetracking::setDetectionMode", 
                             setDetectionModeCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::resetDetection", 
@@ -1853,7 +1956,7 @@ public:
 			     clearP4PendingSampleCmd, this, NULL);
 	Tcl_CreateObjCommand(interp, "::eyetracking::acceptP4Sample", 
 			     acceptP4SampleCmd, this, NULL);
-	
+
 	Tcl_CreateObjCommand(interp, "::eyetracking::calibrateP4Model", 
 			     calibrateP4ModelCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::freezeP4Model", 
@@ -1886,6 +1989,403 @@ public:
         return "Pupil and Purkinje reflection tracking with bright spot detection"; 
     }
 
+bool hasWebUI() const override { 
+    return true; 
+}
+
+std::string getUIHTML() const override {
+    return R"EYETRACK_HTML(
+<div class="control-row">
+    <div class="input-group">
+        <label>Detection Mode</label>
+        <select id="et-detection-mode">
+            <option value="pupil_only">Pupil Only</option>
+            <option value="pupil_p1" selected>Pupil + P1</option>
+            <option value="full">Full (P1+P4)</option>
+        </select>
+    </div>
+    
+    <div class="button-group" style="align-self: flex-end;">
+        <button onclick="etApplyMode()">Apply Mode</button>
+        <button class="secondary" onclick="etResetTracking()">Reset Tracking</button>
+    </div>
+</div>
+
+<div class="control-row">
+    <div class="input-group">
+        <label>Pupil Threshold: <span id="et-pupil-thresh-val">45</span></label>
+        <input type="range" id="et-pupil-threshold" min="0" max="255" value="45" 
+               oninput="etUpdateLabel(this, 'et-pupil-thresh-val')" 
+               onchange="etApplyPupilThreshold(this.value)">
+    </div>
+</div>
+
+<div class="control-row" id="et-p1-controls">
+    <div class="input-group">
+        <label>P1 Max Jump: <span id="et-p1-jump-val">15.0</span> px</label>
+        <input type="range" id="et-p1-max-jump" min="5" max="50" step="0.5" value="15.0"
+               oninput="etUpdateLabel(this, 'et-p1-jump-val')"
+               onchange="etApplyP1MaxJump(this.value)">
+    </div>
+</div>
+
+<div class="control-row" id="et-p4-controls" style="display: none;">
+    <div class="input-group">
+        <label>P4 Max Jump: <span id="et-p4-jump-val">20.0</span> px</label>
+        <input type="range" id="et-p4-max-jump" min="5" max="50" step="0.5" value="20.0"
+               oninput="etUpdateLabel(this, 'et-p4-jump-val')"
+               onchange="etApplyP4MaxJump(this.value)">
+    </div>
+    
+    <div class="input-group">
+        <label>P4 Min Intensity: <span id="et-p4-intensity-val">140</span></label>
+        <input type="range" id="et-p4-min-intensity" min="80" max="250" value="140"
+               oninput="etUpdateLabel(this, 'et-p4-intensity-val')"
+               onchange="etApplyP4MinIntensity(this.value)">
+    </div>
+</div>
+
+<div class="control-row">
+    <div class="status-indicator">
+        <span class="status-dot" id="et-blink-indicator"></span>
+        <span id="et-blink-text">Tracking active</span>
+    </div>
+    <div class="status-indicator">
+        <span class="status-dot" id="et-p1-indicator"></span>
+        <span id="et-p1-text">P1 tracking</span>
+    </div>
+    <div class="status-indicator">
+        <span class="status-dot" id="et-p4-indicator"></span>
+        <span id="et-p4-text">P4 model</span>
+    </div>
+</div>
+
+<div class="control-row">
+    <div id="et-p4-calibration" style="display: none;">
+        <h3 style="font-size: 13px; margin-bottom: 8px;">P4 Calibration</h3>
+        <div class="button-group">
+            <button onclick="etCalibrateP4()">Calibrate P4 Model</button>
+            <button class="secondary" onclick="etResetP4Model()">Reset P4 Model</button>
+        </div>
+        <div id="et-p4-status" style="font-size: 12px; color: #999; margin-top: 8px;"></div>
+    </div>
+</div>
+
+<div class="control-row">
+    <button class="secondary" onclick="etDebugNextFrame()">Debug Next Frame</button>
+    <span style="font-size: 11px; color: #666; margin-left: 12px;">
+        Verbose debug output for next frame (check terminal)
+    </span>
+</div>
+
+<div class="control-row">
+    <div style="font-size: 11px; color: #666; line-height: 1.6;">
+        <strong>Note:</strong> Real-time tracking visualization appears on the OpenCV display window.
+        Results are also forwarded to the dataserver if configured.
+    </div>
+</div>
+)EYETRACK_HTML";
+}
+
+std::string getUIScript() const override {
+    return R"EYETRACK_JS(
+// Eye Tracking Plugin UI Script
+
+let etSettingsInitialized = false;
+
+// ============================================================================
+// UI UPDATE FUNCTIONS
+// ============================================================================
+
+window.etUpdateLabel = function(slider, labelId) {
+    const label = document.getElementById(labelId);
+    if (label) {
+        const val = parseFloat(slider.value);
+        label.textContent = Number.isInteger(val) ? val : val.toFixed(1);
+    }
+};
+
+window.etSyncSettingToUI = function(settingName, value) {
+    console.log('Syncing setting:', settingName, '=', value);
+    
+    switch(settingName) {
+        case 'pupil_threshold':
+            const pupilSlider = document.getElementById('et-pupil-threshold');
+            if (pupilSlider && pupilSlider.value != value) {
+                pupilSlider.value = value;
+                window.etUpdateLabel(pupilSlider, 'et-pupil-thresh-val');
+            }
+            break;
+            
+        case 'p1_max_jump':
+            const p1Slider = document.getElementById('et-p1-max-jump');
+            if (p1Slider && p1Slider.value != value) {
+                p1Slider.value = value;
+                window.etUpdateLabel(p1Slider, 'et-p1-jump-val');
+            }
+            break;
+            
+        case 'p4_max_jump':
+            const p4Slider = document.getElementById('et-p4-max-jump');
+            if (p4Slider && p4Slider.value != value) {
+                p4Slider.value = value;
+                window.etUpdateLabel(p4Slider, 'et-p4-jump-val');
+            }
+            break;
+            
+        case 'p4_min_intensity':
+            const p4IntSlider = document.getElementById('et-p4-min-intensity');
+            if (p4IntSlider && p4IntSlider.value != value) {
+                p4IntSlider.value = value;
+                window.etUpdateLabel(p4IntSlider, 'et-p4-intensity-val');
+            }
+            break;
+            
+        case 'detection_mode':
+            const modeSelect = document.getElementById('et-detection-mode');
+            if (modeSelect && modeSelect.value != value) {
+                modeSelect.value = value;
+                window.etUpdateModeControls(value);
+            }
+            break;
+    }
+};
+
+window.etUpdateModeControls = function(mode) {
+    const p1Controls = document.getElementById('et-p1-controls');
+    const p4Controls = document.getElementById('et-p4-controls');
+    const calibSection = document.getElementById('et-p4-calibration');
+    
+    if (p1Controls) p1Controls.style.display = (mode !== 'pupil_only') ? 'flex' : 'none';
+    if (p4Controls) p4Controls.style.display = (mode === 'full') ? 'flex' : 'none';
+    if (calibSection) calibSection.style.display = (mode === 'full') ? 'block' : 'none';
+};
+
+// ============================================================================
+// SETTINGS MANAGEMENT
+// ============================================================================
+
+window.etLoadCurrentSettings = function() {
+    console.log('etLoadCurrentSettings called, ws state:', window.ws ? window.ws.readyState : 'no ws');
+    
+    if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+        console.log('Sending refreshSettings command...');
+        if (window.sendCommand) {
+            window.sendCommand('eyetracking::refreshSettings');
+        } else {
+            window.ws.send(JSON.stringify({
+                cmd: 'eval',
+                script: 'eyetracking::refreshSettings'
+            }));
+        }
+    } else {
+        console.warn('WebSocket not ready, cannot load settings');
+    }
+};
+
+// ============================================================================
+// COMMAND FUNCTIONS (called from HTML UI)
+// ============================================================================
+
+window.etApplyMode = function() {
+    const mode = document.getElementById('et-detection-mode').value;
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::setDetectionMode ' + mode);
+    }
+};
+
+window.etApplyPupilThreshold = function(value) {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::setPupilThreshold ' + value);
+    }
+};
+
+window.etApplyP1MaxJump = function(value) {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::setP1MaxJump ' + value);
+    }
+};
+
+window.etApplyP4MaxJump = function(value) {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::setP4MaxJump ' + value);
+    }
+};
+
+window.etApplyP4MinIntensity = function(value) {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::setP4MinIntensity ' + value);
+    }
+};
+
+window.etResetTracking = function() {
+    if (confirm('Reset eye tracking state? This will clear P1/P4 validators.')) {
+        if (window.sendCommand) {
+            window.sendCommand('eyetracking::resetTrackingState');
+        }
+        if (window.showInfo) {
+            window.showInfo('Eye tracking state reset');
+        }
+    }
+};
+
+window.etCalibrateP4 = function() {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::calibrateP4Model');
+    }
+    if (window.showInfo) {
+        window.showInfo('P4 calibration initiated');
+    }
+};
+
+window.etResetP4Model = function() {
+    if (confirm('Reset P4 calibration model? This will clear all calibration data.')) {
+        if (window.sendCommand) {
+            window.sendCommand('eyetracking::resetP4Model');
+        }
+        const status = document.getElementById('et-p4-status');
+        if (status) status.textContent = 'Model reset';
+        if (window.showInfo) {
+            window.showInfo('P4 model reset');
+        }
+    }
+};
+
+window.etDebugNextFrame = function() {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::debugNextFrame');
+    }
+    if (window.showInfo) {
+        window.showInfo('Next frame will output verbose debug to terminal');
+    }
+};
+
+// ============================================================================
+// EVENT HANDLERS
+// ============================================================================
+
+// Listen for vstream-event (dispatched by interface.html)
+window.addEventListener('vstream-event', (e) => {
+    const { type, data } = e.detail;
+    
+    console.log('Received vstream-event:', type, data);
+    
+    if (!type.startsWith('eyetracking/')) return;
+    
+    const blinkIndicator = document.getElementById('et-blink-indicator');
+    const blinkText = document.getElementById('et-blink-text');
+    const p1Indicator = document.getElementById('et-p1-indicator');
+    const p1Text = document.getElementById('et-p1-text');
+    const p4Indicator = document.getElementById('et-p4-indicator');
+    const p4Text = document.getElementById('et-p4-text');
+    const p4Status = document.getElementById('et-p4-status');
+    
+    switch(type) {
+        case 'eyetracking/settings':
+            if (data && data.name && data.value) {
+                window.etSyncSettingToUI(data.name, data.value);
+            }
+            break;
+            
+        case 'eyetracking/blink_start':
+            if (blinkIndicator) blinkIndicator.classList.add('recording');
+            if (blinkText) blinkText.textContent = 'BLINK detected';
+            break;
+            
+        case 'eyetracking/blink_end':
+            if (blinkIndicator) blinkIndicator.classList.remove('recording');
+            if (blinkText) blinkText.textContent = 'Tracking active';
+            break;
+            
+        case 'eyetracking/p1_lost':
+            if (p1Indicator) p1Indicator.classList.remove('active');
+            if (p1Text) p1Text.textContent = 'P1 lost';
+            break;
+            
+        case 'eyetracking/p1_recovered':
+            if (p1Indicator) p1Indicator.classList.add('active');
+            if (p1Text) p1Text.textContent = 'P1 tracking';
+            break;
+            
+        case 'eyetracking/p4_calibrated':
+            if (p4Indicator) p4Indicator.classList.add('active');
+            if (p4Text) p4Text.textContent = 'P4 calibrated';
+            if (p4Status && data) {
+                const samples = data.samples || '?';
+                p4Status.textContent = '✓ Calibrated (' + samples + ' samples)';
+                p4Status.style.color = '#4ec9b0';
+            }
+            break;
+    }
+});
+
+// Listen for plugin loaded event
+window.addEventListener('vstream-plugin-loaded', (e) => {
+    console.log('vstream-plugin-loaded event received:', e.detail);
+    
+    if (e.detail.name === 'eye_tracking') {
+        console.log('Eye tracking plugin loaded, initializing...');
+        console.log('WebSocket exists?', !!window.ws);
+        console.log('WebSocket readyState:', window.ws ? window.ws.readyState : 'N/A');
+        
+        if (window.ws && window.ws.readyState === WebSocket.OPEN) {
+            console.log('Subscribing to eyetracking/*...');
+            window.ws.send(JSON.stringify({
+                cmd: 'subscribe',
+                topics: ['eyetracking/*']
+            }));
+            
+            // Load settings after short delay to ensure subscription is registered
+            setTimeout(() => {
+                console.log('Loading current settings...');
+                window.etLoadCurrentSettings();
+            }, 200);
+        } else {
+            console.error('WebSocket not ready when plugin loaded!');
+        }
+        
+        etSettingsInitialized = true;
+    }
+});
+
+// Listen for tab activation to refresh settings
+window.addEventListener('vstream-plugin-tab-active', () => {
+    console.log('Plugins tab activated');
+    if (etSettingsInitialized) {
+        console.log('Refreshing eyetracking settings...');
+        window.etLoadCurrentSettings();
+    }
+});
+
+console.log('Eye tracking UI script loaded');
+)EYETRACK_JS";
+}  
+  
+std::string getUIStyle() const override {
+    return R"EYETRACK_CSS(
+#et-p4-calibration {
+    background: #2d2d30;
+    padding: 12px;
+    border-radius: 4px;
+    margin-top: 8px;
+}
+
+#et-p4-status {
+    font-family: 'SF Mono', Monaco, monospace;
+}
+
+.input-group input[type="range"] {
+    width: 200px;
+}
+
+.input-group label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+}
+)EYETRACK_CSS";
+}  
   
   // Format results to be saved with VideoStream metadata
   std::string serializeResults(int frame_idx) override {

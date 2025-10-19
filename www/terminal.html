@@ -53,7 +53,7 @@
             padding: 20px;
             font-size: 14px;
             line-height: 1.5;
-            user-select: text; /* Allow text selection */
+            user-select: text;
             cursor: text;
         }
 
@@ -61,7 +61,7 @@
             margin: 2px 0;
             white-space: pre-wrap;
             word-wrap: break-word;
-            user-select: text; /* Ensure lines are selectable */
+            user-select: text;
         }
 
         .command-line {
@@ -83,6 +83,12 @@
 
         .warning-line {
             color: #dcdcaa;
+        }
+
+        /* Event messages styling */
+        .event-line {
+            color: #9cdcfe;
+            opacity: 0.8;
         }
 
         .input-container {
@@ -112,7 +118,6 @@
             background: #264f78;
         }
 
-        /* Better selection styling for terminal content */
         ::selection {
             background: #264f78;
             color: inherit;
@@ -123,7 +128,6 @@
             color: inherit;
         }
 
-        /* Scrollbar styling */
         ::-webkit-scrollbar {
             width: 10px;
             height: 10px;
@@ -162,6 +166,8 @@
         let history = JSON.parse(localStorage.getItem('VideoStream-history') || '[]');
         let historyIndex = history.length;
         let inputElement = null;
+        let requestId = 0;
+        let pendingRequests = new Map();
         
         function createInputLine() {
             const container = document.createElement('div');
@@ -201,7 +207,7 @@
                     e.preventDefault();
                     navigateHistory(1);
                     break;
-              case 'p':
+                case 'p':
                     if (e.ctrlKey) {
                         e.preventDefault();
                         navigateHistory(-1);
@@ -212,21 +218,20 @@
                         e.preventDefault();
                         navigateHistory(1);
                     }
-        break;
-        case 'c':
+                    break;
+                case 'c':
                     if (e.ctrlKey) {
                         e.preventDefault();
                         inputElement.value = '';
                     }
-                break;
-		
+                    break;
                 case 'l':
                     if (e.ctrlKey) {
                         e.preventDefault();
                         clearTerminal();
                     }
-        break;
-               case 'a':
+                    break;
+                case 'a':
                     if (e.ctrlKey) {
                         e.preventDefault();
                         inputElement.setSelectionRange(0, 0);
@@ -262,7 +267,7 @@
                         inputElement.value = beforeCursor.substring(0, lastSpace + 1) + afterCursor;
                         inputElement.setSelectionRange(lastSpace + 1, lastSpace + 1);
                     }
-                    break;	
+                    break;
             }
         }
         
@@ -280,12 +285,8 @@
         }
         
         function isBlockedCommand(command) {
-            // Normalize command by trimming whitespace and converting to lowercase
             const normalizedCmd = command.trim().toLowerCase();
-            
-            // Block 'exit' command and common variations
-            const blockedCommands = ['exit', 'quit'];
-            
+            const blockedCommands = ['exit', 'quit', 'vstream::exit', 'vstream::shutdown'];
             return blockedCommands.includes(normalizedCmd);
         }
         
@@ -309,17 +310,20 @@
             
             // Check if command is blocked
             if (isBlockedCommand(command)) {
-                showWarning('No need to type exit, just close your browser window when done');
+                showWarning('Command blocked: Use browser controls to close the terminal');
                 createInputLine();
                 return;
             }
             
-            // Send command
+            // Send command with request ID for response matching
             if (ws && ws.readyState === WebSocket.OPEN) {
+                const reqId = `req_${++requestId}`;
                 ws.send(JSON.stringify({
                     cmd: 'eval',
-                    script: command
+                    script: command,
+                    requestId: reqId
                 }));
+                pendingRequests.set(reqId, Date.now());
             } else {
                 showError('Not connected to server');
                 createInputLine();
@@ -331,11 +335,18 @@
             resultLine.className = 'output-line result-line';
             
             if (typeof data === 'object') {
-                if (data.status === 'error' || (data.result && data.result.startsWith('!TCL_ERROR'))) {
+                if (data.status === 'error') {
                     resultLine.className = 'output-line error-line';
-                    resultLine.textContent = data.result || data.error || 'Unknown error';
+                    resultLine.textContent = data.error || 'Unknown error';
                 } else {
-                    resultLine.textContent = data.result || JSON.stringify(data);
+                    const result = data.result || '';
+                    if (result) {
+                        resultLine.textContent = result;
+                    } else {
+                        // Empty result - don't show a line
+                        createInputLine();
+                        return;
+                    }
                 }
             } else {
                 resultLine.textContent = data;
@@ -343,6 +354,29 @@
             
             terminal.appendChild(resultLine);
             createInputLine();
+        }
+        
+        function showEvent(event) {
+            const eventLine = document.createElement('div');
+            eventLine.className = 'output-line event-line';
+            
+            let eventText = `[Event: ${event.event}]`;
+            if (event.data && typeof event.data === 'object') {
+                eventText += ' ' + JSON.stringify(event.data, null, 2);
+            } else if (event.data) {
+                eventText += ' ' + event.data;
+            }
+            
+            eventLine.textContent = eventText;
+            
+            // Insert before input line if it exists
+            if (inputElement && inputElement.parentElement) {
+                terminal.insertBefore(eventLine, inputElement.parentElement);
+            } else {
+                terminal.appendChild(eventLine);
+            }
+            
+            terminal.scrollTop = terminal.scrollHeight;
         }
         
         function showError(message) {
@@ -383,14 +417,35 @@
                     statusElement.textContent = 'Connected';
                     statusElement.classList.remove('disconnected');
                     showInfo('Connected to VideoStream WebSocket');
+                    
+                    // Subscribe to important events (optional - can comment out)
+                    ws.send(JSON.stringify({
+                        cmd: 'subscribe',
+                        topics: ['vstream/*', 'eyetracking/*']
+                    }));
+                    
                     createInputLine();
                 };
                 
                 ws.onmessage = (event) => {
                     try {
                         const data = JSON.parse(event.data);
-                        showResult(data);
+                        
+                        // Handle different message types
+                        if (data.type === 'event') {
+                            showEvent(data);
+                        } else if (data.type === 'welcome') {
+                            showInfo(`Client ID: ${data.client_id}`);
+                        } else if (data.requestId) {
+                            // Response to a command
+                            pendingRequests.delete(data.requestId);
+                            showResult(data);
+                        } else {
+                            // Legacy format or unknown
+                            showResult(data);
+                        }
                     } catch (e) {
+                        // Plain text response
                         showResult(event.data);
                     }
                 };
@@ -403,6 +458,7 @@
                     statusElement.textContent = 'Disconnected';
                     statusElement.classList.add('disconnected');
                     showInfo('Disconnected from server. Reconnecting in 3 seconds...');
+                    pendingRequests.clear();
                     setTimeout(connect, 3000);
                 };
                 
@@ -415,12 +471,11 @@
         // Start connection
         connect();
         
-        // Improved click handler - only focus if not selecting text
+        // Click handler - only focus if not selecting text
         terminal.addEventListener('click', (e) => {
-            // Check if user is selecting text
             const selection = window.getSelection();
             if (selection && selection.toString().length > 0) {
-                return; // Don't interfere with text selection
+                return;
             }
             
             if (e.target === terminal || e.target.classList.contains('output-line')) {
@@ -428,7 +483,6 @@
             }
         });
         
-        // Don't refocus input if user is actively selecting text
         terminal.addEventListener('mousedown', (e) => {
             if (e.target.classList.contains('output-line')) {
                 e.target.addEventListener('mouseup', checkSelection, { once: true });
@@ -438,7 +492,6 @@
         function checkSelection(e) {
             const selection = window.getSelection();
             if (selection && selection.toString().length > 0) {
-                // User is selecting text, don't steal focus
                 e.stopPropagation();
             }
         }

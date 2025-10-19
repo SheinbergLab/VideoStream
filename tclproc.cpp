@@ -20,6 +20,7 @@
 #include <math.h>
 #include <tcl.h>
 
+#include "VstreamEvent.h"
 #include "IFrameSource.h"
 #include "SourceManager.h"
 #include "FlirCameraSource.h"
@@ -752,6 +753,26 @@ int TclCmd_UpdateSliderVals(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+int TclCmd_UpdateSliderValue(ClientData clientData, Tcl_Interp *interp, 
+                             int objc, Tcl_Obj *objv[]) {
+  if (objc != 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "widget_id value");
+    return TCL_ERROR;
+  }
+  
+  auto* mgr = static_cast<WidgetManager*>(clientData);
+  int id;
+  double val;
+  
+  if (Tcl_GetIntFromObj(interp, objv[1], &id) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetDoubleFromObj(interp, objv[2], &val) != TCL_OK) return TCL_ERROR;
+  
+  bool success = mgr->updateWidgetValue(id, val);
+  
+  Tcl_SetObjResult(interp, Tcl_NewBooleanObj(success));
+  return TCL_OK;
+}
+
 // remove_widget id
 int TclCmd_RemoveWidget(ClientData clientData, Tcl_Interp *interp, 
                         int objc, Tcl_Obj *objv[]) {
@@ -847,6 +868,8 @@ void registerWidgetCommands(Tcl_Interp* interp, WidgetManager* mgr) {
   Tcl_CreateObjCommand(interp, "update_widget_text",
 		       (Tcl_ObjCmdProc *) TclCmd_UpdateWidgetText, mgr, NULL);
 
+  Tcl_CreateObjCommand(interp, "update_slider_value",
+		       (Tcl_ObjCmdProc *) TclCmd_UpdateSliderValue, mgr, NULL);
   Tcl_CreateObjCommand(interp, "update_slider_vals",
 		       (Tcl_ObjCmdProc *) TclCmd_UpdateSliderVals, mgr, NULL);
   
@@ -1055,7 +1078,7 @@ static int vstreamPauseCmd(ClientData clientData, Tcl_Interp *interp,
     
     // Fire event
     std::string event_data = pause_val ? "paused" : "resumed";
-    fireEvent("source_paused", event_data);
+    fireEvent(Event("vstream/source_paused", event_data));
     
     return TCL_OK;
 }
@@ -1802,7 +1825,7 @@ static int fireEventCmd(ClientData clientData, Tcl_Interp *interp,
   std::string event_type = argv[1];
   std::string event_data = (argc > 2) ? argv[2] : "";
   
-  fireEvent(event_type, event_data);
+  fireEvent(Event(event_type, event_data));
   
   return TCL_OK;
 }

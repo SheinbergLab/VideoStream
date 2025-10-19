@@ -8,14 +8,12 @@
 
 #include "Widget.h"
 #include "WidgetManager.h"
+#include "VstreamEvent.h"
 #include "SharedQueue.hpp"
 #include "SourceManager.h"
 #include "FrameBufferManager.h"
 #include "SamplingManager.h"
 #include "VideoStream.h"
-
-// Forward declaration for event system
-extern void fireEvent(const std::string& type, const std::string& data);
 
 // SampleManager implementation
 
@@ -70,7 +68,7 @@ void SamplingManager::samplingLoop() {
 	// Fire progress event
 	std::string progress_data = "sampled " + std::to_string(sampled) + 
 	                           " total " + std::to_string(n_frames_);
-	fireEvent("sampling_progress", progress_data);
+	fireEvent(Event("vstream/sampling_progress", progress_data));
       }
     }
     
@@ -84,6 +82,7 @@ void SamplingManager::samplingLoop() {
   m_bActive = false;
   
   // Fire completion event
-  std::string data = "sampled " + std::to_string(sampled) + " total " + std::to_string(n_frames_);
-  fireEvent("sampling_complete", data);
+  std::string data = "sampled " + std::to_string(sampled) +
+    " total " + std::to_string(n_frames_);
+  fireEvent(Event("sampling_complete", data));
 }

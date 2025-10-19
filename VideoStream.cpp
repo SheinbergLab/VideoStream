@@ -36,6 +36,8 @@
 
 #include "cxxopts.hpp"
 #include "SharedQueue.hpp"
+#include "VstreamEvent.h"
+#include "EventToTcl.h"
 #include "KeyboardCallbackRegistry.h"
 #include "SourceManager.h"
 #include "StorageManager.h"
@@ -98,19 +100,9 @@ SharedQueue<std::string> disp_rqueue;
 SharedQueue<std::string> ds_queue;
 SharedQueue<std::string> shutdown_queue;
 
-// Event support for setting up event driven callbacks
-
-struct Event {
-    std::string type;
-    std::string data;  // JSON-like key-value string or simple data
-    
-    Event(const std::string& t, const std::string& d = "") : type(t), data(d) {}
-};
-
 SharedQueue<Event> event_queue;
 
 std::atomic<bool> events_ready{false};
-void fireEvent(const std::string& type, const std::string& data);
 
 Tcl_Interp *interp = NULL;
 
@@ -542,6 +534,63 @@ private:
   std::map<std::string, uWS::WebSocket<false, true, WSPerSocketData>*> ws_connections;
   uWS::Loop *ws_loop = nullptr;
 
+  std::vector<std::string> default_subscriptions_ = {
+    "vstream/*",             // Plugin, source, recording status
+  };
+
+  std::map<std::string, int> rate_limits_ = {
+    {"*/results", 10},       // High-frequency results: 10 Hz max
+    {"*/frame_data", 10},    // Frame data: 10 Hz max
+  };
+
+  bool shouldSendToClient(WSPerSocketData* userData, const Event& event) {
+        // Critical events bypass all checks
+        if (event.rate_limit_exempt) {
+            return true;
+        }
+        
+        // Check subscriptions
+        bool subscribed = false;
+        for (const auto& pattern : userData->subscriptions) {
+            if (event.matchesPattern(pattern)) {
+                subscribed = true;
+                break;
+            }
+        }
+        
+        if (!subscribed) {
+            return false;
+        }
+        
+        // Check rate limits
+        auto now = std::chrono::steady_clock::now();
+        
+        // Reset rate window every second
+        if (std::chrono::duration_cast<std::chrono::seconds>(
+                now - userData->rate_window_start).count() >= 1) {
+            userData->event_counts.clear();
+            userData->rate_window_start = now;
+        }
+        
+        // Find matching rate limit
+        int rate_limit = rate_limits_["*"];  // Default
+        for (const auto& [pattern, limit] : rate_limits_) {
+            if (event.matchesPattern(pattern)) {
+                rate_limit = limit;
+                break;
+            }
+        }
+        
+        // Check if we've exceeded the rate limit
+        int& count = userData->event_counts[event.type];
+        if (count >= rate_limit) {
+            return false;  // Drop this event
+        }
+        
+        count++;
+        return true;
+    }
+  
 public:
   bool m_bDone;
   int port;
@@ -554,33 +603,96 @@ public:
     // uWebsockets handles cleanup internally
   }
 
-  void broadcastEvent(const std::string& event_type, const std::string& event_data) {
+void broadcastEvent(const Event& event) {
     std::lock_guard<std::mutex> lock(ws_connections_mutex);
     
     if (ws_connections.empty()) {
-      return;
+        return;
     }
     
-    // Build JSON event message
+    // Build JSON event message once
     json_t* event_msg = json_object();
     json_object_set_new(event_msg, "type", json_string("event"));
-    json_object_set_new(event_msg, "event", json_string(event_type.c_str()));
-    json_object_set_new(event_msg, "data", json_string(event_data.c_str()));
+    json_object_set_new(event_msg, "event", json_string(event.type.c_str()));
+    
+    // Convert EventData to JSON
+    json_t* data_json = nullptr;
+    
+    switch (event.data.type) {
+        case EventDataType::NONE:
+            data_json = json_null();
+            break;
+            
+        case EventDataType::STRING:
+            data_json = json_string(event.data.asString().c_str());
+            break;
+            
+        case EventDataType::INTEGER:
+            data_json = json_integer(event.data.asInt());
+            break;
+            
+        case EventDataType::FLOAT:
+            data_json = json_real(event.data.asFloat());
+            break;
+            
+        case EventDataType::INT_ARRAY: {
+            data_json = json_array();
+            for (int64_t val : event.data.asIntArray()) {
+                json_array_append_new(data_json, json_integer(val));
+            }
+            break;
+        }
+        
+        case EventDataType::FLOAT_ARRAY: {
+            data_json = json_array();
+            for (double val : event.data.asFloatArray()) {
+                json_array_append_new(data_json, json_real(val));
+            }
+            break;
+        }
+        
+        case EventDataType::KEY_VALUE: {
+            data_json = json_object();
+            for (const auto& [key, value] : event.data.asKeyValue()) {
+                json_object_set_new(data_json, key.c_str(), json_string(value.c_str()));
+            }
+            break;
+        }
+        
+        case EventDataType::BINARY:
+            // For now, skip binary in broadcast (could add base64 later)
+            data_json = json_string("[binary data]");
+            break;
+    }
+    
+    json_object_set_new(event_msg, "data", data_json);
+    json_object_set_new(event_msg, "data_type", 
+                       json_string(eventDataTypeToString(event.data.type)));
+    
+    if (!event.source.empty()) {
+        json_object_set_new(event_msg, "source", json_string(event.source.c_str()));
+    }
     
     char* msg_str = json_dumps(event_msg, 0);
-    std::string message(msg_str);  // Convert to std::string
+    std::string message(msg_str);
     free(msg_str);
     json_decref(event_msg);
     
-    // Send to all connected clients
+    // Send to subscribed clients only
     for (auto& [name, conn] : ws_connections) {
-      try {
-	conn->send(message, uWS::OpCode::TEXT);  // Use string directly, no length
-      } catch (...) {
-	// Client may have disconnected
-      }
+        WSPerSocketData* userData = (WSPerSocketData*)conn->getUserData();
+        
+        if (!userData || !shouldSendToClient(userData, event)) {
+            continue;
+        }
+        
+        try {
+            conn->send(message, uWS::OpCode::TEXT);
+        } catch (...) {
+            // Client may have disconnected
+        }
     }
-  }  
+}
   
   void startWebSocketServer(void) {
     ws_loop = uWS::Loop::get();
@@ -605,6 +717,34 @@ public:
       res->writeHeader("Content-Type", "application/json")
          ->end("{\"status\":\"ok\",\"service\":\"videostream\"}");
     });
+
+    app.get("/api/plugins", [](auto *res, auto *req) {
+      json_t* plugins_array = json_array();
+      
+      auto plugin_names = g_pluginRegistry.listPlugins();
+      for (const auto& name : plugin_names) {
+        auto* plugin = g_pluginRegistry.getPlugin(name);
+        if (plugin && plugin->hasWebUI()) {
+          json_t* plugin_obj = json_object();
+          json_object_set_new(plugin_obj, "name", json_string(name.c_str()));
+          json_object_set_new(plugin_obj, "version", json_string(plugin->getVersion()));
+          json_object_set_new(plugin_obj, "description", json_string(plugin->getDescription()));
+          json_object_set_new(plugin_obj, "html", json_string(plugin->getUIHTML().c_str()));
+          json_object_set_new(plugin_obj, "script", json_string(plugin->getUIScript().c_str()));
+          json_object_set_new(plugin_obj, "style", json_string(plugin->getUIStyle().c_str()));
+          json_array_append_new(plugins_array, plugin_obj);
+        }
+      }
+      
+      char* json_str = json_dumps(plugins_array, JSON_COMPACT);
+      std::string response(json_str);
+      free(json_str);
+      json_decref(plugins_array);
+      
+      res->writeHeader("Content-Type", "application/json")
+         ->writeHeader("Cache-Control", "no-cache")
+         ->end(response);
+    });
     
     // WebSocket endpoint
     app.ws<WSPerSocketData>("/ws", {
@@ -624,34 +764,54 @@ public:
         req->getHeader("sec-websocket-extensions"),
         context);
       },
-      
-      .open = [this](auto *ws) {
-        WSPerSocketData *userData = (WSPerSocketData *) ws->getUserData();
-        
-        if (!userData || !userData->rqueue) {
-          std::cerr << "ERROR: Invalid userData in WebSocket open" << std::endl;
-          ws->close();
-          return;
-        }
-        
-        // Create unique client name
-        char client_id[32];
-        snprintf(client_id, sizeof(client_id), "ws_%p", (void*)ws);
-        userData->client_name = std::string(client_id);
-        
-        // Store connection for broadcasting
-        {
-          std::lock_guard<std::mutex> lock(this->ws_connections_mutex);
-          this->ws_connections[userData->client_name] = ws;
-        }
-        
-        std::cout << "WebSocket client connected: " << userData->client_name << std::endl;
-        
-        // Send welcome event
-        this->broadcastEvent("client_connected", userData->client_name);
-      },
-      
-      .message = [this](auto *ws, std::string_view message, uWS::OpCode opCode) {
+
+.open = [this](auto *ws) {
+    WSPerSocketData *userData = (WSPerSocketData *) ws->getUserData();
+    
+    if (!userData || !userData->rqueue) {
+        std::cerr << "ERROR: Invalid userData in WebSocket open" << std::endl;
+        ws->close();
+        return;
+    }
+    
+    // Create unique client name
+    char client_id[32];
+    snprintf(client_id, sizeof(client_id), "ws_%p", (void*)ws);
+    userData->client_name = std::string(client_id);
+    
+    // Set default subscriptions
+    userData->subscriptions = this->default_subscriptions_;
+    userData->rate_window_start = std::chrono::steady_clock::now();
+    
+    // Store connection for broadcasting
+    {
+        std::lock_guard<std::mutex> lock(this->ws_connections_mutex);
+        this->ws_connections[userData->client_name] = ws;
+    }
+    
+    std::cout << "WebSocket client connected: " << userData->client_name << std::endl;
+    
+    // Send welcome with subscription info
+    json_t *welcome = json_object();
+    json_object_set_new(welcome, "type", json_string("welcome"));
+    json_object_set_new(welcome, "client_id", json_string(userData->client_name.c_str()));
+    
+    json_t *subs_array = json_array();
+    for (const auto& sub : userData->subscriptions) {
+        json_array_append_new(subs_array, json_string(sub.c_str()));
+    }
+    json_object_set_new(welcome, "subscriptions", subs_array);
+    
+    char *welcome_str = json_dumps(welcome, 0);
+    ws->send(welcome_str, uWS::OpCode::TEXT);
+    free(welcome_str);
+    json_decref(welcome);
+    
+    // Fire event for Tcl
+    fireEvent(Event("vstream/client_connected",userData->client_name));
+ },	
+	
+	.message = [this](auto *ws, std::string_view message, uWS::OpCode opCode) {
         WSPerSocketData *userData = (WSPerSocketData *) ws->getUserData();
         
         if (!userData || !userData->rqueue) {
@@ -680,7 +840,8 @@ public:
           json_t *cmd_obj = json_object_get(root, "cmd");
           if (!cmd_obj || !json_is_string(cmd_obj)) {
             json_t *error_response = json_object();
-            json_object_set_new(error_response, "error", json_string("Missing 'cmd' field"));
+            json_object_set_new(error_response, "error",
+				json_string("Missing 'cmd' field"));
             char *error_str = json_dumps(error_response, 0);
             ws->send(error_str, uWS::OpCode::TEXT);
             free(error_str);
@@ -690,8 +851,76 @@ public:
           }
           
           const char *cmd = json_string_value(cmd_obj);
-          
-          if (strcmp(cmd, "eval") == 0) {
+
+        if (strcmp(cmd, "subscribe") == 0) {
+            json_t *topics_obj = json_object_get(root, "topics");
+            if (topics_obj && json_is_array(topics_obj)) {
+                size_t index;
+                json_t *value;
+                
+                json_array_foreach(topics_obj, index, value) {
+                    if (json_is_string(value)) {
+                        std::string topic = json_string_value(value);
+                        
+                        // Add if not already subscribed
+                        if (std::find(userData->subscriptions.begin(), 
+                                     userData->subscriptions.end(), 
+                                     topic) == userData->subscriptions.end()) {
+                            userData->subscriptions.push_back(topic);
+                        }
+                    }
+                }
+                
+                json_t *response = json_object();
+                json_object_set_new(response, "status", json_string("ok"));
+                json_object_set_new(response, "subscriptions", 
+                                   json_integer(userData->subscriptions.size()));
+                char *response_str = json_dumps(response, 0);
+                ws->send(response_str, uWS::OpCode::TEXT);
+                free(response_str);
+                json_decref(response);
+            }
+        }
+        else if (strcmp(cmd, "unsubscribe") == 0) {
+            json_t *topics_obj = json_object_get(root, "topics");
+            if (topics_obj && json_is_array(topics_obj)) {
+                size_t index;
+                json_t *value;
+                
+                json_array_foreach(topics_obj, index, value) {
+                    if (json_is_string(value)) {
+                        std::string topic = json_string_value(value);
+                        userData->subscriptions.erase(
+                            std::remove(userData->subscriptions.begin(),
+                                       userData->subscriptions.end(),
+                                       topic),
+                            userData->subscriptions.end());
+                    }
+                }
+                
+                json_t *response = json_object();
+                json_object_set_new(response, "status", json_string("ok"));
+                char *response_str = json_dumps(response, 0);
+                ws->send(response_str, uWS::OpCode::TEXT);
+                free(response_str);
+                json_decref(response);
+            }
+        }
+        else if (strcmp(cmd, "list_subscriptions") == 0) {
+            json_t *subs_array = json_array();
+            for (const auto& sub : userData->subscriptions) {
+                json_array_append_new(subs_array, json_string(sub.c_str()));
+            }
+            
+            json_t *response = json_object();
+            json_object_set_new(response, "status", json_string("ok"));
+            json_object_set_new(response, "subscriptions", subs_array);
+            char *response_str = json_dumps(response, 0);
+            ws->send(response_str, uWS::OpCode::TEXT);
+            free(response_str);
+            json_decref(response);
+        }	  
+	else if (strcmp(cmd, "eval") == 0) {
             // Handle Tcl script evaluation
             json_t *script_obj = json_object_get(root, "script");
             json_t *requestId_obj = json_object_get(root, "requestId");
@@ -780,17 +1009,16 @@ public:
   }
 };
 
-void fireEvent(const std::string& type, const std::string& data = "") {
-  if (events_ready.load()) {
-    event_queue.push_back(Event(type, data));
-    
-    // Also broadcast to WebSocket clients
-    if (g_wsServer) {
-      g_wsServer->broadcastEvent(type, data);
+void fireEvent(const Event& event) {
+    if (events_ready.load()) {
+        event_queue.push_back(event);
+        
+        // Broadcast to WebSocket clients
+        if (g_wsServer) {
+            g_wsServer->broadcastEvent(event);
+        }
     }
-  }  
 }
-
 
 class ProcessThread
 {
@@ -1013,14 +1241,14 @@ public:
 	  
 	  // Fire event with data
 	  std::string data = "file " + metadata_base_name_ + ".db source " + output_file;
-	  fireEvent("metadata_recording_started", data);
+	  fireEvent(Event("vstream/metadata_recording_started", data));
 	}
       } else {
 	storage_ok = storage_manager_.openRecording(output_file, metadata);
 
 	if (storage_ok) {
 	  // Fire event for normal recording
-	  fireEvent("recording_started", "file " + output_file);
+	  fireEvent(Event("vstream/recording_started", "file " + output_file));
 	}
       }
       
@@ -1275,9 +1503,9 @@ public:
 	    // Fire event
 	    if (metadata_only_) {
 	      std::string data = "file " + metadata_base_name_ + ".db";
-	      fireEvent("metadata_recording_closed", data);
+	      fireEvent(Event("vstream/metadata_recording_closed", data));
 	    } else {
-	      fireEvent("recording_closed", "file " + output_file);
+	      fireEvent(Event("vstream/recording_closed","file " + output_file));
 	    }
 	  } else {
 	    writeFrameDG(dg, output_file);
@@ -1299,9 +1527,9 @@ public:
 	  // Fire event
 	  if (metadata_only_) {
 	    std::string data = "file " + metadata_base_name_ + ".db";
-	    fireEvent("metadata_recording_closed", data);
+	    fireEvent(Event("vstream/metadata_recording_closed", data));
 	  } else {
-	    fireEvent("recording_closed", "file " + output_file);
+	    fireEvent(Event("vstream/recording_closed", "file " + output_file));
 	  }
 	} else {
 	  writeFrameDG(dg, output_file);
@@ -1741,31 +1969,32 @@ int processMouseEvents(void)
   return count;
 }
 
+#include "EventToTcl.h"
+
 int processEvents(void)
 {
-  int count = 0;
-  while (event_queue.size()) {
-    Event event = event_queue.front();
-    event_queue.pop_front();
-    
-    // Build Tcl command "onEvent { argdict }
-    std::ostringstream cmd;
-    cmd << "if {[info commands onEvent] ne \"\"} { onEvent {" 
-	<< event.type << "} {" << event.data << "} }";
-    
-    int retcode = Tcl_Eval(interp, cmd.str().c_str());
-    if (retcode != TCL_OK) {
-      const char *err = Tcl_GetStringResult(interp);
-      if (err) {
-	std::cerr << "Event Tcl error: " << err << std::endl;
-      }
+    int count = 0;
+    while (event_queue.size()) {
+        Event event = event_queue.front();
+        event_queue.pop_front();
+        
+        // Call Tcl handler with native objects (much more efficient!)
+        int retcode = invokeTclEventHandler(interp, event);
+        
+        if (retcode != TCL_OK) {
+            const char *err = Tcl_GetStringResult(interp);
+            if (err && strlen(err) > 0) {
+                std::cerr << "Event Tcl error (" << event.type << "): " << err << std::endl;
+            }
+        }
+        
+        count++;
     }
-    count++;
-  }
-  return count;
+    return count;
 }
 
-static void processTclQueues(SharedQueue<std::string> *cmdqueue, SharedQueue<std::string> *respqueue)
+static void processTclQueues(SharedQueue<std::string> *cmdqueue,
+			     SharedQueue<std::string> *respqueue)
 {
   while (cmdqueue->size())
   {
@@ -2305,7 +2534,7 @@ int main(int argc, char **argv)
 	  if (!g_frameSource->getNextFrame(frame, metadata)) {
 	    if (g_frameSource->isPlaybackMode() && !g_frameSource->isLooping()) {
 
-	      fireEvent("video_source_eof", "");
+	      fireEvent(Event("vstream/video_source_eof"));
  
 	      // Don't shutdown, just stop the source
 	      g_sourceManager.stopSource();

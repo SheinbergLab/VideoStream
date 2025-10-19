@@ -5,11 +5,20 @@ namespace eval ::Registry {
     variable current_metadata_base ""
     variable blink_indicator -1
     variable p1_lost_indicator -1
+    variable paused 0
 }
 
 # proc to clear all
 proc clearRegistry {} {
     set ::Registry::widgets [dict create]
+}
+
+# Helper to safely get value from dict
+proc get_dict_value {dict_var key {default ""}} {
+    if {[dict exists $dict_var $key]} {
+        return [dict get $dict_var $key]
+    }
+    return $default
 }
 
 proc onMouseClick {x y modifier} {
@@ -37,51 +46,48 @@ proc onMouseClick {x y modifier} {
     }
 }
 
-proc get_event_data {info key {default ""}} {
-    if {[dict exists $info $key]} {
-        return [dict get $info $key]
-    }
-    return $default
-}
-
-proc onEvent {event data} {
-    # Parse data
-    set info [dict create]
-    foreach {key val} $data {
-        dict set info $key $val
-    }
-
-    switch $event {
-	"video_source_eof" {
-            puts "📹 End of video reached"
+# NEW EVENT HANDLER - handles native Tcl types
+proc onEvent {type data} {
+    # data is already the right type (int, float, list, dict, string)
+    # No parsing needed!
+    
+    switch -glob $type {
+        "vstream/source_eof" -
+        "video_source_eof" {
+            puts "🎬 End of video reached"
             if {$::Registry::recording_state eq "recording"} {
                 puts "💾 Auto-saving recording..."
                 stop_recording
             }
-	}
-	
-	"video_source_rewind" {
-            puts "⏮  Video rewound - resetting tracking state"
+        }
+        
+        "vstream/source_rewind" -
+        "video_source_rewind" {
+            puts "⏮ Video rewound - resetting tracking state"
             eyetracking::resetTrackingState
-	}
-	
-	       "sampling_progress" {
-            set sampled [get_event_data $info sampled 0]
-            set total [get_event_data $info total 0]
+        }
+        
+        "vstream/sampling_progress" -
+        "sampling_progress" {
+            # data is a dict with keys: sampled, total
+            set sampled [get_dict_value $data sampled 0]
+            set total [get_dict_value $data total 0]
             
-            # Update a progress indicator widget if you have one
+            # Update progress indicator widget
             if {[dict exists $::Registry::widgets sampling_progress]} {
                 set widget [dict get $::Registry::widgets sampling_progress]
                 update_widget_text $widget "Sampling: $sampled/$total"
             }
         }
         
+        "vstream/sampling_complete" -
         "sampling_complete" {
-            set sampled [get_event_data $info sampled 0]
-            set total [get_event_data $info total 0]
+            # data is a dict
+            set sampled [get_dict_value $data sampled 0]
+            set total [get_dict_value $data total 0]
             puts "✅ Sampling complete: $sampled/$total frames"
             
-            # Remove progress indicator if present
+            # Remove progress indicator
             if {[dict exists $::Registry::widgets sampling_progress]} {
                 remove_widget [dict get $::Registry::widgets sampling_progress]
                 dict unset ::Registry::widgets sampling_progress
@@ -91,8 +97,9 @@ proc onEvent {event data} {
             review_mode
         }
         
-        "eyetracking_blink_start" {
-            set frame [dict get $info frame]
+        "eyetracking/blink_start" {
+            # data is an integer (frame number)
+            puts "👁️ Blink at frame $data"
             
             # Add visual indicator
             if {$::Registry::blink_indicator == -1} {
@@ -101,7 +108,7 @@ proc onEvent {event data} {
             }
         }
         
-        "eyetracking_blink_end" {
+        "eyetracking/blink_end" {
             # Remove visual indicator
             if {$::Registry::blink_indicator != -1} {
                 remove_widget $::Registry::blink_indicator
@@ -109,9 +116,9 @@ proc onEvent {event data} {
             }
         }
         
-        "eyetracking_p1_lost" {
-            set frame [dict get $info frame]
-            puts "⚠️  P1 lost at frame $frame"
+        "eyetracking/p1_lost" {
+            # data is an integer (frame number)
+            puts "⚠️ P1 lost at frame $data"
             
             # Add persistent warning
             if {$::Registry::p1_lost_indicator == -1} {
@@ -120,9 +127,9 @@ proc onEvent {event data} {
             }
         }
         
-        "eyetracking_p1_recovered" {
-            set frame [dict get $info frame]
-            puts "✅ P1 recovered at frame $frame"
+        "eyetracking/p1_recovered" {
+            # data is an integer (frame number)
+            puts "✅ P1 recovered at frame $data"
             
             # Remove warning
             if {$::Registry::p1_lost_indicator != -1} {
@@ -131,10 +138,11 @@ proc onEvent {event data} {
             }
         }
         
-        "eyetracking_p4_calibrated" {
-            set samples [get_event_data $info samples 0]
-            set magnitude [get_event_data $info magnitude 0.0]
-            set angle [get_event_data $info angle 0.0]
+        "eyetracking/p4_calibrated" {
+            # data is a dict with keys: samples, magnitude, angle
+            set samples [get_dict_value $data samples 0]
+            set magnitude [get_dict_value $data magnitude 0.0]
+            set angle [get_dict_value $data angle 0.0]
             
             puts "✅ P4 Calibrated:"
             puts "   Samples: $samples"
@@ -143,6 +151,43 @@ proc onEvent {event data} {
                  
             # Auto-switch to full mode
             eyetracking::setDetectionMode full
+        }
+        
+        "eyetracking/settings" {
+            # data is a dict with keys: name, value
+            set setting_name [get_dict_value $data name ""]
+            set setting_value [get_dict_value $data value ""]
+            
+            # Update widgets if they exist
+            switch $setting_name {
+                "pupil_threshold" {
+                    if {[dict exists $::Registry::widgets pupil_threshold_slider]} {
+                        set slider [dict get $::Registry::widgets pupil_threshold_slider]
+                        update_slider_value $slider $setting_value
+                    }
+                }
+                "p1_max_jump" {
+                    if {[dict exists $::Registry::widgets p1_max_jump_slider]} {
+                        set slider [dict get $::Registry::widgets p1_max_jump_slider]
+                        update_slider_value $slider $setting_value
+                    }
+                }
+                "p4_max_jump" {
+                    if {[dict exists $::Registry::widgets p4_max_jump_slider]} {
+                        set slider [dict get $::Registry::widgets p4_max_jump_slider]
+                        update_slider_value $slider $setting_value
+                    }
+                }
+                "p4_min_intensity" {
+                    if {[dict exists $::Registry::widgets p4_threshold_slider]} {
+                        set slider [dict get $::Registry::widgets p4_threshold_slider]
+                        update_slider_value $slider $setting_value
+                    }
+                }
+                "detection_mode" {
+                    puts "Mode changed to: $setting_value"
+                }
+            }
         }
     }
 }
@@ -169,7 +214,7 @@ proc calibrate_p4_model {} {
     
     # Check if we have samples
     if {$count < 1} {
-        puts "⚠️  Need at least 1 sample to calibrate"
+        puts "⚠️ Need at least 1 sample to calibrate"
         puts "  Shift-click P4 on one or more frames"
         return
     }
@@ -383,25 +428,23 @@ namespace eval ::ROI {
     }
 
     proc nudge {dx dy} {
-	set step [get_step]
-	set dx [expr {$dx * $step}]
-	set dy [expr {$dy * $step}]
-	
-	set roi [flir::getROI]
-	set x [dict get $roi offset_x]
-	set y [dict get $roi offset_y]
-	
-	set new_x [expr {$x + $dx}]
-	set new_y [expr {$y + $dy}]
-	
-	# Use the offset-only command (safe during streaming)
-	if {[catch {
-	    flir::setROIOffset $new_x $new_y
-	} err]} {
-#	    puts "ROI offset update failed: $err"
-	} else {
-#	    puts "ROI offset: ($new_x, $new_y)"
-	}
+        set step [get_step]
+        set dx [expr {$dx * $step}]
+        set dy [expr {$dy * $step}]
+        
+        set roi [flir::getROI]
+        set x [dict get $roi offset_x]
+        set y [dict get $roi offset_y]
+        
+        set new_x [expr {$x + $dx}]
+        set new_y [expr {$y + $dy}]
+        
+        # Use the offset-only command (safe during streaming)
+        if {[catch {
+            flir::setROIOffset $new_x $new_y
+        } err]} {
+            # Silently fail
+        }
     }
 
     proc nudgeLeft  { args } { nudge -1 0 }
@@ -410,59 +453,58 @@ namespace eval ::ROI {
     proc nudgeDown  { args } { nudge 0 -1 }
 
     proc center_on_pupil { args } {
-	set step [get_step]
-	
-	# Get current ROI
-	set roi [flir::getROI]
-	set w [dict get $roi width]
-	set h [dict get $roi height]
-	set current_offset_x [dict get $roi offset_x]
-	set current_offset_y [dict get $roi offset_y]
-	
-	# Get latest results
-	set results [eyetracking::getResults]
-	
-	if {$results eq "no results"} {
-	    puts "⚠️  No tracking results available"
-	    return
-	}
-	
-	if {![dict exists $results pupil]} {
-	    puts "⚠️  No valid pupil detected"
-	    return
-	}
-	
-	set pupil [dict get $results pupil]
-	set px [dict get $pupil x]
-	set py [dict get $pupil y]
-	
-	# Pupil position is in ROI-local coordinates!
-	# Convert to sensor coordinates:
-	set pupil_sensor_x [expr {$current_offset_x + $px}]
-	set pupil_sensor_y [expr {$current_offset_y + $py}]
-	
-	puts "Pupil in ROI coords: ($px, $py)"
-	puts "Pupil in sensor coords: ($pupil_sensor_x, $pupil_sensor_y)"
-	
-	# Calculate new offset to center pupil in ROI
-	set center_x [expr {$w / 2}]
-	set center_y [expr {$h / 2}]
-	
-	set new_offset_x [expr {int($pupil_sensor_x - $center_x)}]
-	set new_offset_y [expr {int($pupil_sensor_y - $center_y)}]
-	
-	puts "Centering pupil..."
-	
-	if {[catch {
-	    flir::setROIOffset $new_offset_x $new_offset_y
-	} err]} {
-	    puts "ROI center failed: $err"
-	} else {
-	    puts "✅ ROI centered at offset ($new_offset_x, $new_offset_y)"
-	}
+        set step [get_step]
+        
+        # Get current ROI
+        set roi [flir::getROI]
+        set w [dict get $roi width]
+        set h [dict get $roi height]
+        set current_offset_x [dict get $roi offset_x]
+        set current_offset_y [dict get $roi offset_y]
+        
+        # Get latest results
+        set results [eyetracking::getResults]
+        
+        if {$results eq "no results"} {
+            puts "⚠️ No tracking results available"
+            return
+        }
+        
+        if {![dict exists $results pupil]} {
+            puts "⚠️ No valid pupil detected"
+            return
+        }
+        
+        set pupil [dict get $results pupil]
+        set px [dict get $pupil x]
+        set py [dict get $pupil y]
+        
+        # Pupil position is in ROI-local coordinates!
+        # Convert to sensor coordinates:
+        set pupil_sensor_x [expr {$current_offset_x + $px}]
+        set pupil_sensor_y [expr {$current_offset_y + $py}]
+        
+        puts "Pupil in ROI coords: ($px, $py)"
+        puts "Pupil in sensor coords: ($pupil_sensor_x, $pupil_sensor_y)"
+        
+        # Calculate new offset to center pupil in ROI
+        set center_x [expr {$w / 2}]
+        set center_y [expr {$h / 2}]
+        
+        set new_offset_x [expr {int($pupil_sensor_x - $center_x)}]
+        set new_offset_y [expr {int($pupil_sensor_y - $center_y)}]
+        
+        puts "Centering pupil..."
+        
+        if {[catch {
+            flir::setROIOffset $new_offset_x $new_offset_y
+        } err]} {
+            puts "ROI center failed: $err"
+        } else {
+            puts "✅ ROI centered at offset ($new_offset_x, $new_offset_y)"
+        }
     }
 }
-
 
 # ============================================================================
 # RUN MODE
@@ -482,11 +524,11 @@ proc run_mode {} {
     vstream::startSource flir
 
     if { !$::initialized } {
-	flir::configureExposure 2750.0
-	flir::configureGain 10.0
-	flir::configureROI 720 450 24 24; # width, height, shift left, shift up
-	flir::configureImageOrientation 1 0; # flip image horizontal
-	set ::initialized 1
+        flir::configureExposure 2750.0
+        flir::configureGain 10.0
+        flir::configureROI 720 450 24 24; # width, height, shift left, shift up
+        flir::configureImageOrientation 1 0; # flip image horizontal
+        set ::initialized 1
     }
     
     flir::startAcquisition
@@ -509,23 +551,25 @@ proc run_mode {} {
     set save_btn [add_button -180 -50 80 40 "Save Run" toggle_recording]
     dict set ::Registry::widgets save_button $save_btn
     
-    # Parameter sliders
+    # Parameter sliders - store all widget IDs
     set s [add_int_slider 20 -50 150 40 \
          {Pupil Threshold} 1 255 [eyetracking::setPupilThreshold] eyetracking::setPupilThreshold]
     dict set ::Registry::widgets pupil_threshold_slider $s
     
-    add_int_slider 20 -95 150 40 \
-         {P4 Threshold} 1 255 [eyetracking::setP4MinIntensity] eyetracking::setP4MinIntensity
+    set s [add_int_slider 20 -95 150 40 \
+         {P4 Threshold} 1 255 [eyetracking::setP4MinIntensity] eyetracking::setP4MinIntensity]
+    dict set ::Registry::widgets p4_threshold_slider $s
     
-    add_float_slider 20 -140 150 40 \
-         {P1 Max Jump} 5 100 [eyetracking::setP1MaxJump] eyetracking::setP1MaxJump
+    set s [add_float_slider 20 -140 150 40 \
+         {P1 Max Jump} 5 100 [eyetracking::setP1MaxJump] eyetracking::setP1MaxJump]
+    dict set ::Registry::widgets p1_max_jump_slider $s
     
-    add_float_slider 20 -190 150 40 \
-         {P4 Max Jump} 5 100 [eyetracking::setP4MaxJump] eyetracking::setP4MaxJump
+    set s [add_float_slider 20 -190 150 40 \
+         {P4 Max Jump} 5 100 [eyetracking::setP4MaxJump] eyetracking::setP4MaxJump]
+    dict set ::Registry::widgets p4_max_jump_slider $s
     
     # Key bindings
     bind_key "s" toggle_recording
-    bind_key "r" rewind_playback
     bind_key "c" ::ROI::center_on_pupil
     
     # Show instructions
@@ -564,4 +608,3 @@ vstream::onlySaveInObs 0
 set initialized 0
 
 run_mode
-

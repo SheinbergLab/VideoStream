@@ -38,51 +38,54 @@ proc onMouseClick {x y modifier} {
     }
 }
 
-proc get_event_data {info key {default ""}} {
-    if {[dict exists $info $key]} {
-        return [dict get $info $key]
+# Helper to safely get value from dict
+proc get_dict_value {dict_var key {default ""}} {
+    if {[dict exists $dict_var $key]} {
+        return [dict get $dict_var $key]
     }
     return $default
 }
 
-proc onEvent {event data} {
-    # Parse data
-    set info [dict create]
-    foreach {key val} $data {
-        dict set info $key $val
-    }
+# handles native Tcl types
+proc onEvent {type data} {
 
-    switch $event {
-	"video_source_eof" {
-            puts "📹 End of video reached"
+    switch -glob $type {
+        "vstream/source_eof" -
+        "video_source_eof" {
+            puts "🎬 End of video reached"
             if {$::Registry::recording_state eq "recording"} {
                 puts "💾 Auto-saving recording..."
                 stop_metadata_recording
             }
-	}
-	
-	"video_source_rewind" {
-            puts "⏮  Video rewound - resetting tracking state"
+        }
+        
+        "vstream/source_rewind" -
+        "video_source_rewind" {
+            puts "⏮ Video rewound - resetting tracking state"
             eyetracking::resetTrackingState
-	}
-	
-	       "sampling_progress" {
-            set sampled [get_event_data $info sampled 0]
-            set total [get_event_data $info total 0]
+        }
+        
+        "vstream/sampling_progress" -
+        "sampling_progress" {
+            # data is a dict with keys: sampled, total
+            set sampled [get_dict_value $data sampled 0]
+            set total [get_dict_value $data total 0]
             
-            # Update a progress indicator widget if you have one
+            # Update progress indicator widget
             if {[dict exists $::Registry::widgets sampling_progress]} {
                 set widget [dict get $::Registry::widgets sampling_progress]
                 update_widget_text $widget "Sampling: $sampled/$total"
             }
         }
         
+        "vstream/sampling_complete" -
         "sampling_complete" {
-            set sampled [get_event_data $info sampled 0]
-            set total [get_event_data $info total 0]
+            # data is a dict
+            set sampled [get_dict_value $data sampled 0]
+            set total [get_dict_value $data total 0]
             puts "✅ Sampling complete: $sampled/$total frames"
             
-            # Remove progress indicator if present
+            # Remove progress indicator
             if {[dict exists $::Registry::widgets sampling_progress]} {
                 remove_widget [dict get $::Registry::widgets sampling_progress]
                 dict unset ::Registry::widgets sampling_progress
@@ -92,8 +95,9 @@ proc onEvent {event data} {
             review_mode
         }
         
-        "eyetracking_blink_start" {
-            set frame [dict get $info frame]
+        "eyetracking/blink_start" {
+            # data is an integer (frame number)
+            puts "👁️ Blink at frame $data"
             
             # Add visual indicator
             if {$::Registry::blink_indicator == -1} {
@@ -102,7 +106,7 @@ proc onEvent {event data} {
             }
         }
         
-        "eyetracking_blink_end" {
+        "eyetracking/blink_end" {
             # Remove visual indicator
             if {$::Registry::blink_indicator != -1} {
                 remove_widget $::Registry::blink_indicator
@@ -110,9 +114,9 @@ proc onEvent {event data} {
             }
         }
         
-        "eyetracking_p1_lost" {
-            set frame [dict get $info frame]
-            puts "⚠️  P1 lost at frame $frame"
+        "eyetracking/p1_lost" {
+            # data is an integer (frame number)
+            puts "⚠️ P1 lost at frame $data"
             
             # Add persistent warning
             if {$::Registry::p1_lost_indicator == -1} {
@@ -121,9 +125,9 @@ proc onEvent {event data} {
             }
         }
         
-        "eyetracking_p1_recovered" {
-            set frame [dict get $info frame]
-            puts "✅ P1 recovered at frame $frame"
+        "eyetracking/p1_recovered" {
+            # data is an integer (frame number)
+            puts "✅ P1 recovered at frame $data"
             
             # Remove warning
             if {$::Registry::p1_lost_indicator != -1} {
@@ -132,10 +136,11 @@ proc onEvent {event data} {
             }
         }
         
-        "eyetracking_p4_calibrated" {
-            set samples [get_event_data $info samples 0]
-            set magnitude [get_event_data $info magnitude 0.0]
-            set angle [get_event_data $info angle 0.0]
+        "eyetracking/p4_calibrated" {
+            # data is a dict with keys: samples, magnitude, angle
+            set samples [get_dict_value $data samples 0]
+            set magnitude [get_dict_value $data magnitude 0.0]
+            set angle [get_dict_value $data angle 0.0]
             
             puts "✅ P4 Calibrated:"
             puts "   Samples: $samples"
@@ -145,16 +150,50 @@ proc onEvent {event data} {
             # Auto-switch to full mode
             eyetracking::setDetectionMode full
         }
+        
+	"eyetracking/settings" {
+	    set setting_name [get_dict_value $data name ""]
+	    set setting_value [get_dict_value $data value ""]
+
+	    switch $setting_name {
+		"pupil_threshold" {
+		    if {[dict exists $::Registry::widgets pupil_threshold_slider]} {
+			set slider [dict get $::Registry::widgets pupil_threshold_slider]
+			update_slider_value $slider $setting_value
+		    }
+		}
+		"p1_max_jump" {
+		    if {[dict exists $::Registry::widgets p1_max_jump_slider]} {
+			set slider [dict get $::Registry::widgets p1_max_jump_slider]
+			update_slider_value $slider $setting_value
+		    }
+		}
+		"p4_max_jump" {
+		    if {[dict exists $::Registry::widgets p4_max_jump_slider]} {
+			set slider [dict get $::Registry::widgets p4_max_jump_slider]
+			update_slider_value $slider $setting_value
+		    }
+		}
+		"p4_min_intensity" {
+		    if {[dict exists $::Registry::widgets p4_threshold_slider]} {
+			set slider [dict get $::Registry::widgets p4_threshold_slider]
+			update_slider_value $slider $setting_value
+		    }
+		}
+		"detection_mode" {
+		    puts "Mode changed to: $setting_value"
+		}
+	    }
+	} 
     }
 }
-
 
 proc toggle_pause { args } {
     set ::Registry::paused [expr {!$::Registry::paused}]
     
     if {$::Registry::paused} {
         vstream::pause 1
-        puts "⏸️  PAUSED - Use arrow keys to step frame-by-frame"
+        puts "⏸️ PAUSED - Use arrow keys to step frame-by-frame"
         
         # Add visual indicator
         if {![dict exists $::Registry::widgets pause_indicator]} {
@@ -163,7 +202,7 @@ proc toggle_pause { args } {
         }
     } else {
         vstream::pause 0
-        puts "▶️  Playing"
+        puts "▶️ Playing"
         
         # Remove indicator
         if {[dict exists $::Registry::widgets pause_indicator]} {
@@ -176,7 +215,7 @@ proc toggle_pause { args } {
 # Step forward
 proc step_forward { code } {
     if {!$::Registry::paused} {
-        puts "⚠️  Pause first (press Space)"
+        puts "⚠️ Pause first (press Space)"
         return
     }
     
@@ -188,7 +227,7 @@ proc step_forward { code } {
 # Step backward
 proc step_backward { code } {
     if {!$::Registry::paused} {
-        puts "⚠️  Pause first (press Space)"
+        puts "⚠️ Pause first (press Space)"
         return
     }
     
@@ -203,9 +242,9 @@ proc show_frame_info { code } {
     set total [vstream::getTotalFrames]
     set results [eyetracking::getResults]
     
-    puts "\n════════════════════════════════════════"
+    puts "\n═══════════════════════════════════════════"
     puts "Frame $frame / $total"
-    puts "════════════════════════════════════════"
+    puts "═══════════════════════════════════════════"
     
     if {$results eq "no results"} {
         puts "No tracking results available"
@@ -243,11 +282,8 @@ proc show_frame_info { code } {
     
     eyetracking::debugNextFrame
     
-    puts "════════════════════════════════════════\n"
+    puts "═══════════════════════════════════════════\n"
 }
-
-
-
 
 proc accept_p4_sample { code } {
     if {[catch {eyetracking::acceptP4Sample} result]} {
@@ -271,7 +307,7 @@ proc calibrate_p4_model {} {
     
     # Check if we have samples
     if {$count < 1} {
-        puts "⚠️  Need at least 1 sample to calibrate"
+        puts "⚠️ Need at least 1 sample to calibrate"
         puts "  Shift-click P4 on one or more frames"
         return
     }
@@ -360,8 +396,8 @@ proc review_gui {} {
 }
 
 proc review_mode {} {
-	eyetracking::resetP4Model
-	eyetracking::setDetectionMode pupil_p1
+    eyetracking::resetP4Model
+    eyetracking::setDetectionMode pupil_p1
     vstream::startSource review
     review_gui
 }
@@ -454,7 +490,7 @@ proc toggle_recording {} {
 proc rewind_playback {} {
     vstream::stopSource
     vstream::startSource playback file $::source_file speed 1.0 loop 0
-    puts "⏮  Rewound to beginning"
+    puts "⏮ Rewound to beginning"
 }
 
 # ============================================================================
@@ -491,17 +527,20 @@ proc playback_mode { { filename {} } } {
     
     # Parameter sliders
     set s [add_int_slider 20 -50 150 40 \
-         {Pupil Threshold} 1 255 [eyetracking::setPupilThreshold] eyetracking::setPupilThreshold]
+	       {Pupil Threshold} 1 255 [eyetracking::setPupilThreshold] eyetracking::setPupilThreshold]
     dict set ::Registry::widgets pupil_threshold_slider $s
     
-    add_int_slider 20 -95 150 40 \
-         {P4 Threshold} 1 255 [eyetracking::setP4MinIntensity] eyetracking::setP4MinIntensity
+    set s [add_int_slider 20 -95 150 40 \
+	       {P4 Threshold} 1 255 [eyetracking::setP4MinIntensity] eyetracking::setP4MinIntensity]
+    dict set ::Registry::widgets p4_threshold_slider $s
     
-    add_float_slider 20 -140 150 40 \
-         {P1 Max Jump} 5 100 [eyetracking::setP1MaxJump] eyetracking::setP1MaxJump
+    set s [add_float_slider 20 -140 150 40 \
+	       {P1 Max Jump} 5 100 [eyetracking::setP1MaxJump] eyetracking::setP1MaxJump]
+    dict set ::Registry::widgets p1_max_jump_slider $s
     
-    add_float_slider 20 -190 150 40 \
-         {P4 Max Jump} 5 100 [eyetracking::setP4MaxJump] eyetracking::setP4MaxJump
+    set s [add_float_slider 20 -190 150 40 \
+	       {P4 Max Jump} 5 100 [eyetracking::setP4MaxJump] eyetracking::setP4MaxJump]
+    dict set ::Registry::widgets p4_max_jump_slider $s
     
     # Key bindings
     bind_key "s" toggle_recording
@@ -517,7 +556,7 @@ proc playback_mode { { filename {} } } {
     puts "Playback Controls"
     puts "============================================"
     puts "SPACE - Pause/Resume playback"
-    puts "→/←   - Step forward/backward (when paused)"
+    puts "←/→   - Step forward/backward (when paused)"
     puts "i     - Show current frame info"
     puts "s     - Start/stop recording"
     puts "r     - Rewind to beginning"
@@ -546,10 +585,10 @@ if { [file exists /home/lab] } {
 }
 
 set files [list \
-	       [file join $video_folder OpenIris-2025Jun23-131340-Right.mp4] \
-	       [file join $video_folder OpenIris-2025Oct03-143614-Right.mkv] \
-	       [file join $video_folder glen_2.mkv] \
-	      ]
+               [file join $video_folder OpenIris-2025Jun23-131340-Right.mp4] \
+               [file join $video_folder OpenIris-2025Oct03-143614-Right.mkv] \
+               [file join $video_folder glen_2.mkv] \
+              ]
 
 # Default parameters
 eyetracking::setP1MaxJump 40

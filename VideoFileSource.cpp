@@ -1,9 +1,8 @@
 #include <thread>
 #include "VideoFileSource.h"
+#include "VstreamEvent.h"
 #include <iostream>
 #include <dynio.h>
-
-extern void fireEvent(const std::string& type, const std::string& data);
 
 VideoFileSource::VideoFileSource(const std::string& videoFile,
                                  const std::string& dgzFile,
@@ -133,7 +132,7 @@ void VideoFileSource::rewind() {
   playback_start = std::chrono::high_resolution_clock::now();
   
   // Fire event to notify plugins/UI
-  fireEvent("video_source_rewind", "");
+  fireEvent(Event("vstream/video_source_rewind"));
 }
 
 VideoFileSource::~VideoFileSource() {

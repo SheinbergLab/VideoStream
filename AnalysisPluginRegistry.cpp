@@ -1,5 +1,8 @@
 #include "AnalysisPluginRegistry.h"
 #include <iostream>
+#include "VstreamEvent.h"
+
+extern class WebSocketThread* g_wsServer;
 
 AnalysisPluginRegistry::~AnalysisPluginRegistry() {
     shutdownAll();
@@ -26,6 +29,10 @@ void AnalysisPluginRegistry::registerPlugin(IAnalysisPlugin* plugin) {
     std::cout << "Registered plugin: " << plugin_name 
               << " v" << plugin->getVersion() << std::endl;
     std::cout << "  " << plugin->getDescription() << std::endl;
+
+    if (plugin->hasWebUI()) {
+      fireEvent(Event("vstream/plugin_registered", plugin_name));
+    }    
 }
 
 void AnalysisPluginRegistry::unregisterPlugin(const std::string& plugin_name) {
@@ -44,6 +51,8 @@ void AnalysisPluginRegistry::unregisterPlugin(const std::string& plugin_name) {
     plugins_.erase(it);
     
     std::cout << "Unregistered plugin: " << plugin_name << std::endl;
+
+    fireEvent(Event("vstream/plugin_unregistered", plugin_name));
 }
 
 void AnalysisPluginRegistry::processFrame(const cv::Mat& frame, int frameIdx,

@@ -178,6 +178,29 @@ bool WidgetManager::updateWidgetValue(int id, const std::string& str) {
     return false;  // Widget not found
 }
 
+bool WidgetManager::updateWidgetValue(int id, double val) {
+    std::lock_guard<std::mutex> lock(widgetMutex);
+    
+    for (auto& widget : widgets) {
+        if (widget->id == id) {
+            if (auto* slider = dynamic_cast<FloatSliderWidget*>(widget.get())) {
+                slider->value = std::clamp((static_cast<float>(val) - slider->min_val) / 
+                                          (slider->max_val - slider->min_val), 0.0f, 1.0f);
+                slider->updateHandlePosition();
+                return true;
+            }
+            else if (auto* slider = dynamic_cast<IntSliderWidget*>(widget.get())) {
+                slider->value = std::clamp(static_cast<int>(val), slider->min_val, slider->max_val);
+                slider->lastValue = slider->value;
+                slider->updateHandlePosition();
+                return true;
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
 bool WidgetManager::updateWidget(int id, int x, int y, int w, int h) {
   std::lock_guard<std::mutex> lock(widgetMutex);
   

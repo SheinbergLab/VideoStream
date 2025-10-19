@@ -74,5 +74,38 @@ public:
      * Useful for committing transactions, finalizing statements, etc.
      */
     virtual void endStorageBatch(sqlite3* db) {}
+    
+    // ========================================================================
+    // WEB UI INTERFACE
+    // ========================================================================
+    
+    /**
+     * Does this plugin provide a web UI?
+     */
+    virtual bool hasWebUI() const { return false; }
+    
+    /**
+     * Get plugin's HTML content (will be injected into a control section)
+     * Return empty string if no UI provided
+     * 
+     * NOTE: Use unique raw string delimiters to avoid conflicts with )" sequences:
+     *   R"PLUGINNAME_HTML(...)PLUGINNAME_HTML"
+     *   R"PLUGINNAME_JS(...)PLUGINNAME_JS"
+     *   R"PLUGINNAME_CSS(...)PLUGINNAME_CSS"
+     */
+    virtual std::string getUIHTML() const { return ""; }
+    
+    /**
+     * Get plugin's JavaScript code
+     * Will be wrapped in an IIFE: (function() { YOUR_CODE })();
+     * Has access to global functions: sendCommand(), showInfo(), showError()
+     * Return empty string if no script needed
+     */
+    virtual std::string getUIScript() const { return ""; }
+    
+    /**
+     * Get plugin's CSS styles
+     * Return empty string if no custom styling needed
+     */
+    virtual std::string getUIStyle() const { return ""; }
 };
-

@@ -35,6 +35,7 @@ public:
   bool updateWidgetText(int id, std::string str);
   bool updateWidget(int id, int x, int y, int w, int h);
   bool updateWidgetValue(int id, const std::string& str);
+  bool updateWidgetValue(int id, double val);
   void removeWidget(int id);
   void clearAll();
   void queueCallback(const std::string& script);

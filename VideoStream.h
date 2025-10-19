@@ -23,6 +23,8 @@ typedef struct _proginfo_t {
   bool* is_color;  
 } proginfo_t;
 
+class WebSocketThread;
+extern WebSocketThread* g_wsServer;
 
 // thread safe tcl command evals
 int tcl_eval(const std::string& cmd);
@@ -39,6 +41,10 @@ struct WSPerSocketData {
   SharedQueue<std::string> *rqueue;
   std::string client_name;
   std::vector<std::string> subscriptions;
+
+  std::map<std::string, std::chrono::steady_clock::time_point> last_sent;
+  std::map<std::string, int> event_counts;
+  std::chrono::steady_clock::time_point rate_window_start;
 };
 
 // To help manage large WebSocket messages (stimdg -> ess/stiminfo)
