@@ -5,6 +5,7 @@
 #include <iostream>
 #include <atomic>
 #include <thread>
+#include "VstreamEvent.h"
 
 using namespace Spinnaker;
 using namespace Spinnaker::GenApi;
