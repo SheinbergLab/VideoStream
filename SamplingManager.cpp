@@ -68,7 +68,7 @@ void SamplingManager::samplingLoop() {
 	// Fire progress event
 	std::string progress_data = "sampled " + std::to_string(sampled) + 
 	                           " total " + std::to_string(n_frames_);
-	fireEvent(Event("vstream/sampling_progress", progress_data));
+	fireEvent(VstreamEvent("vstream/sampling_progress", progress_data));
       }
     }
     
@@ -84,5 +84,5 @@ void SamplingManager::samplingLoop() {
   // Fire completion event
   std::string data = "sampled " + std::to_string(sampled) +
     " total " + std::to_string(n_frames_);
-  fireEvent(Event("sampling_complete", data));
+  fireEvent(VstreamEvent("sampling_complete", data));
 }

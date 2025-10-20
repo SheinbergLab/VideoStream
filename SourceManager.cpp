@@ -141,7 +141,7 @@ bool SourceManager::startSource(const std::string& type,
     }
     
     std::string data = "type " + type;
-    fireEvent(Event("vstream/source_started", data));
+    fireEvent(VstreamEvent("vstream/source_started", data));
     
     return true;
     
@@ -186,7 +186,7 @@ bool SourceManager::stopSource()
     }
 
     std::string data = "type " + source_type;
-    fireEvent(Event("vstream/source_stopped", data));
+    fireEvent(VstreamEvent("vstream/source_stopped", data));
     
     state_ = SOURCE_IDLE;
     return true;

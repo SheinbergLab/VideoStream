@@ -6,21 +6,21 @@
 // Helper functions to convert Event to Tcl objects efficiently
 
 // Convert EventData to Tcl_Obj based on type
-inline Tcl_Obj* eventDataToTclObj(Tcl_Interp* interp, const EventData& data) {
+inline Tcl_Obj* eventDataToTclObj(Tcl_Interp* interp, const VstreamEventData& data) {
     switch (data.type) {
-        case EventDataType::NONE:
+        case VstreamEventDataType::NONE:
             return Tcl_NewObj();  // Empty object
             
-        case EventDataType::STRING:
+        case VstreamEventDataType::STRING:
             return Tcl_NewStringObj(data.asString().c_str(), -1);
             
-        case EventDataType::INTEGER:
+        case VstreamEventDataType::INTEGER:
             return Tcl_NewWideIntObj(data.asInt());
             
-        case EventDataType::FLOAT:
+        case VstreamEventDataType::FLOAT:
             return Tcl_NewDoubleObj(data.asFloat());
             
-        case EventDataType::INT_ARRAY: {
+        case VstreamEventDataType::INT_ARRAY: {
             Tcl_Obj* listObj = Tcl_NewListObj(0, nullptr);
             for (int64_t val : data.asIntArray()) {
                 Tcl_ListObjAppendElement(interp, listObj, Tcl_NewWideIntObj(val));
@@ -28,7 +28,7 @@ inline Tcl_Obj* eventDataToTclObj(Tcl_Interp* interp, const EventData& data) {
             return listObj;
         }
         
-        case EventDataType::FLOAT_ARRAY: {
+        case VstreamEventDataType::FLOAT_ARRAY: {
             Tcl_Obj* listObj = Tcl_NewListObj(0, nullptr);
             for (double val : data.asFloatArray()) {
                 Tcl_ListObjAppendElement(interp, listObj, Tcl_NewDoubleObj(val));
@@ -36,7 +36,7 @@ inline Tcl_Obj* eventDataToTclObj(Tcl_Interp* interp, const EventData& data) {
             return listObj;
         }
         
-        case EventDataType::KEY_VALUE: {
+        case VstreamEventDataType::KEY_VALUE: {
             Tcl_Obj* dictObj = Tcl_NewDictObj();
             for (const auto& [key, value] : data.asKeyValue()) {
                 Tcl_DictObjPut(interp, dictObj, 
@@ -46,7 +46,7 @@ inline Tcl_Obj* eventDataToTclObj(Tcl_Interp* interp, const EventData& data) {
             return dictObj;
         }
         
-        case EventDataType::BINARY: {
+        case VstreamEventDataType::BINARY: {
             // Return as byte array
             const auto& bytes = data.asBinary();
             return Tcl_NewByteArrayObj(bytes.data(), bytes.size());
@@ -58,7 +58,7 @@ inline Tcl_Obj* eventDataToTclObj(Tcl_Interp* interp, const EventData& data) {
 }
 
 // Convert entire Event to a Tcl dict
-inline Tcl_Obj* eventToTclDict(Tcl_Interp* interp, const Event& event) {
+inline Tcl_Obj* eventToTclDict(Tcl_Interp* interp, const VstreamEvent& event) {
     Tcl_Obj* dictObj = Tcl_NewDictObj();
     
     // Add event type
@@ -95,7 +95,7 @@ inline Tcl_Obj* eventToTclDict(Tcl_Interp* interp, const Event& event) {
 
 // Call Tcl event handler: onEvent <type> <data>
 // Returns TCL_OK or TCL_ERROR
-inline int invokeTclEventHandler(Tcl_Interp* interp, const Event& event) {
+inline int invokeTclEventHandler(Tcl_Interp* interp, const VstreamEvent& event) {
     // Check if handler exists
     const char* check_script = "info commands onEvent";
     if (Tcl_Eval(interp, check_script) != TCL_OK) {

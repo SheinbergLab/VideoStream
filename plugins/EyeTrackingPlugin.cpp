@@ -550,7 +550,8 @@ private:
         data["name"] = setting_name;
         data["value"] = value;
         
-        Event evt("eyetracking/settings", EventData::makeKeyValue(data));
+        VstreamEvent evt("eyetracking/settings",
+			 VstreamEventData::makeKeyValue(data));
         evt.rate_limit_exempt = true;  // Always deliver
         fireEvent(evt);
     }
@@ -1014,11 +1015,11 @@ private:
 	
 	if (!was_in_blink && currently_in_blink) {
 	  // Blink started
-	  fireEvent(Event("eyetracking/blink_start",
+	  fireEvent(VstreamEvent("eyetracking/blink_start",
 			  "frame " + std::to_string(frame_idx)));
 	} else if (was_in_blink && !currently_in_blink) {
 	  // Blink ended
-	  fireEvent(Event("eyetracking/blink_end",
+	  fireEvent(VstreamEvent("eyetracking/blink_end",
 			  "frame " + std::to_string(frame_idx)));
 	}
 	was_in_blink = currently_in_blink;
@@ -1030,7 +1031,7 @@ private:
                 p1_validator_.reset();
                 p1_recovery_countdown = P1_RECOVERY_FRAMES;
 
-		fireEvent(Event("eyetracking/p1_lost",
+		fireEvent(VstreamEvent("eyetracking/p1_lost",
 				"frame " + std::to_string(frame_idx)));
 		p1_was_lost = true;		
 
@@ -1041,7 +1042,7 @@ private:
         } else {
 	  if (p1_was_lost) {
             // P1 recovered
-	    fireEvent(Event("eyetracking/p1_recovered",
+	    fireEvent(VstreamEvent("eyetracking/p1_recovered",
 			    "frame " + std::to_string(frame_idx)));
             p1_was_lost = false;
 	  }
@@ -1347,7 +1348,7 @@ static int resetTrackingStateCmd(ClientData clientData, Tcl_Interp *interp,
     
     // If we were in a blink, fire event to clear UI indicators
     if (was_in_blink) {
-      fireEvent(Event("eyetracking/blink_end", "frame -1"));
+      fireEvent(VstreamEvent("eyetracking/blink_end", "frame -1"));
     }
     
     if (plugin->debug_level_ >= DEBUG_CRITICAL) {
@@ -1519,7 +1520,7 @@ static int acceptP4SampleCmd(ClientData clientData, Tcl_Interp *interp,
 	   << " magnitude " << plugin->p4_model_.getMagnitudeRatio()
 	   << " angle " << (plugin->p4_model_.getAngleOffset() * 180.0 / M_PI);
       
-      fireEvent(Event("eyetracking/p4_calibrated", data.str()));      
+      fireEvent(VstreamEvent("eyetracking/p4_calibrated", data.str()));      
       return TCL_OK;
     }
     else {
@@ -1568,7 +1569,7 @@ static int acceptP4SampleCmd(ClientData clientData, Tcl_Interp *interp,
     
     std::ostringstream data;
     data << "magnitude " << mag_ratio << " angle " << angle_deg;
-    fireEvent(Event("eyetracking/p4_model_set", data.str()));
+    fireEvent(VstreamEvent("eyetracking/p4_model_set", data.str()));
     
     Tcl_SetObjResult(interp, Tcl_NewStringObj(msg.str().c_str(), -1));
     return TCL_OK;

@@ -132,7 +132,7 @@ void VideoFileSource::rewind() {
   playback_start = std::chrono::high_resolution_clock::now();
   
   // Fire event to notify plugins/UI
-  fireEvent(Event("vstream/video_source_rewind"));
+  fireEvent(VstreamEvent("vstream/video_source_rewind"));
 }
 
 VideoFileSource::~VideoFileSource() {

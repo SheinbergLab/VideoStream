@@ -21,7 +21,7 @@ void FlirCameraSource::fireSettingChanged(const std::string& setting_name,
     data["name"] = setting_name;
     data["value"] = value;
     
-    Event evt("flir/settings", EventData::makeKeyValue(data));
+    VstreamEvent evt("flir/settings", VstreamEventData::makeKeyValue(data));
     evt.rate_limit_exempt = true;
     fireEvent(evt);
 }

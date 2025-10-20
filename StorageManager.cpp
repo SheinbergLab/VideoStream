@@ -216,7 +216,7 @@ bool StorageManager::openDatabase(const std::string& db_path,
         db_ = nullptr;
         
         // Fire error event
-        fireEvent(Event("vstream/storage_open_failed",
+        fireEvent(VstreamEvent("vstream/storage_open_failed",
 			"file " + db_path + " error " + sqlite3_errmsg(db_)));
         return false;
     }
@@ -228,7 +228,7 @@ bool StorageManager::openDatabase(const std::string& db_path,
     if (!createTables()) {
         sqlite3_close(db_);
         db_ = nullptr;
-        fireEvent(Event("vstream/storage_open_failed",
+        fireEvent(VstreamEvent("vstream/storage_open_failed",
 			"file " + db_path + " error table_creation_failed"));
         return false;
     }
@@ -237,7 +237,7 @@ bool StorageManager::openDatabase(const std::string& db_path,
     if (!prepareStatements()) {
         sqlite3_close(db_);
         db_ = nullptr;
-        fireEvent(Event("vstream/storage_open_failed",
+        fireEvent(VstreamEvent("vstream/storage_open_failed",
 			"file " + db_path + " error statement_preparation_failed"));
         return false;
     }
@@ -258,7 +258,7 @@ bool StorageManager::openDatabase(const std::string& db_path,
         finalizeStatements();
         sqlite3_close(db_);
         db_ = nullptr;
-        fireEvent(Event("vstream/storage_open_failed",
+        fireEvent(VstreamEvent("vstream/storage_open_failed",
 			"file " + db_path + " error metadata_insert_failed"));
         return false;
     }
@@ -277,7 +277,7 @@ bool StorageManager::openDatabase(const std::string& db_path,
 
     std::string data = "file " + db_path + " id " +
       std::to_string(current_recording_id_);
-    fireEvent(Event("vstream/storage_opened", data));
+    fireEvent(VstreamEvent("vstream/storage_opened", data));
     
     return true;
 }
@@ -308,7 +308,7 @@ bool StorageManager::closeRecording() {
     recording_active_ = false;
     
     // Fire close event
-    fireEvent(Event("vstream/storage_closed",
+    fireEvent(VstreamEvent("vstream/storage_closed",
 		    "file " + current_db_path_));
     
     return true;
@@ -319,7 +319,7 @@ void StorageManager::startRecording() {
         recording_active_ = true;
         std::cout << "Recording ACTIVE" << std::endl;
         
-        fireEvent(Event("vstream/storage_recording_started",
+        fireEvent(VstreamEvent("vstream/storage_recording_started",
 			"file " + current_db_path_));
     }
 }
@@ -336,7 +336,7 @@ void StorageManager::stopRecording() {
         
         std::cout << "Recording STOPPED" << std::endl;
         
-        fireEvent(Event("vstream/storage_recording_stopped",
+        fireEvent(VstreamEvent("vstream/storage_recording_stopped",
 			"file " + current_db_path_));
     }
 }

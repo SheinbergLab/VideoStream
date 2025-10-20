@@ -1078,7 +1078,7 @@ static int vstreamPauseCmd(ClientData clientData, Tcl_Interp *interp,
     
     // Fire event
     std::string event_data = pause_val ? "paused" : "resumed";
-    fireEvent(Event("vstream/source_paused", event_data));
+    fireEvent(VstreamEvent("vstream/source_paused", event_data));
     
     return TCL_OK;
 }
@@ -1881,7 +1881,7 @@ static int fireEventCmd(ClientData clientData, Tcl_Interp *interp,
   std::string event_type = argv[1];
   std::string event_data = (argc > 2) ? argv[2] : "";
   
-  fireEvent(Event(event_type, event_data));
+  fireEvent(VstreamEvent(event_type, event_data));
   
   return TCL_OK;
 }

@@ -100,7 +100,7 @@ SharedQueue<std::string> disp_rqueue;
 SharedQueue<std::string> ds_queue;
 SharedQueue<std::string> shutdown_queue;
 
-SharedQueue<Event> event_queue;
+SharedQueue<VstreamEvent> event_queue;
 
 std::atomic<bool> events_ready{false};
 
@@ -543,7 +543,7 @@ private:
     {"*/frame_data", 10},    // Frame data: 10 Hz max
   };
 
-  bool shouldSendToClient(WSPerSocketData* userData, const Event& event) {
+  bool shouldSendToClient(WSPerSocketData* userData, const VstreamEvent& event) {
         // Critical events bypass all checks
         if (event.rate_limit_exempt) {
             return true;
@@ -603,7 +603,7 @@ public:
     // uWebsockets handles cleanup internally
   }
 
-void broadcastEvent(const Event& event) {
+void broadcastEvent(const VstreamEvent& event) {
     std::lock_guard<std::mutex> lock(ws_connections_mutex);
     
     if (ws_connections.empty()) {
@@ -619,23 +619,23 @@ void broadcastEvent(const Event& event) {
     json_t* data_json = nullptr;
     
     switch (event.data.type) {
-        case EventDataType::NONE:
+        case VstreamEventDataType::NONE:
             data_json = json_null();
             break;
             
-        case EventDataType::STRING:
+        case VstreamEventDataType::STRING:
             data_json = json_string(event.data.asString().c_str());
             break;
             
-        case EventDataType::INTEGER:
+        case VstreamEventDataType::INTEGER:
             data_json = json_integer(event.data.asInt());
             break;
             
-        case EventDataType::FLOAT:
+        case VstreamEventDataType::FLOAT:
             data_json = json_real(event.data.asFloat());
             break;
             
-        case EventDataType::INT_ARRAY: {
+        case VstreamEventDataType::INT_ARRAY: {
             data_json = json_array();
             for (int64_t val : event.data.asIntArray()) {
                 json_array_append_new(data_json, json_integer(val));
@@ -643,7 +643,7 @@ void broadcastEvent(const Event& event) {
             break;
         }
         
-        case EventDataType::FLOAT_ARRAY: {
+        case VstreamEventDataType::FLOAT_ARRAY: {
             data_json = json_array();
             for (double val : event.data.asFloatArray()) {
                 json_array_append_new(data_json, json_real(val));
@@ -651,7 +651,7 @@ void broadcastEvent(const Event& event) {
             break;
         }
         
-        case EventDataType::KEY_VALUE: {
+        case VstreamEventDataType::KEY_VALUE: {
             data_json = json_object();
             for (const auto& [key, value] : event.data.asKeyValue()) {
                 json_object_set_new(data_json, key.c_str(), json_string(value.c_str()));
@@ -659,7 +659,7 @@ void broadcastEvent(const Event& event) {
             break;
         }
         
-        case EventDataType::BINARY:
+        case VstreamEventDataType::BINARY:
             // For now, skip binary in broadcast (could add base64 later)
             data_json = json_string("[binary data]");
             break;
@@ -808,7 +808,7 @@ void broadcastEvent(const Event& event) {
     json_decref(welcome);
     
     // Fire event for Tcl
-    fireEvent(Event("vstream/client_connected",userData->client_name));
+    fireEvent(VstreamEvent("vstream/client_connected",userData->client_name));
  },	
 	
 	.message = [this](auto *ws, std::string_view message, uWS::OpCode opCode) {
@@ -1009,7 +1009,7 @@ void broadcastEvent(const Event& event) {
   }
 };
 
-void fireEvent(const Event& event) {
+void fireEvent(const VstreamEvent& event) {
     if (events_ready.load()) {
         event_queue.push_back(event);
         
@@ -1241,14 +1241,14 @@ public:
 	  
 	  // Fire event with data
 	  std::string data = "file " + metadata_base_name_ + ".db source " + output_file;
-	  fireEvent(Event("vstream/metadata_recording_started", data));
+	  fireEvent(VstreamEvent("vstream/metadata_recording_started", data));
 	}
       } else {
 	storage_ok = storage_manager_.openRecording(output_file, metadata);
 
 	if (storage_ok) {
 	  // Fire event for normal recording
-	  fireEvent(Event("vstream/recording_started", "file " + output_file));
+	  fireEvent(VstreamEvent("vstream/recording_started", "file " + output_file));
 	}
       }
       
@@ -1503,9 +1503,9 @@ public:
 	    // Fire event
 	    if (metadata_only_) {
 	      std::string data = "file " + metadata_base_name_ + ".db";
-	      fireEvent(Event("vstream/metadata_recording_closed", data));
+	      fireEvent(VstreamEvent("vstream/metadata_recording_closed", data));
 	    } else {
-	      fireEvent(Event("vstream/recording_closed","file " + output_file));
+	      fireEvent(VstreamEvent("vstream/recording_closed","file " + output_file));
 	    }
 	  } else {
 	    writeFrameDG(dg, output_file);
@@ -1527,9 +1527,9 @@ public:
 	  // Fire event
 	  if (metadata_only_) {
 	    std::string data = "file " + metadata_base_name_ + ".db";
-	    fireEvent(Event("vstream/metadata_recording_closed", data));
+	    fireEvent(VstreamEvent("vstream/metadata_recording_closed", data));
 	  } else {
-	    fireEvent(Event("vstream/recording_closed", "file " + output_file));
+	    fireEvent(VstreamEvent("vstream/recording_closed", "file " + output_file));
 	  }
 	} else {
 	  writeFrameDG(dg, output_file);
@@ -1975,7 +1975,7 @@ int processEvents(void)
 {
     int count = 0;
     while (event_queue.size()) {
-        Event event = event_queue.front();
+        VstreamEvent event = event_queue.front();
         event_queue.pop_front();
         
         // Call Tcl handler with native objects (much more efficient!)
@@ -2534,7 +2534,7 @@ int main(int argc, char **argv)
 	  if (!g_frameSource->getNextFrame(frame, metadata)) {
 	    if (g_frameSource->isPlaybackMode() && !g_frameSource->isLooping()) {
 
-	      fireEvent(Event("vstream/video_source_eof"));
+	      fireEvent(VstreamEvent("vstream/video_source_eof"));
  
 	      // Don't shutdown, just stop the source
 	      g_sourceManager.stopSource();

@@ -8,8 +8,8 @@
 #include <variant>
 #include <algorithm>
 
-// Event data types
-enum class EventDataType {
+// VstreamEvent data types
+enum class VstreamEventDataType {
     NONE,           // No data
     STRING,         // Text data
     INTEGER,        // Single int64_t
@@ -21,24 +21,24 @@ enum class EventDataType {
 };
 
 // Convert enum to string for serialization
-inline const char* eventDataTypeToString(EventDataType type) {
+inline const char* eventDataTypeToString(VstreamEventDataType type) {
     switch (type) {
-        case EventDataType::NONE: return "none";
-        case EventDataType::STRING: return "string";
-        case EventDataType::INTEGER: return "integer";
-        case EventDataType::FLOAT: return "float";
-        case EventDataType::BINARY: return "binary";
-        case EventDataType::INT_ARRAY: return "int_array";
-        case EventDataType::FLOAT_ARRAY: return "float_array";
-        case EventDataType::KEY_VALUE: return "key_value";
+        case VstreamEventDataType::NONE: return "none";
+        case VstreamEventDataType::STRING: return "string";
+        case VstreamEventDataType::INTEGER: return "integer";
+        case VstreamEventDataType::FLOAT: return "float";
+        case VstreamEventDataType::BINARY: return "binary";
+        case VstreamEventDataType::INT_ARRAY: return "int_array";
+        case VstreamEventDataType::FLOAT_ARRAY: return "float_array";
+        case VstreamEventDataType::KEY_VALUE: return "key_value";
         default: return "unknown";
     }
 }
 
-// Event data container (type-safe variant)
-class EventData {
+// VstreamEvent data container (type-safe variant)
+class VstreamEventData {
 public:
-    EventDataType type;
+    VstreamEventDataType type;
     
     // Union of possible data types
     std::variant<
@@ -52,60 +52,60 @@ public:
         std::map<std::string, std::string>           // KEY_VALUE
     > value;
     
-    EventData() : type(EventDataType::NONE) {}
+    VstreamEventData() : type(VstreamEventDataType::NONE) {}
     
     // Factory methods for each type
-    static EventData makeNone() {
-        EventData e;
-        e.type = EventDataType::NONE;
+    static VstreamEventData makeNone() {
+        VstreamEventData e;
+        e.type = VstreamEventDataType::NONE;
         return e;
     }
     
-    static EventData makeString(const std::string& s) {
-        EventData e;
-        e.type = EventDataType::STRING;
+    static VstreamEventData makeString(const std::string& s) {
+        VstreamEventData e;
+        e.type = VstreamEventDataType::STRING;
         e.value = s;
         return e;
     }
     
-    static EventData makeInt(int64_t i) {
-        EventData e;
-        e.type = EventDataType::INTEGER;
+    static VstreamEventData makeInt(int64_t i) {
+        VstreamEventData e;
+        e.type = VstreamEventDataType::INTEGER;
         e.value = i;
         return e;
     }
     
-    static EventData makeFloat(double f) {
-        EventData e;
-        e.type = EventDataType::FLOAT;
+    static VstreamEventData makeFloat(double f) {
+        VstreamEventData e;
+        e.type = VstreamEventDataType::FLOAT;
         e.value = f;
         return e;
     }
     
-    static EventData makeBinary(const std::vector<uint8_t>& data) {
-        EventData e;
-        e.type = EventDataType::BINARY;
+    static VstreamEventData makeBinary(const std::vector<uint8_t>& data) {
+        VstreamEventData e;
+        e.type = VstreamEventDataType::BINARY;
         e.value = data;
         return e;
     }
     
-    static EventData makeIntArray(const std::vector<int64_t>& arr) {
-        EventData e;
-        e.type = EventDataType::INT_ARRAY;
+    static VstreamEventData makeIntArray(const std::vector<int64_t>& arr) {
+        VstreamEventData e;
+        e.type = VstreamEventDataType::INT_ARRAY;
         e.value = arr;
         return e;
     }
     
-    static EventData makeFloatArray(const std::vector<double>& arr) {
-        EventData e;
-        e.type = EventDataType::FLOAT_ARRAY;
+    static VstreamEventData makeFloatArray(const std::vector<double>& arr) {
+        VstreamEventData e;
+        e.type = VstreamEventDataType::FLOAT_ARRAY;
         e.value = arr;
         return e;
     }
     
-    static EventData makeKeyValue(const std::map<std::string, std::string>& kv) {
-        EventData e;
-        e.type = EventDataType::KEY_VALUE;
+    static VstreamEventData makeKeyValue(const std::map<std::string, std::string>& kv) {
+        VstreamEventData e;
+        e.type = VstreamEventDataType::KEY_VALUE;
         e.value = kv;
         return e;
     }
@@ -141,9 +141,9 @@ public:
 };
 
 // Main event structure
-struct Event {
+struct VstreamEvent {
     std::string type;                                    // Event type (hierarchical: "plugin/category/action")
-    EventData data;                                      // Typed data
+    VstreamEventData data;                                      // Typed data
     std::chrono::system_clock::time_point timestamp;     // When event occurred
     std::string source;                                  // Optional: which plugin/component
     int priority;                                        // Optional: for prioritization (unused for now)
@@ -152,37 +152,37 @@ struct Event {
     // Convenience constructors - automatic type inference
     
     // No data
-    explicit Event(const std::string& t)
-        : type(t), data(EventData::makeNone()), source(""), priority(0),
+    explicit VstreamEvent(const std::string& t)
+        : type(t), data(VstreamEventData::makeNone()), source(""), priority(0),
           timestamp(std::chrono::system_clock::now()),
           rate_limit_exempt(false) {}
     
     // String data
-    Event(const std::string& t, const std::string& str_data)
-        : type(t), data(EventData::makeString(str_data)), source(""), priority(0),
+    VstreamEvent(const std::string& t, const std::string& str_data)
+        : type(t), data(VstreamEventData::makeString(str_data)), source(""), priority(0),
           timestamp(std::chrono::system_clock::now()),
           rate_limit_exempt(false) {}
     
     // Integer data
-    Event(const std::string& t, int64_t int_data)
-        : type(t), data(EventData::makeInt(int_data)), source(""), priority(0),
+    VstreamEvent(const std::string& t, int64_t int_data)
+        : type(t), data(VstreamEventData::makeInt(int_data)), source(""), priority(0),
           timestamp(std::chrono::system_clock::now()),
           rate_limit_exempt(false) {}
     
     // Float data
-    Event(const std::string& t, double float_data)
-        : type(t), data(EventData::makeFloat(float_data)), source(""), priority(0),
+    VstreamEvent(const std::string& t, double float_data)
+        : type(t), data(VstreamEventData::makeFloat(float_data)), source(""), priority(0),
           timestamp(std::chrono::system_clock::now()),
           rate_limit_exempt(false) {}
     
-    // Explicit EventData (for arrays, key-value, binary)
-    Event(const std::string& t, const EventData& d)
+    // Explicit VstreamEventData (for arrays, key-value, binary)
+    VstreamEvent(const std::string& t, const VstreamEventData& d)
         : type(t), data(d), source(""), priority(0),
           timestamp(std::chrono::system_clock::now()),
           rate_limit_exempt(false) {}
     
     // With source
-    Event(const std::string& t, const EventData& d, const std::string& src)
+    VstreamEvent(const std::string& t, const VstreamEventData& d, const std::string& src)
         : type(t), data(d), source(src), priority(0),
           timestamp(std::chrono::system_clock::now()),
           rate_limit_exempt(false) {}
@@ -213,4 +213,4 @@ struct Event {
 };
 
 // Actual call to send events to our event system
-void fireEvent(const Event& event);
+void fireEvent(const VstreamEvent& event);
