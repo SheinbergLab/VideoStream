@@ -43,6 +43,16 @@ public:
   int getHeight() const override { return height; }
   bool isColor() const override { return color; }
   void close() override;
+
+  struct FlirSettings {
+    float exposure_time = 10000.0f;
+    float gain = 0.0f;
+    float frame_rate = 100.0f;
+    bool acquisition_running = false;
+  } settings_;
+  
+  void fireSettingChanged(const std::string& setting_name, const std::string& value);
+  void fireAllSettings();
   
   // FLIR-specific configuration methods
   struct ROIConstraints {

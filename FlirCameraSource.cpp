@@ -14,6 +14,25 @@ using namespace cv;
 
 extern std::atomic<int> frame_width, frame_height;
 
+void FlirCameraSource::fireSettingChanged(const std::string& setting_name, 
+                                          const std::string& value) {
+    std::map<std::string, std::string> data;
+    data["name"] = setting_name;
+    data["value"] = value;
+    
+    Event evt("flir/settings", EventData::makeKeyValue(data));
+    evt.rate_limit_exempt = true;
+    fireEvent(evt);
+}
+
+void FlirCameraSource::fireAllSettings() {
+    fireSettingChanged("exposure_time", std::to_string(settings_.exposure_time));
+    fireSettingChanged("gain", std::to_string(settings_.gain));
+    fireSettingChanged("frame_rate", std::to_string(settings_.frame_rate));
+    fireSettingChanged("acquisition_running", 
+                      settings_.acquisition_running ? "1" : "0");
+}
+
 FlirCameraSource::FlirCameraSource(int cameraId, int width, int height)
     : camera_id(cameraId)
     , width(width)
@@ -115,6 +134,10 @@ bool FlirCameraSource::startAcquisition() {
     try {
         pCam->BeginAcquisition();
         std::cout << "FLIR camera acquisition started" << std::endl;
+
+        settings_.acquisition_running = true;
+        fireSettingChanged("acquisition_running", "1");
+	
         return true;
     } catch (Spinnaker::Exception &e) {
         std::cerr << "Error starting acquisition: " << e.what() << std::endl;
@@ -130,6 +153,11 @@ bool FlirCameraSource::stopAcquisition() {
     try {
         pCam->EndAcquisition();
         std::cout << "FLIR camera acquisition stopped" << std::endl;
+
+	settings_.acquisition_running = false;
+        fireSettingChanged("acquisition_running", "0");
+	
+	
         return true;
     } catch (Spinnaker::Exception &e) {
         std::cerr << "Error stopping acquisition: " << e.what() << std::endl;
@@ -284,6 +312,10 @@ bool FlirCameraSource::configureExposure(float exposureTime) {
             return false;
         
         ptrExposureTime->SetValue(exposureTime);
+
+        settings_.exposure_time = exposureTime;
+        fireSettingChanged("exposure_time", std::to_string(exposureTime));
+	
         return true;
     } catch (Spinnaker::Exception &e) {
         std::cerr << "Error configuring exposure: " << e.what() << std::endl;
@@ -309,6 +341,10 @@ bool FlirCameraSource::configureGain(float gain) {
             return false;
         
         ptrGain->SetValue(gain);
+
+        settings_.gain = gain;
+        fireSettingChanged("gain", std::to_string(gain));
+	
         return true;
     } catch (Spinnaker::Exception &e) {
         std::cerr << "Error configuring gain: " << e.what() << std::endl;
@@ -348,7 +384,11 @@ bool FlirCameraSource::configureFrameRate(float frameRate, float* actualRate) {
     // Read back actual value
     fps = static_cast<float>(ptrFrameRate->GetValue());
     if (actualRate) *actualRate = fps;
-    
+
+
+    settings_.frame_rate = fps;
+    fireSettingChanged("frame_rate", std::to_string(fps));
+	
     std::cout << "Frame rate - Requested: " << frameRate 
 	      << " Hz, Actual: " << fps << " Hz" << std::endl;
     

@@ -1412,6 +1412,62 @@ static int hideCmd(ClientData clientData, Tcl_Interp *interp,
 /*                  FLIR Configure Commands                          */
 /*********************************************************************/
 
+static int flirGetSettingsCmd(ClientData clientData, Tcl_Interp *interp,
+                              int objc, Tcl_Obj *const objv[]) {
+#ifdef USE_FLIR
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* source = 
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+    
+  if (!source) {
+    
+    Tcl_Obj* settingsDict = Tcl_NewDictObj();
+    
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("exposure_time", -1),
+                   Tcl_NewDoubleObj(source->settings_.exposure_time));
+    
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("gain", -1),
+                   Tcl_NewDoubleObj(source->settings_.gain));
+    
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("frame_rate", -1),
+                   Tcl_NewDoubleObj(source->settings_.frame_rate));
+    
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("acquisition_running", -1),
+                   Tcl_NewBooleanObj(source->settings_.acquisition_running));
+    
+    Tcl_SetObjResult(interp, settingsDict);
+  }
+  else {
+    Tcl_SetResult(interp, "No FLIR camera active", TCL_STATIC);
+    return TCL_ERROR;
+  }
+#endif
+  return TCL_OK;
+}
+
+static int flirRefreshSettingsCmd(ClientData clientData, Tcl_Interp *interp,
+                                  int objc, Tcl_Obj *const objv[]) {
+#ifdef USE_FLIR
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* flirSource = 
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+    
+  if (!flirSource) {
+    Tcl_SetResult(interp, "No FLIR camera active", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  
+  // Fire events for all current settings
+  flirSource->fireAllSettings();
+#endif
+  
+  return TCL_OK;
+}
+
 static int startAcquisitionCmd(ClientData clientData, Tcl_Interp *interp,
                 int argc, char *argv[])
 {
@@ -1922,6 +1978,11 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateCommand(interp, "vstream::displayClose", (Tcl_CmdProc *) hideCmd, 
 		    (ClientData) p, (Tcl_CmdDeleteProc *) NULL);
 
+  Tcl_CreateObjCommand(interp, "flir::getSettings", 
+		       flirGetSettingsCmd, p, NULL);
+  Tcl_CreateObjCommand(interp, "flir::refreshSettings", 
+		       flirRefreshSettingsCmd, p, NULL);
+  
   Tcl_CreateCommand(interp, "flir::startAcquisition",
 		    (Tcl_CmdProc *) startAcquisitionCmd, 
 		    (ClientData)NULL, (Tcl_CmdDeleteProc *)NULL);
