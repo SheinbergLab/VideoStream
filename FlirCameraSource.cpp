@@ -23,7 +23,7 @@ FlirCameraSource::FlirCameraSource(int cameraId, int width, int height)
     , offset_x(0)
     , offset_y(0)      
     , color(false)
-    , has_last_frame(false)
+    , has_last_frame_(false)
 {
     processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
     
