@@ -1419,7 +1419,7 @@ static int flirGetSettingsCmd(ClientData clientData, Tcl_Interp *interp,
   FlirCameraSource* source = 
     dynamic_cast<FlirCameraSource*>(g_frameSource);
     
-  if (!source) {
+  if (source) {
     
     Tcl_Obj* settingsDict = Tcl_NewDictObj();
     
