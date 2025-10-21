@@ -21,6 +21,30 @@ proc get_dict_value {dict_var key {default ""}} {
     return $default
 }
 
+proc toggle_pause { args } {
+    set ::Registry::paused [expr {!$::Registry::paused}]
+    
+    if {$::Registry::paused} {
+        vstream::pause 1
+        puts "⏸️ PAUSED - Use arrow keys to step frame-by-frame"
+        
+        # Add visual indicator
+        if {![dict exists $::Registry::widgets pause_indicator]} {
+            set indicator [add_text 20 120 "PAUSED" {255 255 100} 1.0 2]
+            dict set ::Registry::widgets pause_indicator $indicator
+        }
+    } else {
+        vstream::pause 0
+        puts "▶️ Playing"
+        
+        # Remove indicator
+        if {[dict exists $::Registry::widgets pause_indicator]} {
+            remove_widget [dict get $::Registry::widgets pause_indicator]
+            dict unset ::Registry::widgets pause_indicator
+        }
+    }
+}
+
 proc onMouseClick {x y modifier} {
     set mode [eyetracking::setDetectionMode]
     
@@ -46,7 +70,7 @@ proc onMouseClick {x y modifier} {
     }
 }
 
-# NEW EVENT HANDLER - handles native Tcl types
+# Event handler
 proc onEvent {type data} {
     # data is already the right type (int, float, list, dict, string)
     # No parsing needed!
@@ -543,6 +567,9 @@ proc run_mode {} {
     bind_key $::keys::UP {::ROI::nudgeUp}
     bind_key $::keys::LEFT {::ROI::nudgeLeft}
     bind_key $::keys::RIGHT {::ROI::nudgeRight}
+
+    bind_key i ::eyetracking::toggleInsets
+    bind_key " " toggle_pause              ;# SPACE to pause/resume
     
     # Button row
     add_button -100 -50 80 40 Setup collect_samples

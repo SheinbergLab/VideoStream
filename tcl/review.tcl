@@ -534,13 +534,13 @@ proc playback_mode { { filename {} } } {
 	       {P4 Threshold} 1 255 [eyetracking::setP4MinIntensity] eyetracking::setP4MinIntensity]
     dict set ::Registry::widgets p4_threshold_slider $s
     
-    set s [add_float_slider 20 -140 150 40 \
+    set s [add_int_slider 20 -140 150 40 \
+	       {P1 Threshold} 1 255 [eyetracking::setP1MinIntensity] eyetracking::setP1MinIntensity]
+    dict set ::Registry::widgets p1_threshold_slider $s
+    
+    set s [add_float_slider 20 -185 150 40 \
 	       {P1 Max Jump} 5 100 [eyetracking::setP1MaxJump] eyetracking::setP1MaxJump]
     dict set ::Registry::widgets p1_max_jump_slider $s
-    
-    set s [add_float_slider 20 -190 150 40 \
-	       {P4 Max Jump} 5 100 [eyetracking::setP4MaxJump] eyetracking::setP4MaxJump]
-    dict set ::Registry::widgets p4_max_jump_slider $s
     
     # Key bindings
     bind_key "s" toggle_recording
@@ -548,7 +548,9 @@ proc playback_mode { { filename {} } } {
     bind_key " " toggle_pause              ;# SPACE to pause/resume
     bind_key $::keys::RIGHT step_forward   ;# Arrow to step when paused
     bind_key $::keys::LEFT step_backward   ;# Arrow to step when paused
-    bind_key "i" show_frame_info           ;# 'i' for info
+    bind_key "I" show_frame_info           ;# 'i' for info
+    bind_key "i" ::eyetracking::toggleInsets
+    bind_key $::keys::ENTER accept_p4_sample
     
     # Show instructions
     puts ""
@@ -557,7 +559,7 @@ proc playback_mode { { filename {} } } {
     puts "============================================"
     puts "SPACE - Pause/Resume playback"
     puts "←/→   - Step forward/backward (when paused)"
-    puts "i     - Show current frame info"
+    puts "I     - Show current frame info"
     puts "s     - Start/stop recording"
     puts "r     - Rewind to beginning"
     puts ""
@@ -591,15 +593,15 @@ set files [list \
               ]
 
 # Default parameters
-eyetracking::setP1MaxJump 40
-eyetracking::setP4MaxJump 40
+eyetracking::setP1MaxJump 14
+eyetracking::setP4MaxJump 14
 eyetracking::setP4MinIntensity 42
 eyetracking::setPupilThreshold 45
 eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
 
 # Start with first video
-playback_mode [lindex $files 2]
+playback_mode [lindex $files 1]
 
 # We have already calibrated this P4 model
 #eyetracking::setP4Model .421 169.5
