@@ -1740,13 +1740,6 @@ public:
 
   static void draw_plugin_overlays(Mat& frame, int frame_idx)
   {
-    // Convert to color if grayscale (plugins may want color)
-#if 0
-    if (frame.channels() == 1) {
-      cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
-    }
-#endif
-    
     // Let each plugin draw its own overlay
     extern AnalysisPluginRegistry g_pluginRegistry;
     auto plugin_names = g_pluginRegistry.listPlugins();
@@ -1759,8 +1752,13 @@ public:
     }
   }
   
-  static void annotate_frame(Mat frame, bool inobs, int frame_idx)
+  static void annotate_frame(Mat& frame, bool inobs, int frame_idx)
   {
+    // Convert to color if needed for annotation
+    if (frame.channels() == 1) {
+        cv::cvtColor(frame, frame, cv::COLOR_GRAY2BGR);
+    }
+        
     // Update widget variables that might be used in UI
     updateWidgetVariables(frame_idx);
     
@@ -2423,8 +2421,9 @@ int main(int argc, char **argv)
     
     g_frameSource = g_sourceManager.getCurrentSource();
 
-    // give sourceManager access to clear widgets
+    // give sourceManager access to clear widgets and frame buffer clear
     g_sourceManager.setWidgetManager(&g_widgetManager);
+    g_sourceManager.setFrameBuffer(&frameBufferManager);
     
     if (!g_frameSource) {
       std::cerr << "No frame source available" << std::endl;
@@ -2559,6 +2558,9 @@ int main(int argc, char **argv)
 	  }
 	  
 	  processDSCommands();
+
+	  // Update global color state from current source
+	  is_color = g_frameSource->isColor();
 	  
 	  frame_width = frame.cols;
 	  frame_height = frame.rows;
