@@ -1407,7 +1407,6 @@ static int hideCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
-
 /*********************************************************************/
 /*                  FLIR Configure Commands                          */
 /*********************************************************************/
@@ -1542,6 +1541,23 @@ static int configureImageOrientationCmd(ClientData clientData, Tcl_Interp *inter
                                         int argc, char *argv[])
 {
 #ifdef USE_FLIR
+    extern IFrameSource* g_frameSource;
+    FlirCameraSource* flirSource = 
+        dynamic_cast<FlirCameraSource*>(g_frameSource);
+    
+    if (!flirSource) {
+        Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+        return TCL_ERROR;
+    }
+
+    // Query mode - return current orientation (note: you'd need to add getters to FlirCameraSource)
+    if (argc == 1) {
+        // For now, just return success since we don't track this state
+        // TODO: Add reverseX/reverseY state tracking to FlirCameraSource
+        Tcl_SetResult(interp, "Query not implemented - use: flir::configureImageOrientation reverseX reverseY", TCL_STATIC);
+        return TCL_ERROR;
+    }
+    
     if (argc != 3) {
         Tcl_AppendResult(interp, "usage: ", argv[0], " reverseX reverseY", NULL);
         return TCL_ERROR;
@@ -1550,15 +1566,6 @@ static int configureImageOrientationCmd(ClientData clientData, Tcl_Interp *inter
     int reverseX, reverseY;
     if (Tcl_GetInt(interp, argv[1], &reverseX) != TCL_OK ||
         Tcl_GetInt(interp, argv[2], &reverseY) != TCL_OK) {
-        return TCL_ERROR;
-    }
-    
-    extern IFrameSource* g_frameSource;
-    FlirCameraSource* flirSource = 
-        dynamic_cast<FlirCameraSource*>(g_frameSource);
-    
-    if (!flirSource) {
-        Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
         return TCL_ERROR;
     }
     
@@ -1577,53 +1584,87 @@ static int configureImageOrientationCmd(ClientData clientData, Tcl_Interp *inter
 static int configureExposureCmd(ClientData clientData, Tcl_Interp *interp,
                 int argc, char *argv[])
 {
-  int res = 0;
-  double exposure;
-
-  if (argc < 2) {
-    Tcl_AppendResult(interp, "usage: ", argv[0], " exposure", TCL_STATIC);
-    return TCL_ERROR;
-  }
-  if (Tcl_GetDouble(interp, argv[1], &exposure) != TCL_OK) return TCL_ERROR;
 #ifdef USE_FLIR
   extern IFrameSource* g_frameSource;
   FlirCameraSource* flirSource = 
     dynamic_cast<FlirCameraSource*>(g_frameSource);
-  if (flirSource) {
-    res = flirSource->configureExposure(exposure);
-  }  
-#endif
-  if (res < 0) {
+    
+  if (!flirSource) {
+    Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+    return TCL_ERROR;
+  }
+  
+  // Query mode - return current exposure
+  if (argc == 1) {
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(flirSource->settings_.exposure_time));
+    return TCL_OK;
+  }
+  
+  // Set mode
+  if (argc != 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " ?exposure?", NULL);
+    return TCL_ERROR;
+  }
+  
+  double exposure;
+  if (Tcl_GetDouble(interp, argv[1], &exposure) != TCL_OK) {
+    return TCL_ERROR;
+  }
+  
+  if (flirSource->configureExposure(exposure)) {
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(flirSource->settings_.exposure_time));
+    return TCL_OK;
+  } else {
     Tcl_AppendResult(interp, argv[0], ": error configuring exposure", NULL);
     return TCL_ERROR;
   }
-  return TCL_OK;
+#else
+  Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
+  return TCL_ERROR;
+#endif
 }
 
 static int configureGainCmd(ClientData clientData, Tcl_Interp *interp,
                 int argc, char *argv[])
 {
-  int res = 0;
-  double gain;
-
-  if (argc < 2) {
-    Tcl_AppendResult(interp, "usage: ", argv[0], " gain", TCL_STATIC);
-    return TCL_ERROR;
-  }
-  if (Tcl_GetDouble(interp, argv[1], &gain) != TCL_OK) return TCL_ERROR;
 #ifdef USE_FLIR
   extern IFrameSource* g_frameSource;
   FlirCameraSource* flirSource = 
     dynamic_cast<FlirCameraSource*>(g_frameSource);
-  if (flirSource) {
-    res = flirSource->configureGain(gain);
-  }  
-#endif
-  if (res < 0) {
+    
+  if (!flirSource) {
+    Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+    return TCL_ERROR;
+  }
+  
+  // Query mode - return current gain
+  if (argc == 1) {
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(flirSource->settings_.gain));
+    return TCL_OK;
+  }
+  
+  // Set mode
+  if (argc != 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " ?gain?", NULL);
+    return TCL_ERROR;
+  }
+  
+  double gain;
+  if (Tcl_GetDouble(interp, argv[1], &gain) != TCL_OK) {
+    return TCL_ERROR;
+  }
+  
+  if (flirSource->configureGain(gain)) {
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(flirSource->settings_.gain));
+    return TCL_OK;
+  } else {
     Tcl_AppendResult(interp, argv[0], ": error configuring gain", NULL);
     return TCL_ERROR;
   }
-  return TCL_OK;
+#else
+  Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
+  return TCL_ERROR;
+#endif
 }
 
 static int configureFrameRateCmd(ClientData clientData, Tcl_Interp *interp,
@@ -1639,14 +1680,19 @@ static int configureFrameRateCmd(ClientData clientData, Tcl_Interp *interp,
         return TCL_ERROR;
     }
     
-    // If no argument, return current frame rate
-    if (argc < 2) {
+    // Query mode - return current frame rate
+    if (argc == 1) {
         float current_fps = flirSource->getFrameRate();
         Tcl_SetObjResult(interp, Tcl_NewDoubleObj(current_fps));
         return TCL_OK;
     }
     
-    // Set frame rate and return actual achieved rate
+    // Set mode
+    if (argc != 2) {
+        Tcl_AppendResult(interp, "usage: ", argv[0], " ?frameRate?", NULL);
+        return TCL_ERROR;
+    }
+    
     double requested_fr;
     if (Tcl_GetDouble(interp, argv[1], &requested_fr) != TCL_OK) {
         return TCL_ERROR;
@@ -1699,6 +1745,7 @@ static int getFrameRateRangeCmd(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
 #endif
 }
+
 static int getROIConstraintsCmd(ClientData clientData, Tcl_Interp *interp,
                                 int argc, char *argv[])
 {
@@ -1760,31 +1807,65 @@ static int getROIConstraintsCmd(ClientData clientData, Tcl_Interp *interp,
 static int configureROICmd(ClientData clientData, Tcl_Interp *interp,
                int argc, char *argv[])
 {
-  int res = 0;
-  int w, h, x, y;
-
-  if (argc < 5) {
-    Tcl_AppendResult(interp, "usage: ", argv[0],
-             " width height offsetx offsety", TCL_STATIC);
-    return TCL_ERROR;
-  }
-  if (Tcl_GetInt(interp, argv[1], &w) != TCL_OK) return TCL_ERROR;
-  if (Tcl_GetInt(interp, argv[2], &h) != TCL_OK) return TCL_ERROR;
-  if (Tcl_GetInt(interp, argv[3], &x) != TCL_OK) return TCL_ERROR;
-  if (Tcl_GetInt(interp, argv[4], &y) != TCL_OK) return TCL_ERROR;
 #ifdef USE_FLIR
   extern IFrameSource* g_frameSource;
   FlirCameraSource* flirSource = 
     dynamic_cast<FlirCameraSource*>(g_frameSource);
-  if (flirSource) {
-    res = flirSource->configureROI(w, h, x, y);
+    
+  if (!flirSource) {
+    Tcl_AppendResult(interp, argv[0], ": FLIR camera not active", NULL);
+    return TCL_ERROR;
   }
-#endif
-  if (res < 0) {
+  
+  // Query mode - return current ROI
+  if (argc == 1) {
+    Tcl_Obj* resultDict = Tcl_NewDictObj();
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("width", -1),
+                   Tcl_NewIntObj(flirSource->getWidth()));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("height", -1),
+                   Tcl_NewIntObj(flirSource->getHeight()));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_x", -1),
+                   Tcl_NewIntObj(flirSource->getOffsetX()));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_y", -1),
+                   Tcl_NewIntObj(flirSource->getOffsetY()));
+    Tcl_SetObjResult(interp, resultDict);
+    return TCL_OK;
+  }
+  
+  // Set mode
+  if (argc != 5) {
+    Tcl_AppendResult(interp, "usage: ", argv[0],
+             " ?width height offsetX offsetY?", NULL);
+    return TCL_ERROR;
+  }
+  
+  int w, h, x, y;
+  if (Tcl_GetInt(interp, argv[1], &w) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetInt(interp, argv[2], &h) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetInt(interp, argv[3], &x) != TCL_OK) return TCL_ERROR;
+  if (Tcl_GetInt(interp, argv[4], &y) != TCL_OK) return TCL_ERROR;
+  
+  if (flirSource->configureROI(w, h, x, y)) {
+    // Return actual values set
+    Tcl_Obj* resultDict = Tcl_NewDictObj();
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("width", -1),
+                   Tcl_NewIntObj(flirSource->getWidth()));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("height", -1),
+                   Tcl_NewIntObj(flirSource->getHeight()));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_x", -1),
+                   Tcl_NewIntObj(flirSource->getOffsetX()));
+    Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_y", -1),
+                   Tcl_NewIntObj(flirSource->getOffsetY()));
+    Tcl_SetObjResult(interp, resultDict);
+    return TCL_OK;
+  } else {
     Tcl_AppendResult(interp, argv[0], ": error configuring ROI", NULL);
     return TCL_ERROR;
   }
-  return TCL_OK;
+#else
+  Tcl_AppendResult(interp, argv[0], ": FLIR support not compiled", NULL);
+  return TCL_ERROR;
+#endif
 }
 
 static int getROICmd(ClientData clientData, Tcl_Interp *interp,
@@ -1821,17 +1902,6 @@ static int getROICmd(ClientData clientData, Tcl_Interp *interp,
 static int setROIOffsetCmd(ClientData clientData, Tcl_Interp *interp,
                            int argc, char *argv[])
 {
-    if (argc != 3) {
-        Tcl_AppendResult(interp, "usage: ", argv[0], " offset_x offset_y", NULL);
-        return TCL_ERROR;
-    }
-    
-    int offset_x, offset_y;
-    if (Tcl_GetInt(interp, argv[1], &offset_x) != TCL_OK ||
-        Tcl_GetInt(interp, argv[2], &offset_y) != TCL_OK) {
-        return TCL_ERROR;
-    }
-    
 #ifdef USE_FLIR
     extern IFrameSource* g_frameSource;
     FlirCameraSource* flirSource = 
@@ -1842,7 +1912,37 @@ static int setROIOffsetCmd(ClientData clientData, Tcl_Interp *interp,
         return TCL_ERROR;
     }
     
+    // Query mode - return current offset
+    if (argc == 1) {
+        Tcl_Obj* resultDict = Tcl_NewDictObj();
+        Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_x", -1),
+                       Tcl_NewIntObj(flirSource->getOffsetX()));
+        Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_y", -1),
+                       Tcl_NewIntObj(flirSource->getOffsetY()));
+        Tcl_SetObjResult(interp, resultDict);
+        return TCL_OK;
+    }
+    
+    // Set mode
+    if (argc != 3) {
+        Tcl_AppendResult(interp, "usage: ", argv[0], " ?offsetX offsetY?", NULL);
+        return TCL_ERROR;
+    }
+    
+    int offset_x, offset_y;
+    if (Tcl_GetInt(interp, argv[1], &offset_x) != TCL_OK ||
+        Tcl_GetInt(interp, argv[2], &offset_y) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
     if (flirSource->setROIOffset(offset_x, offset_y)) {
+        // Return actual values set
+        Tcl_Obj* resultDict = Tcl_NewDictObj();
+        Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_x", -1),
+                       Tcl_NewIntObj(flirSource->getOffsetX()));
+        Tcl_DictObjPut(interp, resultDict, Tcl_NewStringObj("offset_y", -1),
+                       Tcl_NewIntObj(flirSource->getOffsetY()));
+        Tcl_SetObjResult(interp, resultDict);
         return TCL_OK;
     } else {
         Tcl_AppendResult(interp, argv[0], ": failed to set offset", NULL);
@@ -1853,7 +1953,6 @@ static int setROIOffsetCmd(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
 #endif
 }
-
 /*********************************************************************/
 /*                       Shutdown Command                            */
 /*********************************************************************/
