@@ -648,7 +648,11 @@ proc go_live {} {
     bind_key $::keys::UP {::ROI::nudgeUp}
     bind_key $::keys::LEFT {::ROI::nudgeLeft}
     bind_key $::keys::RIGHT {::ROI::nudgeRight}
-    
+
+    # Remove the live button
+    set source_btn [dict get $::Registry::widgets source_btn]
+    remove_widget $source_btn
+    dict unset $::Registry::widgets source_btn
 }
 
 # ============================================================================
@@ -678,7 +682,8 @@ proc playback_mode { { filename {} } } {
     # Button row
     add_button -180 -50 80 40 Model calibrate_p4_model
     add_button -260 -50 80 40 Reset reset_p4_model
-    add_button -100 -50 80 40 Live  go_live
+    set source_btn [add_button -100 -50 80 40 Live  go_live]
+    dict set ::Registry::widgets source_btn $source_btn
     
 #    set save_btn [add_button -180 -50 80 40 "Save Run" toggle_recording]
 #    dict set ::Registry::widgets save_button $save_btn
