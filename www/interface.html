@@ -997,33 +997,31 @@ function handleVstreamEvent(eventType, eventData) {
             setTimeout(loadPluginUIs, 100);
             break;
 
-      case 'vstream/source_started':
-            // Handle both old string format and new object format
-            let sourceType, sourceData;
-            
-            if (typeof eventData === 'object') {
-                sourceType = eventData.type;
-                sourceData = eventData;
-            } else if (typeof eventData === 'string') {
-                // Old format: "type playback" or just "playback"
-                const match = eventData.match(/type\s+(\w+)/);
-                sourceType = match ? match[1] : eventData.trim();
-                sourceData = { type: sourceType };
-            }
-            
-            if (sourceType) {
-                showInfo(`▶️ Source started: ${sourceType}`);
-                
-                // Update UI to reflect new source
-                updateUIForSource(sourceType, sourceData);
-                
-                // Update internal state
-                isPlaybackMode = (sourceType === 'playback');
-                
-                // Query for any additional status
-                setTimeout(querySourceStatus, 100);
-            }
-            break;        
+case 'vstream/source_started':
+    // Handle both old string format and new object format
+    let sourceType, sourceData;
+    
+    if (typeof eventData === 'object') {
+        sourceType = eventData.type;
+        sourceData = eventData;
+    } else if (typeof eventData === 'string') {
+        // Old format: "type playback" or just "playback"
+        const match = eventData.match(/type\s+(\w+)/);
+        sourceType = match ? match[1] : eventData.trim();
+        sourceData = { type: sourceType };
+    }
+    
+    if (sourceType) {
+        showInfo(`▶️ Source started: ${sourceType}`);
+        
+        // Update UI immediately with event data - NO querySourceStatus needed!
+        updateUIForSource(sourceType, sourceData);
+        
+        // Update internal state
+        isPlaybackMode = (sourceType === 'playback');
+        updatePlaybackControls();
+    }
+    break;
             
         case 'vstream/source_stopped':
             if (typeof eventData === 'object' && eventData.type) {
