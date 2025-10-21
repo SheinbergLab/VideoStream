@@ -934,6 +934,52 @@ function handleServerEvent(eventType, eventData) {
     }));
 }
 
+function updateUIForSource(sourceType, sourceData) {
+    const sourceTypeSelect = document.getElementById('source-type');
+    
+    // Update dropdown to match current source
+    if (sourceTypeSelect.value !== sourceType) {
+        sourceTypeSelect.value = sourceType;
+        sourceTypeSelect.dispatchEvent(new Event('change'));  // Show/hide relevant inputs
+    }
+    
+    // Populate type-specific fields from sourceData
+    if (sourceType === 'playback' && sourceData) {
+        if (sourceData.file) {
+            document.getElementById('playback-file').value = sourceData.file;
+        }
+        if (sourceData.speed) {
+            document.getElementById('playback-speed').value = sourceData.speed;
+        }
+        if (sourceData.loop !== undefined) {
+            document.getElementById('playback-loop').value = sourceData.loop;
+        }
+    } else if (sourceType === 'webcam' && sourceData) {
+        if (sourceData.id !== undefined) {
+            document.getElementById('webcam-id').value = sourceData.id;
+        }
+    } else if (sourceType === 'flir' && sourceData) {
+        if (sourceData.id !== undefined) {
+            document.getElementById('flir-id').value = sourceData.id;
+        }
+        if (sourceData.width) {
+            document.getElementById('flir-width').value = sourceData.width;
+        }
+        if (sourceData.height) {
+            document.getElementById('flir-height').value = sourceData.height;
+        }
+    }
+    
+    // Update status with full details
+    const statusData = {};
+    if (sourceData.width) statusData.width = parseInt(sourceData.width);
+    if (sourceData.height) statusData.height = parseInt(sourceData.height);
+    if (sourceData.fps) statusData.fps = parseFloat(sourceData.fps);
+    
+    updateSourceStatus(true, `Running: ${sourceType}`, statusData);
+    updatePlaybackControls();
+    }
+    
 // Core vstream event handler - NO plugin-specific code
 function handleVstreamEvent(eventType, eventData) {
     switch(eventType) {
