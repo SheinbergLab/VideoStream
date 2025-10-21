@@ -533,6 +533,8 @@ private:
   int debug_level_;
   int profile_flags_;
   std::atomic<bool> debug_next_frame_;
+  std::atomic<bool> show_insets_;
+  
 
   // Settings storage
   struct Settings {
@@ -851,7 +853,123 @@ private:
   // ========================================================================
   // P4 BRIGHT SPOT DETECTION
   // ========================================================================
+
+cv::Point2f refineP4SubPixelWeighted(const cv::Mat& search_region,
+                                     cv::Point max_loc) {
+    int x = max_loc.x;
+    int y = max_loc.y;
+    
+    // Need 2-pixel border for 5x5
+    if (x < 2 || x >= search_region.cols - 2 ||
+        y < 2 || y >= search_region.rows - 2) {
+        return cv::Point2f(max_loc);
+    }
+    
+    // Find max intensity in 5x5 to set threshold
+    double max_intensity = 0;
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            max_intensity = std::max(max_intensity, 
+                (double)search_region.at<uchar>(y + dy, x + dx));
+        }
+    }
+    
+    // Only use pixels above 70% of local max
+    double threshold = max_intensity * 0.7;
+    
+    double sum_wx = 0, sum_wy = 0, sum_w = 0;
+    
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            float intensity = search_region.at<uchar>(y + dy, x + dx);
+            
+            if (intensity > threshold) {
+                // Weight by intensity (squared for emphasis on bright pixels)
+                double weight = intensity * intensity;
+                
+                sum_wx += weight * (x + dx);
+                sum_wy += weight * (y + dy);
+                sum_w += weight;
+            }
+        }
+    }
+    
+    if (sum_w > 0) {
+        return cv::Point2f(sum_wx / sum_w, sum_wy / sum_w);
+    }
+    
+    return cv::Point2f(max_loc);
+}
   
+cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
+                                     cv::Point max_loc) {
+    int x = max_loc.x;
+    int y = max_loc.y;
+    
+    if (x < 1 || x >= search_region.cols - 1 ||
+        y < 1 || y >= search_region.rows - 1) {
+        return cv::Point2f(max_loc);
+    }
+    
+    float c = search_region.at<uchar>(y, x);
+    float l = search_region.at<uchar>(y, x-1);
+    float r = search_region.at<uchar>(y, x+1);
+    float t = search_region.at<uchar>(y-1, x);
+    float b = search_region.at<uchar>(y+1, x);
+    
+    // ADD THIS DEBUG OUTPUT:
+    if (debug_level_ >= DEBUG_VERBOSE) {
+        std::cout << "P4 refinement: center=" << (int)c 
+                  << " l=" << (int)l << " r=" << (int)r
+                  << " t=" << (int)t << " b=" << (int)b << std::endl;
+    }
+    
+    float dx = 0.0f;
+    float dy = 0.0f;
+    
+    float denom_x = 2.0f * (l - 2.0f * c + r);
+    if (std::abs(denom_x) > 0.01f) {
+        dx = (r - l) / denom_x;
+        dx = std::max(-0.5f, std::min(0.5f, dx));
+    }
+    
+    float denom_y = 2.0f * (t - 2.0f * c + b);
+    if (std::abs(denom_y) > 0.01f) {
+        dy = (b - t) / denom_y;
+        dy = std::max(-0.5f, std::min(0.5f, dy));
+    }
+    
+    // ADD THIS TOO:
+    if (debug_level_ >= DEBUG_VERBOSE) {
+        std::cout << "  → dx=" << dx << " dy=" << dy << std::endl;
+    }
+    
+    return cv::Point2f(x + dx, y + dy);
+}
+  
+#if 1
+  cv::Point2f findP4ByBrightestSpot(const cv::Mat& search_region,
+                                   const cv::Mat& search_mask) {
+    if (search_region.empty()) {
+        return cv::Point2f(-1, -1);
+    }
+    
+    double min_val, max_val;
+    cv::Point min_loc, max_loc;
+    cv::minMaxLoc(search_region, &min_val, &max_val, &min_loc, &max_loc, search_mask);
+    
+    if (debug_level_ >= DEBUG_VERBOSE) {
+        std::cout << "P4 bright spot: intensity=" << max_val << std::endl;
+    }
+    
+    if (max_val < p4_min_intensity_) {
+        return cv::Point2f(-1, -1);
+    }
+    
+    
+    return refineP4SubPixelWeighted(search_region, max_loc);
+}
+#else
   cv::Point2f findP4ByBrightestSpot(const cv::Mat& search_region,
                                        const cv::Mat& search_mask) {
         if (search_region.empty()) {
@@ -891,7 +1009,8 @@ private:
         
         return cv::Point2f(max_loc);
     }
-
+#endif
+  
     // ========================================================================
     // P4 DETECTION
     // ========================================================================
@@ -1932,6 +2051,30 @@ static int refreshSettingsCmd(ClientData clientData, Tcl_Interp *interp,
   
   return TCL_OK;
 }
+
+  static int toggleInsetsCmd(ClientData clientData, Tcl_Interp *interp,
+			     int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    
+    if (objc == 1) {
+      // Toggle
+      plugin->show_insets_ = !plugin->show_insets_;
+    } else if (objc == 2) {
+      // Set explicitly
+      int value;
+      if (Tcl_GetIntFromObj(interp, objv[1], &value) != TCL_OK) {
+	return TCL_ERROR;
+      }
+      plugin->show_insets_ = (value != 0);
+    } else {
+      Tcl_WrongNumArgs(interp, 1, objv, "?0|1?");
+      return TCL_ERROR;
+    }
+    
+    const char* status = plugin->show_insets_ ? "enabled" : "disabled";
+    Tcl_SetObjResult(interp, Tcl_NewStringObj(status, -1));
+    return TCL_OK;
+  }
   
 public:
     EyeTrackingPlugin() 
@@ -1952,6 +2095,7 @@ public:
 	  p4_pending_sample_position_(-1, -1),
           frame_count_(0),
           buffers_initialized_(false),
+	  show_insets_(false),
           debug_level_(DEBUG_CRITICAL),
 	  debug_next_frame_(false),	  
           profile_flags_(PROFILE_NONE) {
@@ -2039,26 +2183,30 @@ public:
                             setP1MaxJumpCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP4MaxJump", 
 			     setP4MaxJumpCmd, this, NULL);
+	
 	Tcl_CreateObjCommand(interp, "::eyetracking::debugNextFrame", 
 			     debugNextFrameCmd, this, NULL);	
         Tcl_CreateObjCommand(interp, "::eyetracking::setDebugLevel", 
 			     setDebugLevelCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::enableProfiling", 
 			     enableProfilingCmd, this, NULL);
-        Tcl_CreateObjCommand(interp, "::eyetracking::getResults",
+	Tcl_CreateObjCommand(interp, "::eyetracking::toggleInsets", 
+			     toggleInsetsCmd, this, NULL);
+
+	Tcl_CreateObjCommand(interp, "::eyetracking::getResults",
 			     getResultsCmd, this, NULL);
     }
-    
-    const char* getName() override { return "eye_tracking"; }
-    const char* getVersion() override { return "1.0"; }
-    const char* getDescription() override { 
-        return "Pupil and Purkinje reflection tracking with bright spot detection"; 
-    }
-
-bool hasWebUI() const override { 
+  
+  const char* getName() override { return "eye_tracking"; }
+  const char* getVersion() override { return "1.0"; }
+  const char* getDescription() override { 
+    return "Pupil and Purkinje reflection tracking with bright spot detection"; 
+  }
+  
+  bool hasWebUI() const override { 
     return true; 
-}
-
+  }
+  
 
 std::string getUIHTML() const override {
     return R"EYETRACK_HTML(
@@ -2917,11 +3065,126 @@ button.secondary:hover {
                                          batch, 
                                          sizeof(batch)));
   }
+
+void drawMagnifiedInset(cv::Mat& frame, const cv::Mat& gray_roi, 
+                       cv::Point2f center, const std::string& label,
+                       cv::Point2f display_pos, int zoom_factor = 10) {
+    // Size of the region to magnify (in original pixels)
+    const int region_size = 11;  // 11x11 pixel region
+    const int half_size = region_size / 2;
+    
+    // Calculate the inset size
+    const int inset_size = region_size * zoom_factor;
+    
+    // Extract region around the feature (handling boundaries)
+    cv::Point2f local_center = center;
+    if (roi_enabled_) {
+        local_center.x -= current_roi_.x;
+        local_center.y -= current_roi_.y;
+    }
+    
+    int x_start = (int)floor(local_center.x) - half_size;
+    int y_start = (int)floor(local_center.y) - half_size;
+    
+    // Clamp to image boundaries
+    x_start = std::max(0, std::min(x_start, gray_roi.cols - region_size));
+    y_start = std::max(0, std::min(y_start, gray_roi.rows - region_size));
+    
+    cv::Rect extract_roi(x_start, y_start, region_size, region_size);
+    cv::Mat region = gray_roi(extract_roi);
+    
+    // Convert to color for overlay
+    cv::Mat region_color;
+    cv::cvtColor(region, region_color, cv::COLOR_GRAY2BGR);
+    
+    // Resize with nearest neighbor to see actual pixels
+    cv::Mat magnified;
+    cv::resize(region_color, magnified, cv::Size(inset_size, inset_size), 
+               0, 0, cv::INTER_NEAREST);
+    
+    // Draw pixel grid on magnified view
+    for (int i = 0; i <= region_size; i++) {
+        int pos = i * zoom_factor;
+        cv::line(magnified, cv::Point(pos, 0), cv::Point(pos, inset_size),
+                cv::Scalar(80, 80, 80), 1);
+        cv::line(magnified, cv::Point(0, pos), cv::Point(inset_size, pos),
+                cv::Scalar(80, 80, 80), 1);
+    }
+    
+    // Calculate sub-pixel position within the extracted region
+    float rel_x = local_center.x - x_start;
+    float rel_y = local_center.y - y_start;
+    
+    // Draw crosshair at sub-pixel location
+    cv::Point2f crosshair_pos(rel_x * zoom_factor, rel_y * zoom_factor);
+    
+    // Bright cyan crosshair
+    cv::drawMarker(magnified, crosshair_pos, cv::Scalar(255, 255, 0),
+                  cv::MARKER_CROSS, zoom_factor * 2, 2);
+    
+    // Draw circle showing detection radius (4 pixels)
+    cv::circle(magnified, crosshair_pos, 4 * zoom_factor, 
+              cv::Scalar(0, 0, 255), 2);
+    
+    // Add border and label
+    cv::rectangle(magnified, cv::Point(0, 0), 
+                 cv::Point(inset_size-1, inset_size-1),
+                 cv::Scalar(255, 255, 255), 2);
+    
+    // Add label and coordinates
+    char coord_text[64];
+    snprintf(coord_text, sizeof(coord_text), "%s: (%.2f, %.2f)", 
+             label.c_str(), center.x, center.y);
+    cv::putText(magnified, coord_text, cv::Point(5, 15),
+               cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 255, 255), 1);
+    
+    // Show fractional part
+    char frac_text[64];
+    snprintf(frac_text, sizeof(frac_text), "Frac: (%.3f, %.3f)",
+             center.x - floor(center.x), center.y - floor(center.y));
+    cv::putText(magnified, frac_text, cv::Point(5, inset_size - 8),
+               cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(0, 255, 255), 1);
+    
+    // Overlay intensity at center pixel
+    int center_px_x = cvRound(local_center.x);
+    int center_px_y = cvRound(local_center.y);
+    if (center_px_x >= 0 && center_px_x < gray_roi.cols &&
+        center_px_y >= 0 && center_px_y < gray_roi.rows) {
+        uchar intensity = gray_roi.at<uchar>(center_px_y, center_px_x);
+        char int_text[32];
+        snprintf(int_text, sizeof(int_text), "I=%d", intensity);
+        cv::putText(magnified, int_text, cv::Point(5, 30),
+                   cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 255, 255), 1);
+    }
+    
+    // Place inset on frame
+    cv::Rect inset_roi(display_pos.x, display_pos.y, inset_size, inset_size);
+    
+    // Make sure it fits on screen
+    if (inset_roi.x + inset_roi.width > frame.cols) {
+        inset_roi.x = frame.cols - inset_roi.width;
+    }
+    if (inset_roi.y + inset_roi.height > frame.rows) {
+        inset_roi.y = frame.rows - inset_roi.height;
+    }
+    
+    // Copy inset to frame
+    magnified.copyTo(frame(inset_roi));
+}
   
 bool drawOverlay(cv::Mat& frame, int frame_idx) override {
     std::lock_guard<std::mutex> lock(results_mutex_);
     
     if (!latest_results_.valid) return false;
+
+    // Extract gray FIRST, before any drawing on overlay
+    cv::Mat roi_frame = roi_enabled_ ? frame(current_roi_) : frame;
+    cv::Mat gray_for_inset;
+    if (roi_frame.channels() > 1) {
+        cv::cvtColor(roi_frame, gray_for_inset, cv::COLOR_BGR2GRAY);
+    } else {
+        gray_for_inset = roi_frame.clone();
+    }
     
     // Create overlay for semi-transparent drawing
     cv::Mat overlay = frame.clone();
@@ -2950,7 +3213,7 @@ bool drawOverlay(cv::Mat& frame, int frame_idx) override {
 		  cv::FONT_HERSHEY_SIMPLEX, 0.5, 
 		  cv::Scalar(0, 255, 0), 1);
     }
-    
+
     if (latest_results_.purkinje.p1_detected) {
       // Blue marker with yellow text - visible against dark pupil
       cv::circle(overlay, latest_results_.purkinje.p1_center, 
@@ -3016,13 +3279,33 @@ bool drawOverlay(cv::Mat& frame, int frame_idx) override {
 	cv::rectangle(overlay, pred_roi, cv::Scalar(0, 255, 0), 1);
       }
     }
-    
+
+
     // Blend overlay with original frame
     cv::addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame);
-    
+
+    if (show_insets_) {    
+      // Draw P1 inset in top-right corner
+      if (latest_results_.purkinje.p1_detected) {
+	drawMagnifiedInset(frame, gray_for_inset,
+			   latest_results_.purkinje.p1_center,
+			   "P1",
+			   cv::Point2f(frame.cols - 120, 10),
+			   10);
+      }
+      
+      // Draw P4 inset below P1 inset
+      if (latest_results_.purkinje.p4_detected) {
+	drawMagnifiedInset(frame, gray_for_inset,
+			   latest_results_.purkinje.p4_center,
+			   "P4",
+			   cv::Point2f(frame.cols - 120, 130),
+			   10);
+      }
+    }
     return true;
 }
-
+  
 };
 
 // ============================================================================
