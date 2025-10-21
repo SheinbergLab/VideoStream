@@ -151,8 +151,29 @@ bool SourceManager::startSource(const std::string& type,
       widget_manager_->clearAll();
     }
     
-    std::string data = "type " + type;
-    fireEvent(VstreamEvent("vstream/source_started", data));
+    // Build comprehensive status data
+    std::map<std::string, std::string> status_data;
+    status_data["type"] = type;
+    status_data["width"] = std::to_string(new_width);
+    status_data["height"] = std::to_string(new_height);
+    status_data["fps"] = std::to_string(current_source_->getFrameRate());
+    status_data["is_color"] = new_is_color ? "1" : "0";
+    
+    // Add type-specific params
+    if (type == "playback") {
+      status_data["file"] = current_params_["file"];
+      status_data["speed"] = current_params_.count("speed") ? current_params_["speed"] : "1.0";
+      status_data["loop"] = current_params_.count("loop") ? current_params_["loop"] : "1";
+    } else if (type == "flir" || type == "webcam") {
+      status_data["id"] = current_params_.count("id") ? current_params_["id"] : "0";
+      if (type == "flir") {
+        status_data["width"] = current_params_.count("width") ? current_params_["width"] : std::to_string(new_width);
+        status_data["height"] = current_params_.count("height") ? current_params_["height"] : std::to_string(new_height);
+      }
+    }
+    
+    fireEvent(VstreamEvent("vstream/source_started", 
+			   VstreamEventData::makeKeyValue(status_data)));
     
     return true;
     
