@@ -73,6 +73,8 @@ public:
     
     // Check if frame exists without locking (may race)
     bool hasFrame(int index) const;
+
+  void clearAll();  
 };
 
 #endif // FRAME_BUFFER_MANAGER_H

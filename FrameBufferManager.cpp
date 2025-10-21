@@ -96,3 +96,16 @@ FrameBufferManager::getObservationPair(int cur_idx, int prev_idx) const {
   return result;
 }
 
+void FrameBufferManager::clearAll()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    for (int i = 0; i < size_; i++) {
+        frames_[i] = cv::Mat();  // Release frame data
+        frame_in_obs_[i] = false;
+        frame_linestatus_[i] = false;
+        frame_ids_[i] = 0;
+        frame_timestamps_[i] = 0;
+        system_timestamps_[i] = std::chrono::high_resolution_clock::time_point();
+    }
+}

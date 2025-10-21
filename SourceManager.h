@@ -12,6 +12,7 @@
 #include "IFrameSource.h"
 #include "Widget.h"
 #include "WidgetManager.h"
+#include "FrameBufferManager.h"
 
 class ReviewModeSource;
 
@@ -26,7 +27,8 @@ enum SourceState {
 class SourceManager {
 private:
   WidgetManager* widget_manager_ = nullptr;
-
+  FrameBufferManager* frame_buffer_ = nullptr;
+  
   // Track previous source properties
   int last_width_ = -1;
   int last_height_ = -1;
@@ -45,7 +47,10 @@ public:
 
   // Provide access to current widget manager to allow clearing
   void setWidgetManager(WidgetManager* wm) { widget_manager_ = wm; }
-    
+
+  // Access to frame buffer manager
+  void setFrameBuffer(FrameBufferManager* fb) { frame_buffer_ = fb; }
+  
   // Status
   SourceState getState() const { return state_; }
   std::string getSourceType() const { return current_source_type_; }

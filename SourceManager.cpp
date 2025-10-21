@@ -126,6 +126,17 @@ bool SourceManager::startSource(const std::string& type,
 				last_is_color_ != new_is_color));
     
     if (properties_changed) {
+      std::cout << "Source properties changed - clearing buffers" << std::endl;
+      std::cout << "  Old: " << last_width_ << "x" << last_height_ 
+		<< " (" << (last_is_color_ ? "color" : "grayscale") << ")" << std::endl;
+      std::cout << "  New: " << new_width << "x" << new_height 
+		<< " (" << (new_is_color ? "color" : "grayscale") << ")" << std::endl;
+
+  
+      if (frame_buffer_) {
+	frame_buffer_->clearAll();
+      }
+      
       if (review_source_ && review_source_->getFrameCount()) {
 	review_source_->clearFrames();
       }
