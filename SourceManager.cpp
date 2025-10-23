@@ -8,6 +8,7 @@
 #include "SamplingManager.h"
 #include "FrameBufferManager.h"
 #include "VstreamEvent.h"
+#include "DservSocket.h"
 #include "VideoStream.h"
 
 #include <iostream>

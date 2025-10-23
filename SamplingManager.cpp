@@ -13,6 +13,7 @@
 #include "SourceManager.h"
 #include "FrameBufferManager.h"
 #include "SamplingManager.h"
+#include "DservSocket.h"
 #include "VideoStream.h"
 
 // SampleManager implementation
