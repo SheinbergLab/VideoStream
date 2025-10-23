@@ -283,7 +283,7 @@ add_custom_target(generate_embedded_headers
 
 include_directories( ${OpenCV_INCLUDE_DIRS} ${TCL_INCLUDE_DIR} ${FLIR_INCLUDE_DIR} )
 
-add_executable( VideoStream VideoStream.cpp FrameBufferManager.cpp
+add_executable( VideoStream VideoStream.cpp FrameBufferManager.cpp DservSocket.cpp
 		SourceManager.cpp Widget.cpp WidgetManager.cpp KeyboardCallbackRegistry.cpp
 		SamplingManager.cpp ReviewModeSource.cpp WebcamSource.cpp
 		FlirCameraSource.cpp VideoFileSource.cpp StorageManager.cpp
