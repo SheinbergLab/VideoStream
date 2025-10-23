@@ -20,6 +20,7 @@
 #include <math.h>
 #include <tcl.h>
 
+#include "DservSocket.h"
 #include "VstreamEvent.h"
 #include "IFrameSource.h"
 #include "SourceManager.h"
@@ -1411,6 +1412,22 @@ static int hideCmd(ClientData clientData, Tcl_Interp *interp,
 /*                  FLIR Configure Commands                          */
 /*********************************************************************/
 
+// Check if FLIR support is compiled in
+static int flirIsAvailableCmd(ClientData clientData, Tcl_Interp *interp,
+			      int objc, Tcl_Obj *const objv[]) {
+  if (objc != 1) {
+    Tcl_WrongNumArgs(interp, 1, objv, "");
+    return TCL_ERROR;
+  }
+  
+#ifdef USE_FLIR
+  Tcl_SetObjResult(interp, Tcl_NewBooleanObj(1));
+#else
+  Tcl_SetObjResult(interp, Tcl_NewBooleanObj(0));
+#endif
+  return TCL_OK;
+}
+
 static int flirGetSettingsCmd(ClientData clientData, Tcl_Interp *interp,
                               int objc, Tcl_Obj *const objv[]) {
 #ifdef USE_FLIR
@@ -1953,6 +1970,275 @@ static int setROIOffsetCmd(ClientData clientData, Tcl_Interp *interp,
     return TCL_ERROR;
 #endif
 }
+
+/*********************************************************************/
+/*                    Dataserver Commands (C++)                      */
+/*********************************************************************/
+
+// vstream::dsRegister server ?port?
+static int dsRegisterCmd(ClientData clientData, Tcl_Interp *interp,
+                        int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    if (objc < 2 || objc > 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "server ?port?");
+        return TCL_ERROR;
+    }
+    
+    const char* server = Tcl_GetString(objv[1]);
+    int port = 4620;  // Default port
+    
+    if (objc == 3) {
+        if (Tcl_GetIntFromObj(interp, objv[2], &port) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    
+    DservSocket* ds = p->dservSocket;
+    if (!ds) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("DservSocket not initialized", -1));
+        return TCL_ERROR;
+    }
+    
+    int result = ds->reg(server, port);
+    
+    if (result >= 0) {
+        // Store server info in Tcl variables for compatibility
+        Tcl_SetVar2(interp, "vstream::dsServerIP", NULL, server, TCL_GLOBAL_ONLY);
+        
+        char portStr[32];
+        snprintf(portStr, sizeof(portStr), "%d", port);
+        Tcl_SetVar2(interp, "vstream::dsServerPort", NULL, portStr, TCL_GLOBAL_ONLY);
+        
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(result));
+        return TCL_OK;
+    } else {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(0));
+        return TCL_OK;
+    }
+}
+
+// vstream::dsUnregister
+static int dsUnregisterCmd(ClientData clientData, Tcl_Interp *interp,
+                          int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    if (objc != 1) {
+        Tcl_WrongNumArgs(interp, 1, objv, "");
+        return TCL_ERROR;
+    }
+    
+    const char* server = Tcl_GetVar2(interp, "vstream::dsServerIP", NULL, TCL_GLOBAL_ONLY);
+    const char* portStr = Tcl_GetVar2(interp, "vstream::dsServerPort", NULL, TCL_GLOBAL_ONLY);
+    
+    if (!server || !portStr) {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(0));
+        return TCL_OK;
+    }
+    
+    int port = atoi(portStr);
+    
+    DservSocket* ds = p->dservSocket;
+    if (!ds) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("DservSocket not initialized", -1));
+        return TCL_ERROR;
+    }
+    
+    int result = ds->unreg(server, port);
+    
+    Tcl_UnsetVar2(interp, "vstream::dsServerIP", NULL, TCL_GLOBAL_ONLY);
+    Tcl_UnsetVar2(interp, "vstream::dsServerPort", NULL, TCL_GLOBAL_ONLY);
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(result >= 0 ? result : 0));
+    return TCL_OK;
+}
+
+// vstream::dsAddMatch server pattern ?port?
+static int dsAddMatchCmd(ClientData clientData, Tcl_Interp *interp,
+                        int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    if (objc < 3 || objc > 4) {
+        Tcl_WrongNumArgs(interp, 1, objv, "server pattern ?port?");
+        return TCL_ERROR;
+    }
+    
+    const char* server = Tcl_GetString(objv[1]);
+    const char* pattern = Tcl_GetString(objv[2]);
+    int port = 4620;
+    
+    if (objc == 4) {
+        if (Tcl_GetIntFromObj(interp, objv[3], &port) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    
+    DservSocket* ds = p->dservSocket;
+    if (!ds) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("DservSocket not initialized", -1));
+        return TCL_ERROR;
+    }
+    
+    int result = ds->add_match(server, pattern, 1, port);
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(result));
+    return TCL_OK;
+}
+
+// vstream::dsRemoveMatch server pattern ?port?
+static int dsRemoveMatchCmd(ClientData clientData, Tcl_Interp *interp,
+                           int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    if (objc < 3 || objc > 4) {
+        Tcl_WrongNumArgs(interp, 1, objv, "server pattern ?port?");
+        return TCL_ERROR;
+    }
+    
+    const char* server = Tcl_GetString(objv[1]);
+    const char* pattern = Tcl_GetString(objv[2]);
+    int port = 4620;
+    
+    if (objc == 4) {
+        if (Tcl_GetIntFromObj(interp, objv[3], &port) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    
+    DservSocket* ds = p->dservSocket;
+    if (!ds) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("DservSocket not initialized", -1));
+        return TCL_ERROR;
+    }
+    
+    int result = ds->remove_match(server, pattern, port);
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(result));
+    return TCL_OK;
+}
+
+// vstream::dsGet server key ?port?
+static int dsGetCmd(ClientData clientData, Tcl_Interp *interp,
+                   int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    if (objc < 3 || objc > 4) {
+        Tcl_WrongNumArgs(interp, 1, objv, "server key ?port?");
+        return TCL_ERROR;
+    }
+    
+    const char* server = Tcl_GetString(objv[1]);
+    const char* key = Tcl_GetString(objv[2]);
+    int port = 4620;
+    
+    if (objc == 4) {
+        if (Tcl_GetIntFromObj(interp, objv[3], &port) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    
+    DservSocket* ds = p->dservSocket;
+    if (!ds) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("DservSocket not initialized", -1));
+        return TCL_ERROR;
+    }
+    
+    std::string value;
+    int result = ds->get(server, key, value, port);
+    
+    if (result > 0) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj(value.c_str(), -1));
+        return TCL_OK;
+    } else {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("", -1));
+        return TCL_ERROR;
+    }
+}
+
+// vstream::dsTouch server var ?port?
+static int dsTouchCmd(ClientData clientData, Tcl_Interp *interp,
+                     int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    if (objc < 3 || objc > 4) {
+        Tcl_WrongNumArgs(interp, 1, objv, "server var ?port?");
+        return TCL_ERROR;
+    }
+    
+    const char* server = Tcl_GetString(objv[1]);
+    const char* var = Tcl_GetString(objv[2]);
+    int port = 4620;
+    
+    if (objc == 4) {
+        if (Tcl_GetIntFromObj(interp, objv[3], &port) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    
+    DservSocket* ds = p->dservSocket;
+    if (!ds) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("DservSocket not initialized", -1));
+        return TCL_ERROR;
+    }
+    
+    int result = ds->touch(server, var, port);
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(result));
+    return TCL_OK;
+}
+
+// vstream::dsCmd server command ?port?
+static int dsCmdCmd(ClientData clientData, Tcl_Interp *interp,
+                   int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    
+    if (objc < 3 || objc > 4) {
+        Tcl_WrongNumArgs(interp, 1, objv, "server command ?port?");
+        return TCL_ERROR;
+    }
+    
+    const char* server = Tcl_GetString(objv[1]);
+    const char* command = Tcl_GetString(objv[2]);
+    int port = 2570;  // Default ESS port
+    
+    if (objc == 4) {
+        if (Tcl_GetIntFromObj(interp, objv[3], &port) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    }
+    
+    DservSocket* ds = p->dservSocket;
+    if (!ds) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("DservSocket not initialized", -1));
+        return TCL_ERROR;
+    }
+    
+    std::string result_str;
+    int result = ds->dscmd(server, command, result_str, port);
+    
+    if (result > 0) {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj(result_str.c_str(), -1));
+        return TCL_OK;
+    } else {
+        Tcl_SetObjResult(interp, Tcl_NewStringObj("", -1));
+        return TCL_ERROR;
+    }
+}
+
+static int jsonToTclDictCmd(ClientData clientData, Tcl_Interp *interp,
+                            int objc, Tcl_Obj *const objv[]) {
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "json_string");
+        return TCL_ERROR;
+    }
+    
+    const char* json_str = Tcl_GetString(objv[1]);
+    std::string dict = jsonToTclDict(json_str);
+    
+    Tcl_SetObjResult(interp, Tcl_NewStringObj(dict.c_str(), -1));
+    return TCL_OK;
+}
+
 /*********************************************************************/
 /*                       Shutdown Command                            */
 /*********************************************************************/
@@ -2077,6 +2363,10 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateCommand(interp, "vstream::displayClose", (Tcl_CmdProc *) hideCmd, 
 		    (ClientData) p, (Tcl_CmdDeleteProc *) NULL);
 
+  Tcl_CreateObjCommand(interp, "flir::isAvailable", 
+		       (Tcl_ObjCmdProc *)flirIsAvailableCmd, 
+		       (ClientData)p, NULL);
+ 
   Tcl_CreateObjCommand(interp, "flir::getSettings", 
 		       flirGetSettingsCmd, p, NULL);
   Tcl_CreateObjCommand(interp, "flir::refreshSettings", 
@@ -2126,6 +2416,39 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   
 
+    Tcl_CreateObjCommand(interp, "vstream::dsRegister", 
+                        (Tcl_ObjCmdProc *)dsRegisterCmd, 
+                        (ClientData)p, NULL);
+    
+    Tcl_CreateObjCommand(interp, "vstream::dsUnregister", 
+                        (Tcl_ObjCmdProc *)dsUnregisterCmd, 
+                        (ClientData)p, NULL);
+    
+    Tcl_CreateObjCommand(interp, "vstream::dsAddMatch", 
+                        (Tcl_ObjCmdProc *)dsAddMatchCmd, 
+                        (ClientData)p, NULL);
+    
+    Tcl_CreateObjCommand(interp, "vstream::dsRemoveMatch", 
+                        (Tcl_ObjCmdProc *)dsRemoveMatchCmd, 
+                        (ClientData)p, NULL);
+    
+    Tcl_CreateObjCommand(interp, "vstream::dsGet", 
+                        (Tcl_ObjCmdProc *)dsGetCmd, 
+                        (ClientData)p, NULL);
+    
+    Tcl_CreateObjCommand(interp, "vstream::dsTouch", 
+                        (Tcl_ObjCmdProc *)dsTouchCmd, 
+                        (ClientData)p, NULL);
+    
+    Tcl_CreateObjCommand(interp, "vstream::dsCmd", 
+                        (Tcl_ObjCmdProc *)dsCmdCmd, 
+                        (ClientData)p, NULL);
+
+    Tcl_CreateObjCommand(interp, "jsonToTclDict", 
+                     (Tcl_ObjCmdProc *)jsonToTclDictCmd, 
+                     (ClientData)p, NULL);
+
+  
   Tcl_CreateCommand(interp, "vstream::exit", (Tcl_CmdProc *) shutdownCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
@@ -2154,14 +2477,22 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 	      TCL_LINK_FLOAT | TCL_LINK_READ_ONLY);
   Tcl_LinkVar(interp, "vstream::is_color", (char*)p->is_color, 
 	      TCL_LINK_BOOLEAN | TCL_LINK_READ_ONLY);
-  
-  extern int dsPort;
-  Tcl_LinkVar(interp, "vstream::dsPort", (char *) &dsPort, TCL_LINK_INT);
 
+  // Set dataserver host and port as Tcl variables
+  if (p->ds_host && strlen(p->ds_host) > 0) {
+    Tcl_SetVar(interp, "vstream::dsHost", p->ds_host, TCL_GLOBAL_ONLY);
+  } else {
+    Tcl_SetVar(interp, "vstream::dsHost", "", TCL_GLOBAL_ONLY);
+  }
+  
+  char ds_port_str[32];
+  snprintf(ds_port_str, sizeof(ds_port_str), "%d", p->ds_port);
+  Tcl_SetVar(interp, "vstream::dsPortDefault", ds_port_str, TCL_GLOBAL_ONLY);  
+  
   extern int displayEvery;
   Tcl_LinkVar(interp, "vstream::displayEvery", 
-          (char *) &displayEvery, TCL_LINK_INT);
-
+	      (char *) &displayEvery, TCL_LINK_INT);
+  
 const char *key_constants = R"TCL(
 namespace eval keys {
     # Detect platform
@@ -2382,64 +2713,6 @@ namespace eval keys {
 
 Tcl_Eval(interp, key_constants);  
   
-const char *ds_str = R"V0G0N(
-  proc vstream::dsRegister { server { port 4620 } } {
-	set s [socket $server $port]
-	fconfigure $s -buffering line
-	set our_ip [lindex [fconfigure $s -sockname] 0]
-	puts $s "%reg $our_ip $::vstream::dsPort"
-	catch {gets $s status}
-	close $s
-        if { $status } { 
-           set ::vstream::dsServerIP $server 
-           set ::vstream::dsServerPort $port
-        }
-	return $status
-    }
-
-    proc vstream::dsUnregister { } {
-        if { ![info exists ::vstream::dsServerIP] } { 
-             return 0 
-        } else {
-             set server $::vstream::dsServerIP
-        }
-        if { ![info exists ::vstream::dsServerPort] } { 
-             return 0 
-        } else {
-             set port $::vstream::dsServerPort
-        }
-	set s [socket $server $port]
-	fconfigure $s -buffering line
-	set our_ip [lindex [fconfigure $s -sockname] 0]
-	puts $s "%unreg $our_ip $::vstream::dsPort"
-	catch {gets $s status}
-	close $s
-        unset ::vstream::dsServerIP ::vstream::dsServerPort
-	return $status
-    }
-
-    proc vstream::dsAddMatch { server pattern { port 4620 } } {
-	set s [socket $server $port]
-	fconfigure $s -buffering line
-	set our_ip [lindex [fconfigure $s -sockname] 0]
-	puts $s "%match $our_ip $::vstream::dsPort $pattern 1"
-	catch {gets $s status}
-	close $s
-	return $status
-    }
-
-    proc vstream::dsRemoveMatch { server pattern { port 4620 } } {
-	set s [socket $server $port]
-	fconfigure $s -buffering line
-	set our_ip [lindex [fconfigure $s -sockname] 0]
-	puts $s "%unmatch $our_ip $::vstream::dsPort $pattern"
-	catch {gets $s status}
-	close $s
-	return $status
-    }
-)V0G0N";
-
-  Tcl_Eval(interp, ds_str);
 
   Tcl_LinkVar(interp, "vstream::show_chunk",
           (char *) &ShowChunk, TCL_LINK_BOOLEAN);
