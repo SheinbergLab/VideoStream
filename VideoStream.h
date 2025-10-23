@@ -20,7 +20,10 @@ typedef struct _proginfo_t {
   float* frame_rate;
   std::atomic<int>* frame_width;
   std::atomic<int>* frame_height;
-  bool* is_color;  
+  bool* is_color;
+  DservSocket *dservSocket;
+  const char *ds_host;
+  int ds_port;
 } proginfo_t;
 
 class WebSocketThread;
@@ -32,6 +35,7 @@ int tcl_eval(const std::string& cmd, std::string& response);
 
 // send events to event queue
 void fireEvent(const std::string& type, const std::string& data);
+std::string jsonToTclDict(const std::string& json);
 
 // Add uWebSockets support
 #include <App.h>
