@@ -10,9 +10,12 @@ namespace eval ::Registry {
     variable current_metadata_base ""
     variable blink_indicator -1
     variable p1_lost_indicator -1
+    variable in_obs_indicator -1
     variable paused 0
     variable insets_visible 0
     variable camera_initialized 0
+    variable ds_host {}
+    variable ds_connected 0
 }
 
 # proc to clear all
@@ -45,6 +48,7 @@ proc onMouseClick {x y modifier} {
     }
 }
 
+
 # Helper to safely get value from dict
 proc get_dict_value {dict_var key {default ""}} {
     if {[dict exists $dict_var $key]} {
@@ -53,10 +57,40 @@ proc get_dict_value {dict_var key {default ""}} {
     return $default
 }
 
+proc handle_dpoint {event_name event_data} {
+    set dict_data [jsonToTclDict $event_data]
+    set name [dict get $dict_data name]
+    set data [dict get $dict_data data]
+
+    switch -glob $name {
+        "ess/in_obs" {
+	    if { ![flir::isAvailable] } {
+		::vstream::inObs $data
+	    }
+	    
+	    if { $data } { 
+		if {$::Registry::in_obs_indicator == -1} {
+                set ::Registry::in_obs_indicator \
+                    [add_circle -16 16 10 {240 10 10} -1]
+		}
+	    } else {
+		if {$::Registry::in_obs_indicator != -1} {
+		    remove_widget $::Registry::in_obs_indicator
+		    set ::Registry::in_obs_indicator -1
+		}
+	    }
+	}
+    }
+}
+
 # handles native Tcl types
 proc onEvent {type data} {
 
     switch -glob $type {
+	"ds/*" {
+	    handle_dpoint $type $data
+	}
+	
         "vstream/source_eof" -
         "video_source_eof" {
             puts "🎬 End of video reached"
@@ -109,7 +143,7 @@ proc onEvent {type data} {
             # Add visual indicator
             if {$::Registry::blink_indicator == -1} {
                 set ::Registry::blink_indicator \
-                    [add_text -150 40 "BLINK" {255 255 100} 1.5 3]
+                    [add_text 10 40 "BLINK" {255 255 100} 1.5 3]
             }
         }
         
@@ -738,6 +772,29 @@ proc playback_mode { { filename {} } } {
     puts ""
 }
 
+
+# ============================================================================
+# DATA SERVER CONNECTION
+# ============================================================================
+
+proc connect_to_dataserver { host } {
+    # Setup dataserver connections
+    if [vstream::dsRegister $::ds_server] {
+	set ::Registry::ds_connected 1
+	set ::Resistry::ds_host $host
+    } else {
+	set ::Registry::ds_connected 0
+	set ::Resistry::ds_host {}
+	return 0
+    }
+    
+    # Obs period controls
+    vstream::dsAddMatch $::ds_server ess/in_obs
+    
+    # Datafile controls
+    vstream::dsAddMatch $::ds_server ess/datafile
+}
+
 # ============================================================================
 # INITIALIZATION
 # ============================================================================
@@ -757,8 +814,8 @@ set files [list \
               ]
 
 # Default parameters
-eyetracking::setP1MaxJump 14
-eyetracking::setP4MaxJump 14
+eyetracking::setP1MaxJump 9
+eyetracking::setP4MaxJump 9
 eyetracking::setP4MinIntensity 42
 eyetracking::setPupilThreshold 45
 eyetracking::setDetectionMode pupil_p1
@@ -769,8 +826,13 @@ playback_mode [lindex $files 1]
 
 # We have already calibrated this P4 model
 #eyetracking::setP4Model .421 169.5
-eyetracking::setP4Model 0.829 -154.0
-eyetracking::setDetectionMode full
+#eyetracking::setP4Model 0.829 -154.0
 
 # For now, save metadata/analysis for all frames
 vstream::onlySaveInObs 0
+
+if { $vstream::dsHost != "" } {
+    vstream::dsRegister $vstream::dsHost 4620
+    vstream::dsAddMatch $vstream::dsHost ess/in_obs
+    vstream::dsAddMatch $vstream::dsHost ess/datafile
+}
