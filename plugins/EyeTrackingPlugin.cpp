@@ -3290,7 +3290,7 @@ bool drawOverlay(cv::Mat& frame, int frame_idx) override {
 	drawMagnifiedInset(frame, gray_for_inset,
 			   latest_results_.purkinje.p1_center,
 			   "P1",
-			   cv::Point2f(frame.cols - 120, 10),
+			   cv::Point2f(frame.cols - 120, 35),
 			   10);
       }
       
@@ -3299,7 +3299,7 @@ bool drawOverlay(cv::Mat& frame, int frame_idx) override {
 	drawMagnifiedInset(frame, gray_for_inset,
 			   latest_results_.purkinje.p4_center,
 			   "P4",
-			   cv::Point2f(frame.cols - 120, 130),
+			   cv::Point2f(frame.cols - 120, 155),
 			   10);
       }
     }
