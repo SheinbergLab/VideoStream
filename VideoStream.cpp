@@ -36,6 +36,7 @@
 
 #include "cxxopts.hpp"
 #include "SharedQueue.hpp"
+#include "DservSocket.h"
 #include "VstreamEvent.h"
 #include "EventToTcl.h"
 #include "KeyboardCallbackRegistry.h"
@@ -356,176 +357,6 @@ private:
   } 
 };
 
-class DSTcpipThread
-{
-private:
-  static constexpr int MAX_TOTAL_CONNECTIONS = 50;
-  static constexpr int MAX_CONNECTIONS_PER_IP = 5;
-  std::atomic<int> active_connections{0};
-  std::mutex connection_mutex;
-  std::unordered_map<std::string, int> ip_connection_count;
-  std::unordered_map<int, std::string> socket_to_ip;
-  
-  std::mutex m_sig_mutex;
-  
-  public:
-  bool m_bDone;
-
-  std::condition_variable m_sig_cv;
-  int port;
-
-  int listening_socket_fd;
-
-  DSTcpipThread()
-  {
-    m_bDone = false;
-    done = false;
-  }
-
-  void shutdown() {
-    m_bDone = true;
-    if (listening_socket_fd >= 0) {
-      ::shutdown(listening_socket_fd, SHUT_RDWR);
-      close(listening_socket_fd);
-      listening_socket_fd = -1;
-    }
-  }  
-
-  std::string get_client_ip(const struct sockaddr& client_address) {
-    char ip_str[INET_ADDRSTRLEN];
-    const struct sockaddr_in* addr_in = (const struct sockaddr_in*)&client_address;
-    inet_ntop(AF_INET, &(addr_in->sin_addr), ip_str, INET_ADDRSTRLEN);
-    return std::string(ip_str);
-  }
-  
-  bool accept_new_connection(const std::string& client_ip) {
-    std::lock_guard<std::mutex> lock(connection_mutex);
-    
-    if (active_connections.load() >= MAX_TOTAL_CONNECTIONS) {
-      return false;
-    }
-    
-    auto ip_count_it = ip_connection_count.find(client_ip);
-    int current_ip_connections = (ip_count_it != ip_connection_count.end()) ? ip_count_it->second : 0;
-    
-    return current_ip_connections < MAX_CONNECTIONS_PER_IP;
-  }
-  
-  void register_connection(int socket_fd, const std::string& client_ip) {
-    std::lock_guard<std::mutex> lock(connection_mutex);
-    active_connections++;
-    ip_connection_count[client_ip]++;
-    socket_to_ip[socket_fd] = client_ip;
-  }
-  
-  void unregister_connection(int socket_fd) {
-    std::lock_guard<std::mutex> lock(connection_mutex);
-    
-    auto it = socket_to_ip.find(socket_fd);
-    if (it != socket_to_ip.end()) {
-      const std::string& client_ip = it->second;
-      
-      active_connections--;
-      ip_connection_count[client_ip]--;
-      if (ip_connection_count[client_ip] <= 0) {
-	ip_connection_count.erase(client_ip);
-      }
-      
-      socket_to_ip.erase(it);
-    }
-    
-    close(socket_fd);
-  }
-  
-  static void dstcpClientProcess(DSTcpipThread* server, int sockfd) {
-    ssize_t n;
-    char buf[1024];
-    
-    while ((n = recv(sockfd, buf, sizeof(buf), 0)) > 0) {
-      ds_queue.push_back(std::string(buf, n));
-    }
-    
-    server->unregister_connection(sockfd);
-  }
-  
-  void startTcpServer(void) {
-#ifdef _WIN32
-    if (!WSA_initialized) {
-      WORD version = MAKEWORD(2, 2);
-      WSADATA data;
-      if (WSAStartup(version, &data) != 0) {
-	std::cerr << "WSAStartup() failure" << std::endl;
-	return;
-      }
-      WSA_initialized = true;
-    }
-#endif
-    
-    struct sockaddr_in address;
-    struct sockaddr client_address;
-    socklen_t client_address_len = sizeof(client_address);
-    int socket_fd;
-    int new_socket_fd;
-    int on = 1;
-    
-    memset(&address, 0, sizeof(struct sockaddr_in));
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-    address.sin_addr.s_addr = INADDR_ANY;
-    
-    if ((socket_fd = ::socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-      perror("socket");
-      return;
-    }
-
-    listening_socket_fd = socket_fd;
-
-    setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-    
-    if (::bind(socket_fd, (const struct sockaddr*)&address, sizeof(struct sockaddr)) == -1) {
-      perror("bind");
-      close(socket_fd);
-      return;
-    }
-    
-    if (::listen(socket_fd, 20) == -1) {
-      perror("listen");
-      close(socket_fd);
-      return;
-    }
-    
-    while (!m_bDone) {
-      new_socket_fd = ::accept(socket_fd, &client_address, &client_address_len);
-      if (new_socket_fd == -1) {
-	if (!m_bDone) perror("accept");
-	continue;
-      }
-      
-      std::string client_ip = get_client_ip(client_address);
-      
-      if (!accept_new_connection(client_ip)) {
-	std::cout << "Connection limit reached, rejecting client from " << client_ip << std::endl;
-	close(new_socket_fd);
-	continue;
-      }
-      
-      register_connection(new_socket_fd, client_ip);
-      setsockopt(new_socket_fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
-      
-      std::thread thr(dstcpClientProcess, this, new_socket_fd);
-      thr.detach();
-    }
-    
-    close(socket_fd);
-    
-#ifdef _WIN32
-    if (!WSA_shutdown) {
-      WSACleanup();
-      WSA_shutdown = true;
-    }
-#endif
-  }
-};
 
 class WebSocketThread
 {
@@ -2103,41 +1934,95 @@ static int docmd(const char *dscmd)
   return 0;
 }
 
-int processDSCommand(const char *dscmd)
-{
-  static char buf[1024];
-  const char *begin, *end;
+// =============================================================================
+// DATASERVER EVENT INTEGRATION
+// =============================================================================
 
-  if (!strchr((char *) dscmd, '\n')) {
-    return docmd(dscmd);
-  }
-  else {
-    begin = dscmd;
-    while ((end = strchr(begin, '\n'))) {
-      memset(buf, '\0', sizeof(buf));
-      memcpy(buf, begin, end-begin);
-      docmd(buf);
-      begin = end+1;
+// Helper function: Convert JSON datapoint to Tcl dictionary format
+std::string jsonToTclDict(const std::string& json) {
+  std::string dict;
+  json_t* root = json_loads(json.c_str(), 0, NULL);
+  
+  if (root && json_is_object(root)) {
+    // Iterate through all keys in the JSON object
+    const char* key;
+    json_t* value;
+    
+    json_object_foreach(root, key, value) {
+      dict += key;
+      dict += " ";
+      
+      if (json_is_string(value)) {
+	// String values - wrap in braces if they contain spaces
+	const char* str_val = json_string_value(value);
+	if (strchr(str_val, ' ')) {
+	  dict += "{";
+	  dict += str_val;
+	  dict += "}";
+	} else {
+	  dict += str_val;
+	}
+      } else if (json_is_integer(value)) {
+	dict += std::to_string(json_integer_value(value));
+      } else if (json_is_real(value)) {
+	dict += std::to_string(json_real_value(value));
+      } else if (json_is_boolean(value)) {
+	dict += json_is_true(value) ? "1" : "0";
+      } else if (json_is_null(value)) {
+	dict += "{}";
+      } else {
+	// For objects/arrays, convert back to JSON string
+	char* json_str = json_dumps(value, JSON_COMPACT);
+	if (json_str) {
+	  dict += "{";
+	  dict += json_str;
+	  dict += "}";
+	  free(json_str);
+	}
+      }
+      dict += " ";
     }
-    if (begin[0]) {
-      docmd(begin);
+    
+    // Remove trailing space
+    if (!dict.empty() && dict.back() == ' ') {
+      dict.pop_back();
     }
+    
+    json_decref(root);
   }
   
-  return 1;
+  return dict;
 }
 
-int processDSCommands(void) {
-  int n = 0;
+// Updated processDSCommands() function
+void processDSCommands(void) {
   while (ds_queue.size()) {
-    n++;
-    std::string s(ds_queue.front());
+    std::string dpoint = ds_queue.front();
     ds_queue.pop_front();
-    processDSCommand(s.c_str());
+    
+    // Parse JSON to extract the name field
+    json_t* root = json_loads(dpoint.c_str(), 0, NULL);
+    if (root) {
+      json_t* name_obj = json_object_get(root, "name");
+      if (name_obj && json_is_string(name_obj)) {
+	const char* name = json_string_value(name_obj);
+        
+	// Fire event with namespaced name, JSON data
+	// WebSocket clients get JSON directly
+	// Tcl handlers can call jsonToTclDict() if they want dict format
+	fireEvent(VstreamEvent("ds/" + std::string(name), dpoint));
+      } else {
+	// No name field - fire generic event
+	fireEvent(VstreamEvent("ds/unknown", dpoint));
+      }
+      json_decref(root);
+    } else {
+      // JSON parse failed - might be old text format or malformed
+      // Fire as generic event with the raw data
+      fireEvent(VstreamEvent("ds/parse_error", dpoint));
+    }
   }
-  return n;
 }
-
 
 #ifdef __APPLE__
 
@@ -2377,7 +2262,9 @@ int main(int argc, char **argv)
   programInfo.frame_width = &frame_width;
   programInfo.frame_height = &frame_height;
   programInfo.is_color = &is_color;
- 
+  programInfo.ds_host = ds_host.c_str();
+  programInfo.ds_port = ds_port;
+  
   std::string source_type;
   std::map<std::string, std::string> source_params;
   
@@ -2466,14 +2353,15 @@ int main(int argc, char **argv)
 
   TcpipThread tcpServer;
   tcpServer.port = port;
-  if (verbose)
-    cout << "Starting cmd server on port " << tcpServer.port << std::endl;
+  cout << "Starting cmd server on port " << tcpServer.port << std::endl;
   std::thread net_thread(&TcpipThread::startTcpServer, &tcpServer);
 
-  DSTcpipThread dstcpServer;
-  dstcpServer.port = port+1;
-  dsPort = dstcpServer.port;
-  
+  DservSocket dservSocket;
+  dservSocket.dsport = port+1;  // Set the desired port
+  dservSocket.set_queue(&ds_queue);  // Connect to the global ds_queue
+  dsPort = dservSocket.dsport;
+  programInfo.dservSocket = &dservSocket;
+
   WebSocketThread wsServer;
   wsServer.port = ws_port;
   g_wsServer = &wsServer;
@@ -2483,8 +2371,8 @@ int main(int argc, char **argv)
   std::thread ws_thread(&WebSocketThread::startWebSocketServer, &wsServer);
   
   if (verbose)
-    cout << "Starting ds server on port " << dstcpServer.port << std::endl;
-  std::thread ds_thread(&DSTcpipThread::startTcpServer, &dstcpServer);
+    cout << "Starting ds server on port " << dservSocket.dsport << std::endl;
+  std::thread ds_thread = dservSocket.start_server();
 
   if (startup_file) {
     if (sourceFile(startup_file) != TCL_OK) {
@@ -2669,7 +2557,7 @@ int main(int argc, char **argv)
   }
  
   tcpServer.shutdown();
-  dstcpServer.shutdown();
+  dservSocket.shutdown();
 
   // Join instead of detach
   if (net_thread.joinable()) {
