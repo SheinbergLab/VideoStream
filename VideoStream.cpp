@@ -1022,24 +1022,34 @@ public:
 
  bool doOpenFile(void)
   {
-    if (openfile) return 0;
+  if (openfile) return 0;
 
-    if (!metadata_only_) {
-      // Normal recording - check for overwrite
-      if (exists(output_file) && overwrite) {
-        std::remove(output_file.c_str());
-      }
-      
-      // Open video file
-      video = VideoWriter(output_file,
-                         fourcc,
-                         frame_rate,
-                         Size(frame_width,frame_height), is_color);
-      
-      if (!video.isOpened()) {
-        std::cerr << "Failed to open video file for writing" << std::endl;
-        return false;
-      }
+  if (!metadata_only_) {
+    // Check if video parameters are valid
+    int fw = frame_width.load();
+    int fh = frame_height.load();
+    
+    if (fw <= 0 || fh <= 0 || frame_rate <= 0) {
+      std::cerr << "Cannot open video file: invalid dimensions or frame rate ("
+                << fw << "x" << fh << " @ " << frame_rate << " fps)" << std::endl;
+      return false;
+    }
+    
+    // Check for overwrite
+    if (exists(output_file) && overwrite) {
+      std::remove(output_file.c_str());
+    }
+
+    // Open video file
+    video = VideoWriter(output_file,
+                       fourcc,
+                       frame_rate,
+                       Size(fw, fh), is_color);
+          
+    if (!video.isOpened()) {
+      std::cerr << "Failed to open video file for writing" << std::endl;
+      return false;
+    }
     }
 
     // Open storage
@@ -1434,7 +1444,10 @@ int set_inObs(int status)
   if (status == 0 || status == 1)
     in_obs = status;
   if (!old && status) {
+    fireEvent(VstreamEvent("vstream/begin_obs"));
     obs_count++;
+  } else if (old && !status) {
+    fireEvent(VstreamEvent("vstream/end_obs"));
   }
   return old;
 }
@@ -1799,8 +1812,6 @@ int processMouseEvents(void)
   return count;
 }
 
-#include "EventToTcl.h"
-
 int processEvents(void)
 {
     int count = 0;
@@ -1955,7 +1966,7 @@ std::string jsonToTclDict(const std::string& json) {
       if (json_is_string(value)) {
 	// String values - wrap in braces if they contain spaces
 	const char* str_val = json_string_value(value);
-	if (strchr(str_val, ' ')) {
+	if (!strlen(str_val) || strchr(str_val, ' ')) {
 	  dict += "{";
 	  dict += str_val;
 	  dict += "}";

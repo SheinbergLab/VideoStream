@@ -16,6 +16,9 @@ namespace eval ::Registry {
     variable camera_initialized 0
     variable ds_host {}
     variable ds_connected 0
+    variable datafile {}
+    variable datafile_indicator -1
+    variable video_folder /tmp
 }
 
 # proc to clear all
@@ -57,6 +60,52 @@ proc get_dict_value {dict_var key {default ""}} {
     return $default
 }
 
+proc obs_indicator { status } {
+    if { $status } { 
+	if {$::Registry::in_obs_indicator == -1} {
+	    set ::Registry::in_obs_indicator \
+		[add_circle -16 16 7 {240 10 10} -1]
+	}
+    } else {
+	if {$::Registry::in_obs_indicator != -1} {
+	    remove_widget $::Registry::in_obs_indicator
+	    set ::Registry::in_obs_indicator -1
+	}
+    }
+}
+
+proc datafile_indicator { filename } {
+    if { $filename != "" } { 
+	if {$::Registry::datafile_indicator == -1} {
+	    set ::Registry::datafile_indicator \
+		[add_text 200 20 $filename {255 255 255} 0.6 1]
+	}
+    } else {
+	if {$::Registry::datafile_indicator != -1} {
+	    remove_widget $::Registry::datafile_indicator
+	    set ::Registry::datafile_indicator -1
+	}
+    }
+}
+
+proc open_datafile { filename } {
+    set folder $::Registry::video_folder
+
+    if {[file extension $filename] eq ""} {
+        append filename ".mkv"
+    }
+
+    set fullpath [file join $folder $filename]
+    
+    ::vstream::fileOpen $fullpath
+    datafile_indicator $fullpath
+}
+
+proc close_datafile {} {
+    ::vstream::fileClose
+    datafile_indicator {}
+}
+
 proc handle_dpoint {event_name event_data} {
     set dict_data [jsonToTclDict $event_data]
     set name [dict get $dict_data name]
@@ -67,16 +116,16 @@ proc handle_dpoint {event_name event_data} {
 	    if { ![flir::isAvailable] } {
 		::vstream::inObs $data
 	    }
-	    
-	    if { $data } { 
-		if {$::Registry::in_obs_indicator == -1} {
-                set ::Registry::in_obs_indicator \
-                    [add_circle -16 16 10 {240 10 10} -1]
+	}
+	"ess/datafile" {
+	    if { $data != "" } {
+		if {$::Registry::datafile == ""} {
+		    open_datafile [set Registry::datafile $data]
 		}
 	    } else {
-		if {$::Registry::in_obs_indicator != -1} {
-		    remove_widget $::Registry::in_obs_indicator
-		    set ::Registry::in_obs_indicator -1
+		if {$::Registry::datafile != ""} {
+		    set Registry::datafile {}		    
+		    close_datafile
 		}
 	    }
 	}
@@ -90,9 +139,11 @@ proc onEvent {type data} {
 	"ds/*" {
 	    handle_dpoint $type $data
 	}
+
+	"vstream/begin_obs" { obs_indicator 1 }
+	"vstream/end_obs"   { obs_indicator 0 }
 	
-        "vstream/source_eof" -
-        "video_source_eof" {
+        "vstream/video_source_eof" {
             puts "🎬 End of video reached"
             if {$::Registry::recording_state eq "recording"} {
                 puts "💾 Auto-saving recording..."
@@ -100,14 +151,12 @@ proc onEvent {type data} {
             }
         }
         
-        "vstream/source_rewind" -
-        "video_source_rewind" {
+        "vstream/video_source_rewind" {
             puts "⏮ Video rewound - resetting tracking state"
             eyetracking::resetTrackingState
         }
         
-        "vstream/sampling_progress" -
-        "sampling_progress" {
+        "vstream/sampling_progress" {
             # data is a dict with keys: sampled, total
             set sampled [get_dict_value $data sampled 0]
             set total [get_dict_value $data total 0]
@@ -119,8 +168,7 @@ proc onEvent {type data} {
             }
         }
         
-        "vstream/sampling_complete" -
-        "sampling_complete" {
+        "vstream/sampling_complete" {
             # data is a dict
             set sampled [get_dict_value $data sampled 0]
             set total [get_dict_value $data total 0]

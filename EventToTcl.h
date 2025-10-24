@@ -114,7 +114,7 @@ inline int invokeTclEventHandler(Tcl_Interp* interp, const VstreamEvent& event) 
     objv[0] = Tcl_NewStringObj("onEvent", -1);
     objv[1] = Tcl_NewStringObj(event.type.c_str(), -1);
     objv[2] = eventDataToTclObj(interp, event.data);
-    
+
     // Increment ref counts
     Tcl_IncrRefCount(objv[0]);
     Tcl_IncrRefCount(objv[1]);
