@@ -2464,8 +2464,8 @@ int main(int argc, char **argv)
 	  frame_width = frame.cols;
 	  frame_height = frame.rows;
 	  
-	  // Update observation status based on line status
-	  if (use_flir) {
+	  // Update observation status based on line status if using flir DIO
+	  if (g_sourceManager.getSourceType() == "flir") {
 	    set_inObs(metadata.lineStatus);
 	  }
 	  
