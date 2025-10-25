@@ -1,10 +1,14 @@
-#include "StorageManager.h"
-#include "AnalysisPluginRegistry.h"
-#include "VstreamEvent.h"
 #include <iostream>
 #include <sstream>
 #include <chrono>
 #include <cstring>
+
+#include "StorageManager.h"
+#include "AnalysisPluginRegistry.h"
+#include "VstreamEvent.h"
+#ifdef USE_FLIR
+#include "FlirCameraSource.h"
+#endif
 
 extern AnalysisPluginRegistry g_pluginRegistry;
 
