@@ -2085,7 +2085,7 @@ public:
           p1_validator_(15.0f),
           p1_min_intensity_(140),
           p1_max_distance_ratio_(1.5f),
-          p1_centroid_roi_size_(cv::Size(7, 7)),
+          p1_centroid_roi_size_(cv::Size(21, 21)),
           p4_validator_(20.0f),
           p4_model_(),
           p4_search_roi_size_(cv::Size(30, 30)),
