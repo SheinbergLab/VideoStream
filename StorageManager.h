@@ -33,6 +33,18 @@ struct FrameData {
     uint8_t line_status;
 };
 
+struct CameraSettings {
+    int binning_horizontal;
+    int binning_vertical;
+    int roi_offset_x;
+    int roi_offset_y;
+    int roi_width;
+    int roi_height;
+    float exposure_time;
+    float gain;
+    std::string pixel_format;
+};
+
 struct ObservationRange {
     int obs_id;
     int start_frame;
@@ -100,12 +112,15 @@ public:
                         const std::string& plugin_name,
                         const std::string& json_data);
     
-    // NEW: Plugin structured storage support
+    // Plugin structured storage support
     bool initializePluginStorage();
     bool storeFrameWithPlugins(int frame_number, int buffer_index);
     void beginPluginStorageBatch();
     void endPluginStorageBatch();
-    
+
+  bool storeCameraSettings(const CameraSettings& settings);
+
+  
     // Provide database handle for plugins (use with caution)
     sqlite3* getDatabase() { return db_; }
     

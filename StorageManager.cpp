@@ -60,7 +60,21 @@ bool StorageManager::createTables() {
             is_color INTEGER,
             codec TEXT
         );
-        
+
+        CREATE TABLE IF NOT EXISTS camera_settings (
+            recording_id INTEGER PRIMARY KEY,
+            binning_horizontal INTEGER DEFAULT 1,
+            binning_vertical INTEGER DEFAULT 1,
+            roi_offset_x INTEGER DEFAULT 0,
+            roi_offset_y INTEGER DEFAULT 0,
+            roi_width INTEGER,
+            roi_height INTEGER,
+            exposure_time REAL,
+            gain REAL,
+            pixel_format TEXT,
+            FOREIGN KEY (recording_id) REFERENCES recordings(recording_id)
+        );
+
         CREATE TABLE IF NOT EXISTS frames (
             frame_id INTEGER PRIMARY KEY AUTOINCREMENT,
             recording_id INTEGER NOT NULL,
@@ -264,6 +278,27 @@ bool StorageManager::openDatabase(const std::string& db_path,
     }
     
     current_recording_id_ = sqlite3_last_insert_rowid(db_);
+
+// Store camera settings if using FLIR
+#ifdef USE_FLIR
+extern IFrameSource* g_frameSource;
+FlirCameraSource* flirSource = dynamic_cast<FlirCameraSource*>(g_frameSource);
+if (flirSource) {
+    CameraSettings cam_settings;
+    cam_settings.binning_horizontal = flirSource->getBinningH();
+    cam_settings.binning_vertical = flirSource->getBinningV();
+    cam_settings.roi_offset_x = flirSource->getOffsetX();
+    cam_settings.roi_offset_y = flirSource->getOffsetY();
+    cam_settings.roi_width = flirSource->getWidth();
+    cam_settings.roi_height = flirSource->getHeight();
+    cam_settings.exposure_time = flirSource->getExposureTime();
+    cam_settings.gain = flirSource->getGain();
+    cam_settings.pixel_format = "Mono8"; // or get from camera
+    
+    storeCameraSettings(cam_settings);
+}
+#endif
+    
     recording_open_ = true;
     recording_active_ = false;  // Open but not recording yet
     
@@ -345,6 +380,29 @@ void StorageManager::stopRecording() {
 // ============================================================================
 // DATA STORAGE
 // ============================================================================
+
+bool StorageManager::storeCameraSettings(const CameraSettings& settings) {
+    if (!db_ || current_recording_id_ < 0) {
+        return false;
+    }
+    
+    std::ostringstream sql;
+    sql << "INSERT INTO camera_settings (recording_id, binning_horizontal, "
+        << "binning_vertical, roi_offset_x, roi_offset_y, roi_width, roi_height, "
+        << "exposure_time, gain, pixel_format) VALUES ("
+        << current_recording_id_ << ", "
+        << settings.binning_horizontal << ", "
+        << settings.binning_vertical << ", "
+        << settings.roi_offset_x << ", "
+        << settings.roi_offset_y << ", "
+        << settings.roi_width << ", "
+        << settings.roi_height << ", "
+        << settings.exposure_time << ", "
+        << settings.gain << ", '"
+        << settings.pixel_format << "')";
+    
+    return executeSQL(sql.str().c_str());
+}
 
 bool StorageManager::storeFrame(const FrameData& frame) {
     if (!recording_open_ || !stmt_insert_frame_) {
