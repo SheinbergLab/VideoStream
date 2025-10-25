@@ -1,4 +1,3 @@
-#include "FlirCameraSource.h"
 #ifdef USE_FLIR
 
 #include <iostream>
@@ -6,6 +5,7 @@
 #include <thread>
 #include "VstreamEvent.h"
 #include <tcl.h>
+#include "FlirCameraSource.h"
 
 using namespace Spinnaker;
 using namespace Spinnaker::GenApi;

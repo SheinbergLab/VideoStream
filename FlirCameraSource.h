@@ -68,6 +68,9 @@ public:
 
   int getOffsetX() const { return offset_x; }
   int getOffsetY() const { return offset_y; }
+  int getBinningH() const { return binning_h; }
+  int getBinningV() const { return binning_v; }
+
   bool getROIConstraints(ROIConstraints& constraints);
  
   bool configureImageOrientation(bool reverseX, bool reverseY);
