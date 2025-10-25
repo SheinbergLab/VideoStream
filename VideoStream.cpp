@@ -1,9 +1,3 @@
-#include <tcl.h>
-
-// Use dgz format to store metadata about frames
-#include <df.h>
-#include <dynio.h>
-
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -25,6 +19,11 @@
 #include <atomic>
 #include <csignal>
 #include <cmath>
+
+// Use dgz format to store metadata about frames
+#include <df.h>
+#include <dynio.h>
+#include <tcl.h>
 
 #include <jansson.h>
 #include <sys/un.h>
@@ -1676,7 +1675,7 @@ public:
 	    imshow( "Frame", dframe );
 	  }
 
-	  int key = waitKeyEx(5);
+	  int key = waitKeyEx(10);
 	  if (key != -1) {
 	    std::string callback = g_keyboardCallbacks.getCallback(key);
 	    if (!callback.empty()) {
@@ -1765,7 +1764,14 @@ int setupTcl(proginfo_t *p)
     std::cerr << Tcl_GetStringResult(interp) << std::endl;
   }
   else {
+    // core commands
     addTclCommands(interp, p);
+
+    // subsystem specific commands
+#ifdef USE_FLIR
+    add_flir_commands(interp);
+#endif
+    
     Tcl_SourceRCFile(interp);
   }
   return TCL_OK;
@@ -2148,7 +2154,7 @@ void processMacOSEvents(proginfo_t* p, float scale = 1.0, Mat* frame_to_display 
     imshow("Frame", idle_frame);
   }
   
-  int key = waitKeyEx(1);
+  int key = waitKeyEx(10);
   if (key != -1) {
     handle_keyboard(key);
   }
@@ -2358,7 +2364,7 @@ int main(int argc, char **argv)
   std::signal(SIGINT, signal_handler);
   
   setupTcl(&programInfo);
-  
+		    
   WatchdogThread watchdogTimer;
   std::thread watchdog_thread(&WatchdogThread::startWatchdog, &watchdogTimer);
 
