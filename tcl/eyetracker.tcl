@@ -710,11 +710,11 @@ proc go_live {} {
     vstream::startSource flir
 
     if { !$initialized } {
-        flir::configureExposure 1000.0
-        flir::configureGain 10.0
+        flir::configureExposure 700.0
+        flir::configureGain 8.0
         flir::configureROI 720 450 24 24; # width, height, shift left, shift up
         flir::configureImageOrientation 1 0; # flip image horizontal
-	flir::configureFrameRate 100.0
+	flir::configureFrameRate 200.0
         set ::Registry::camera_initialized 1
     }
     
@@ -859,6 +859,8 @@ set files [list \
                [file join $video_folder OpenIris-2025Jun23-131340-Right.mp4] \
                [file join $video_folder OpenIris-2025Oct03-143614-Right.mkv] \
                [file join $video_folder glen_2.mkv] \
+               [file join $video_folder human_emcalib-9point-spots_2510241646.mkv] \
+	       [file join $video_folder 16_40_19MJPG-0003.avi] \
               ]
 
 # Default parameters
@@ -870,7 +872,7 @@ eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
 
 # Start with first video
-playback_mode [lindex $files 1]
+playback_mode [lindex $files 4]
 
 # We have already calibrated this P4 model
 #eyetracking::setP4Model .421 169.5
