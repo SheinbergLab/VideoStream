@@ -20,15 +20,17 @@ private:
   int width, height;
   bool color;
   int offset_x, offset_y;
+  int binning_h;  // horizontal binning
+  int binning_v;  // vertical binning
 
-    // Cache for pause
-    cv::Mat last_frame_;
-    FrameMetadata last_metadata_;
-    bool has_last_frame_;
+  // Cache for pause
+  cv::Mat last_frame_;
+  FrameMetadata last_metadata_;
+  bool has_last_frame_;
   
-    bool initializeCamera();
-    void configureCameraDefaults();
-    
+  bool initializeCamera();
+  void configureCameraDefaults();
+  
 public:
   FlirCameraSource(int cameraId = 0, int width = 1920, int height = 1200);
   ~FlirCameraSource();
@@ -67,13 +69,14 @@ public:
   int getOffsetX() const { return offset_x; }
   int getOffsetY() const { return offset_y; }
   bool getROIConstraints(ROIConstraints& constraints);
-  
+ 
   bool configureImageOrientation(bool reverseX, bool reverseY);
   bool configureExposure(float exposureTime);
   bool configureGain(float gain);
   bool configureFrameRate(float frameRate, float* actualRate = nullptr);
   float getFrameRate() const override;  // Already exists, but ensure it reads from camera  
   bool getFrameRateRange(float& min, float& max);  
+  bool configureBinning(int horizontal, int vertical);
   bool configureROI(int w, int h, int offsetX, int offsetY);
   bool setROIOffset(int offsetX, int offsetY);  
   bool configureChunkData(bool enable, bool verbose = false);
@@ -81,6 +84,8 @@ public:
   
   Spinnaker::GenApi::INodeMap* getNodeMap() { return nodeMapPtr; }
 };
+
+int add_flir_commands(Tcl_Interp *);
 
 #endif // USE_FLIR
 #endif // FLIR_CAMERA_SOURCE_H
