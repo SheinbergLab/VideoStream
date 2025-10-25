@@ -280,6 +280,10 @@ add_custom_target(generate_embedded_headers
     COMMENT "Generating embedded resource headers"
 )
 
+# add options to sqlite compilation
+set_source_files_properties(external/sqlite/sqlite3.c 
+    PROPERTIES COMPILE_DEFINITIONS "SQLITE_ENABLE_COLUMN_METADATA=1"
+)
 
 include_directories( ${OpenCV_INCLUDE_DIRS} ${TCL_INCLUDE_DIR} ${FLIR_INCLUDE_DIR} )
 
