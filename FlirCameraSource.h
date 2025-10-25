@@ -70,7 +70,9 @@ public:
   int getOffsetY() const { return offset_y; }
   int getBinningH() const { return binning_h; }
   int getBinningV() const { return binning_v; }
-
+  float getGain() const { return settings_.gain; }
+  float getExposureTime() const { return settings_.exposure_time; }
+  
   bool getROIConstraints(ROIConstraints& constraints);
  
   bool configureImageOrientation(bool reverseX, bool reverseY);
