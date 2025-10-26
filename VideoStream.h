@@ -1,5 +1,7 @@
 // Declarations for VideoStream.cpp and tclproc.cpp
 
+#include "VstreamVars.h"
+
 typedef struct _proginfo_t {
   char *name;
   Tcl_Interp *interp;
@@ -95,13 +97,6 @@ extern "C" {
   int configure_framerate(float framerate);
 
   int do_shutdown();
-
-  /* Shared with tcl */
-  extern int dsPort;
-  extern int useWebcam;
-  extern int displayEvery;   // Determines how often to update display
-
-  extern int ShowChunk;
 
 #ifdef __cplusplus
 }
