@@ -40,13 +40,17 @@ proc onMouseClick {x y modifier} {
             }
         }
         "alt" {
-            set roi_x [expr {$x - 200}]
-            set roi_y [expr {$y - 200}]
-            eyetracking::setROI $roi_x $roi_y 400 400
-            puts "ROI set around $x,$y"
+            # Sample pixel intensity and set pupil threshold just above
+            set intensity [vstream::getPixelIntensity $x $y]
+            if {$intensity >= 0} {
+                eyetracking::setPupilThreshold [expr {$intensity+10}]
+                puts "Pupil threshold set to $intensity (clicked at $x,$y)"
+            } else {
+                puts " Could not sample pixel at ($x,$y)"
+            }
         }
         default {
-            puts "Click at pixel ($x, $y)"
+	    
         }
     }
 }
