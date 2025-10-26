@@ -1,6 +1,7 @@
 #include <thread>
 #include "VideoFileSource.h"
 #include "VstreamEvent.h"
+#include "VstreamVars.h"
 #include <iostream>
 #include <dynio.h>
 
@@ -113,7 +114,7 @@ bool VideoFileSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
     } else {
         metadata.frameID = default_frameID;
         metadata.timestamp = (int64_t)(current_idx * 1e9 / fps);
-        metadata.lineStatus = false;
+        metadata.lineStatus = ds_in_obs;
     }
     
     // Only advance if not paused
