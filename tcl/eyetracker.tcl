@@ -100,7 +100,10 @@ proc open_datafile { filename } {
     }
 
     set fullpath [file join $folder $filename]
-    
+
+    # can also store only metadata
+    #  ::vstream::fileOpenMetadata $filename $source
+
     ::vstream::fileOpen $fullpath
     datafile_indicator $fullpath
 }
@@ -117,9 +120,9 @@ proc handle_dpoint {event_name event_data} {
 
     switch -glob $name {
         "ess/in_obs" {
-	    if { ![flir::isAvailable] } {
-		::vstream::inObs $data
-	    }
+	    # this allows dataserver to set obs status
+	    # FLIR will use DIO, but other sources can use this
+	    set ::vstream::dsInObs $data
 	}
 	"ess/datafile" {
 	    if { $data != "" } {
