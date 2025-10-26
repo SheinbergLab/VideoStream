@@ -136,7 +136,9 @@ bool is_color = true;
 float frame_rate;
 std::string output_file;
 bool overwrite = false;
-bool in_obs = false;
+
+bool in_obs = false;		
+bool ds_in_obs = false;		// dataserver obs status (no line_status)
 bool only_save_in_obs = true;
 int obs_count = -1;
 
@@ -1252,7 +1254,8 @@ public:
 	  else prev_fr = nFrames-1;
 
 	  // Check obs period boundaries
-	  auto obs = frameBufferManager.getObservationPair(processFrame, prev_fr);
+	  auto obs =
+	    frameBufferManager.getObservationPair(processFrame, prev_fr);
 
 	  if (!obs.cur_valid || !obs.prev_valid) {
 	    // Can't check boundaries without both frames
@@ -1262,6 +1265,7 @@ public:
 	    // Obs period start
 	    start_obs = (obs.cur_in_obs && !obs.prev_in_obs);
 	    if (start_obs) {
+	      std::cout << "BeginObs" << std::endl;
 	      if (use_sqlite_) {
 		storage_manager_.storeObservationStart(frame_count);
 	      } else {
@@ -1272,6 +1276,7 @@ public:
 	    // Obs period end
 	    end_obs = (!obs.cur_in_obs && obs.prev_in_obs);
 	    if (end_obs) {
+	      std::cout << "EndObs" << std::endl;
 	      if (use_sqlite_) {
 		storage_manager_.storeObservationEnd(frame_count - 1);
 	      } else {
@@ -2469,11 +2474,9 @@ int main(int argc, char **argv)
 	  
 	  frame_width = frame.cols;
 	  frame_height = frame.rows;
-	  
-	  // Update observation status based on line status if using flir DIO
-	  if (g_sourceManager.getSourceType() == "flir") {
-	    set_inObs(metadata.lineStatus);
-	  }
+
+	  // Sources are responsible for setting this
+	  set_inObs(metadata.lineStatus);
 	  
 	  // Store in circular buffer (thread-safe)
 	  frameBufferManager.storeFrame(curFrame, frame, metadata, in_obs);	  
