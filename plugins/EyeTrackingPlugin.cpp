@@ -634,52 +634,76 @@ private:
     // ========================================================================
     // P1 SUB-PIXEL REFINEMENT
     // ========================================================================
+
+  cv::Point2f refineP1SubPixel(const cv::Mat& gray_roi,
+			       const cv::Rect& search_rect,
+			       const cv::Point2f& candidate) {
+
+    bool use_ellipse_p1_refinement_ = false;
+      
+    cv::Rect centroid_roi(
+			  candidate.x - p1_centroid_roi_size_.width / 2,
+			  candidate.y - p1_centroid_roi_size_.height / 2,
+			  p1_centroid_roi_size_.width,
+			  p1_centroid_roi_size_.height
+			  );
     
-    cv::Point2f refineP1SubPixel(const cv::Mat& gray_roi,
-                                 const cv::Rect& search_rect,
-                                 const cv::Point2f& candidate) {
-        cv::Rect centroid_roi(
-            candidate.x - p1_centroid_roi_size_.width / 2,
-            candidate.y - p1_centroid_roi_size_.height / 2,
-            p1_centroid_roi_size_.width,
-            p1_centroid_roi_size_.height
-        );
+    centroid_roi &= cv::Rect(0, 0, search_rect.width, search_rect.height);
+    
+    if (centroid_roi.area() == 0) {
+      return candidate;
+    }
+    
+    cv::Mat p1_glint_roi = gray_roi(search_rect)(centroid_roi);
+    
+    double roi_min_val, roi_max_val;
+    cv::minMaxLoc(p1_glint_roi, &roi_min_val, &roi_max_val);
+    
+    cv::Mat p1_glint_thresh;
+    cv::threshold(p1_glint_roi, p1_glint_thresh, roi_max_val * 0.8, 255, cv::THRESH_BINARY);
+    
+    std::vector<std::vector<cv::Point>> sub_contours;
+    cv::findContours(p1_glint_thresh, sub_contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    
+    cv::Point2f refined_p1 = candidate;
+    
+    if (!sub_contours.empty()) {
+        auto largest_contour = std::max_element(sub_contours.begin(), sub_contours.end(),
+            [](const auto& a, const auto& b) { 
+                return cv::contourArea(a) < cv::contourArea(b); 
+            });
         
-        centroid_roi &= cv::Rect(0, 0, search_rect.width, search_rect.height);
-        
-        if (centroid_roi.area() == 0) {
-            return candidate;
-        }
-        
-        cv::Mat p1_glint_roi = gray_roi(search_rect)(centroid_roi);
-        
-        double roi_min_val, roi_max_val;
-        cv::minMaxLoc(p1_glint_roi, &roi_min_val, &roi_max_val);
-        
-        cv::Mat p1_glint_thresh;
-        cv::threshold(p1_glint_roi, p1_glint_thresh, roi_max_val * 0.8, 255, cv::THRESH_BINARY);
-        
-        std::vector<std::vector<cv::Point>> sub_contours;
-        cv::findContours(p1_glint_thresh, sub_contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-        
-        cv::Point2f refined_p1 = candidate;
-        
-        if (!sub_contours.empty()) {
-            auto largest_contour = std::max_element(sub_contours.begin(), sub_contours.end(),
-                [](const auto& a, const auto& b) { 
-                    return cv::contourArea(a) < cv::contourArea(b); 
-                });
+        if (use_ellipse_p1_refinement_ && largest_contour->size() >= 5) {
+            // ELLIPSE METHOD - better for saturated reflections
+            cv::RotatedRect ellipse = cv::fitEllipse(*largest_contour);
             
+            // Sanity check: reasonable aspect ratio
+            float aspect = std::max(ellipse.size.width, ellipse.size.height) / 
+                          std::min(ellipse.size.width, ellipse.size.height);
+            
+            if (aspect < 3.0) {  // Not too elongated
+                refined_p1 = ellipse.center + cv::Point2f(centroid_roi.x, centroid_roi.y);
+            } else {
+                // Weird shape - fall back to centroid
+                cv::Moments M = cv::moments(*largest_contour);
+                if (M.m00 > 0) {
+                    cv::Point2f centroid_in_roi(M.m10 / M.m00, M.m01 / M.m00);
+                    refined_p1 = centroid_in_roi + cv::Point2f(centroid_roi.x, centroid_roi.y);
+                }
+            }
+        } else {
+            // CENTROID METHOD - original approach
             cv::Moments M = cv::moments(*largest_contour);
             if (M.m00 > 0) {
                 cv::Point2f centroid_in_roi(M.m10 / M.m00, M.m01 / M.m00);
                 refined_p1 = centroid_in_roi + cv::Point2f(centroid_roi.x, centroid_roi.y);
             }
         }
-        
-        return refined_p1;
     }
-
+    
+    return refined_p1;
+}
+  
     // ========================================================================
     // P1 MAIN DETECTION
     // ========================================================================
@@ -2085,7 +2109,7 @@ public:
           p1_validator_(15.0f),
           p1_min_intensity_(140),
           p1_max_distance_ratio_(1.5f),
-          p1_centroid_roi_size_(cv::Size(21, 21)),
+          p1_centroid_roi_size_(cv::Size(19, 19)),
           p4_validator_(20.0f),
           p4_model_(),
           p4_search_roi_size_(cv::Size(30, 30)),
