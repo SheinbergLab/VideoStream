@@ -197,6 +197,51 @@ static int getSourceStatusCmd(ClientData clientData, Tcl_Interp *interp,
     return TCL_OK;
 }
 
+static int getPixelIntensityCmd(ClientData clientData, Tcl_Interp *interp,
+                                int objc, Tcl_Obj *const objv[])
+{
+    if (objc != 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "x y");
+        return TCL_ERROR;
+    }
+    
+    int x, y;
+    if (Tcl_GetIntFromObj(interp, objv[1], &x) != TCL_OK ||
+        Tcl_GetIntFromObj(interp, objv[2], &y) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    
+    // Access the display thread's variables
+    extern int displayFrame;
+    extern FrameBufferManager frameBufferManager;
+    
+    if (displayFrame < 0) {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(-1));
+        return TCL_OK;
+    }
+    
+    auto access = frameBufferManager.accessFrame(displayFrame);
+    
+    if (!access.isValid() || 
+        x < 0 || x >= access.frame->cols ||
+        y < 0 || y >= access.frame->rows) {
+        Tcl_SetObjResult(interp, Tcl_NewIntObj(-1));
+        return TCL_OK;
+    }
+    
+    // Handle both grayscale and color
+    int intensity;
+    if (access.frame->channels() == 1) {
+        intensity = access.frame->at<uint8_t>(y, x);
+    } else {
+        cv::Vec3b pixel = access.frame->at<cv::Vec3b>(y, x);
+        intensity = (pixel[0] + pixel[1] + pixel[2]) / 3;  // Average RGB
+    }
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(intensity));
+    return TCL_OK;
+}
+
 /*********************************************************************/
 /*                       Keyboard bindings                           */
 /*********************************************************************/
@@ -1720,6 +1765,10 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateObjCommand(interp, "::vstream::stopSource", stopSourceCmd, p, NULL);
   Tcl_CreateObjCommand(interp, "::vstream::getSourceStatus", getSourceStatusCmd, p, NULL);
 
+  Tcl_CreateObjCommand(interp, "vstream::getPixelIntensity",
+		       getPixelIntensityCmd,
+		       (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  
   Tcl_CreateObjCommand(interp, "::vstream::reviewClear", reviewClearCmd, 
 		       (ClientData)p, (Tcl_CmdDeleteProc *)NULL);
   Tcl_CreateObjCommand(interp, "::vstream::reviewSample", reviewSampleCmd,
