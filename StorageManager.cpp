@@ -454,9 +454,11 @@ bool StorageManager::storeObservationEnd(int frame_number) {
     // Update the most recent observation with NULL stop_frame
     std::ostringstream sql;
     sql << "UPDATE observations SET stop_frame = " << frame_number
-        << " WHERE recording_id = " << current_recording_id_
+        << " WHERE obs_id = ("
+        << "SELECT obs_id FROM observations "
+        << "WHERE recording_id = " << current_recording_id_
         << " AND stop_frame IS NULL "
-        << " ORDER BY obs_id DESC LIMIT 1";
+        << "ORDER BY obs_id DESC LIMIT 1)";
     
     return executeSQL(sql.str().c_str());
 }
