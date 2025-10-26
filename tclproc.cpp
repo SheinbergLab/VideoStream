@@ -68,6 +68,14 @@ static int pingCmd(ClientData clientData, Tcl_Interp *interp,
 /*                         Source Commands                           */
 /*********************************************************************/
 
+static int getSourceTypeCmd(ClientData clientData, Tcl_Interp *interp,
+			    int objc, Tcl_Obj *const objv[]) {
+  proginfo_t *p = (proginfo_t *)clientData;
+  SourceManager* sm = p->sourceManager;
+
+  Tcl_SetObjResult(interp, Tcl_NewStringObj(sm->getSourceType().c_str(), -1));
+  return TCL_OK;
+}
 
 static int startSourceCmd(ClientData clientData, Tcl_Interp *interp,
                          int objc, Tcl_Obj *const objv[]) {
@@ -1387,7 +1395,6 @@ static int setInObsCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
-
 static int setOnlySaveInObsCmd(ClientData clientData, Tcl_Interp *interp,
                int argc, char *argv[])
 {
@@ -1763,6 +1770,7 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 
   Tcl_CreateObjCommand(interp, "::vstream::startSource", startSourceCmd, p, NULL);
   Tcl_CreateObjCommand(interp, "::vstream::stopSource", stopSourceCmd, p, NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::getSourceType", getSourceTypeCmd, p, NULL);
   Tcl_CreateObjCommand(interp, "::vstream::getSourceStatus", getSourceStatusCmd, p, NULL);
 
   Tcl_CreateObjCommand(interp, "vstream::getPixelIntensity",
@@ -1925,6 +1933,9 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   } else {
     Tcl_SetVar(interp, "vstream::dsHost", "", TCL_GLOBAL_ONLY);
   }
+
+  // Dataserver can signal obs status through this variable
+  Tcl_LinkVar(interp, "vstream::dsInObs", &ds_in_obs, TCL_LINK_BOOLEAN);
   
   char ds_port_str[32];
   snprintf(ds_port_str, sizeof(ds_port_str), "%d", p->ds_port);
