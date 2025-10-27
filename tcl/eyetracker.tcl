@@ -858,6 +858,8 @@ load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextens
 
 if { [file exists /home/lab] } {
     set video_folder /home/lab
+} elseif { [file exists /home/sheinb] } {
+    set video_folder /home/sheinb/tmp
 } else {
     set video_folder /Users/sheinb/Desktop/trial-videos
 }
