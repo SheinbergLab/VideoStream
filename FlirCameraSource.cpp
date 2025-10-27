@@ -516,7 +516,22 @@ bool FlirCameraSource::configureBinning(int horizontal, int vertical) {
         if (wasStreaming) {
             pCam->EndAcquisition();
         }
-        
+
+	// Set BinningSelector first
+        CEnumerationPtr ptrBinningSelector = nodeMapPtr->GetNode("BinningSelector");
+        if (IsAvailable(ptrBinningSelector)) {
+            std::cout << "BinningSelector available, current: " 
+                      << ptrBinningSelector->GetCurrentEntry()->GetSymbolic() << std::endl;
+            
+            if (IsWritable(ptrBinningSelector)) {
+                CEnumEntryPtr ptrAll = ptrBinningSelector->GetEntryByName("All");
+                if (IsAvailable(ptrAll)) {
+                    ptrBinningSelector->SetIntValue(ptrAll->GetValue());
+                    std::cout << "Set BinningSelector to All" << std::endl;
+                }
+            }
+        }
+	
         // Set horizontal binning
         CIntegerPtr ptrBinningHorizontal = nodeMapPtr->GetNode("BinningHorizontal");
         if (IsAvailable(ptrBinningHorizontal) && IsWritable(ptrBinningHorizontal)) {
