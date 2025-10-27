@@ -878,9 +878,10 @@ set files [list \
               ]
 
 # Default parameters
-eyetracking::setP1MaxJump 9
-eyetracking::setP4MaxJump 9
-eyetracking::setP4MinIntensity 42
+eyetracking::setP1MaxJump 6
+eyetracking::setP1MinIntensity 210
+eyetracking::setP4MaxJump 6
+eyetracking::setP4MinIntensity 40
 eyetracking::setPupilThreshold 45
 eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model

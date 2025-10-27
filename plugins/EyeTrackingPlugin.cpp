@@ -514,6 +514,7 @@ private:
   int p1_min_intensity_;
   float p1_max_distance_ratio_;
   cv::Size p1_centroid_roi_size_;
+  float last_p1_area_ = -1.0f; 
   
   // P4 detection
   P4Validator p4_validator_;
@@ -712,7 +713,7 @@ private:
 		       const cv::Point2f& pupil_center_local,
 		       float pupil_radius) {
     
-    float search_radius = pupil_radius * 1.2f;
+    float search_radius = pupil_radius * 1.5f;
     
     cv::Rect p1_search_rect(
 			    pupil_center_local.x - search_radius,
@@ -735,7 +736,7 @@ private:
     struct P1Candidate {
       cv::Point2f position;
       float score;
-      
+      float area;
       bool operator<(const P1Candidate& other) const {
 	return score > other.score;  // Sort descending
       }
@@ -757,7 +758,13 @@ private:
 	float area = cv::contourArea(contour);
         
 	if (area < 1 || area > 400) continue;
-        
+    
+    // shouldn't deviate from previous area by too much    
+    if (last_p1_area_ > 0) {
+	  float size_ratio = area / last_p1_area_;
+      if (size_ratio < 0.3f || size_ratio > 3.0f) continue;
+    }
+
 	total_candidates++;
         
 	cv::Moments m = cv::moments(contour);
@@ -797,12 +804,21 @@ private:
 	float vertical_bias = (spot_global.y > pupil_center_local.y) ? 1.2f : 1.0f;
         
 	float size_penalty = (area > 150) ? 0.8f : 1.0f;
+
+    // reward candidates that are about the same size
+	float size_consistency = 1.0f;
+	if (last_p1_area_ > 0) {
+	  float size_ratio = area / last_p1_area_;
+	  if (size_ratio < 0.6f || size_ratio > 1.7f) {
+		size_consistency = 0.5f;
+	  }
+	}
         
 	float score = effective_intensity * circularity * compactness * 
-	  vertical_bias * size_penalty;
+	  vertical_bias * size_penalty * size_consistency;
 	
 	// Add to candidate list instead of immediately picking best
-	candidates.push_back({center_rel, score});
+	candidates.push_back({center_rel, score, area});
       }
     }
     
@@ -863,6 +879,7 @@ private:
 		  << candidates[i].score << ")" << std::endl;
       }
       
+      last_p1_area_ = candidates[i].area; 
       return p1_local;
     }
     
@@ -870,6 +887,9 @@ private:
     if (debug_level_ >= DEBUG_VERBOSE) {
       std::cout << "⚠️  All " << candidates.size() << " P1 candidates rejected" << std::endl;
     }
+    
+    // don't have P1 area to track
+    last_p1_area_ = -1.0f;
     
     return cv::Point2f(-1, -1);
   }

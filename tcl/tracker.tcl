@@ -766,8 +766,9 @@ load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextens
 
 # Default parameters
 eyetracking::setP1MaxJump 6
+eyetracking::setP1MinIntensity 210
 eyetracking::setP4MaxJump 6
-eyetracking::setP4MinIntensity 42
+eyetracking::setP4MinIntensity 36
 eyetracking::setPupilThreshold 45
 eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
