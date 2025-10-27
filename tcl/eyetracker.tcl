@@ -874,6 +874,7 @@ set files [list \
                [file join $video_folder OpenIris-2025Oct03-143614-Right.mkv] \
                [file join $video_folder glen_2.mkv] \
 	       [file join $video_folder 16_40_19MJPG-0003.avi] \
+	       [file join $video_folder human_planko-bounce-multiworld_2510271453.mp4] \
               ]
 
 # Default parameters
@@ -885,7 +886,7 @@ eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
 
 # Start with specific video
-playback_mode [lindex $files 3]
+playback_mode [lindex $files 4]
 
 # We have already calibrated this P4 model
 #eyetracking::setP4Model .421 169.5
