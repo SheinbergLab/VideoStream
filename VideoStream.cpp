@@ -939,8 +939,9 @@ public:
     j = dfuAddDynGroupNewList(dg, (char *) "obs_stops", DF_LONG, 50);
     obs_stops = DYN_GROUP_LIST(dg, j);
 
-    fourcc = cv::VideoWriter::fourcc('F','F','V','1');
+    //    fourcc = cv::VideoWriter::fourcc('F','F','V','1');
     //    fourcc = cv::VideoWriter::fourcc('X','V','I','D');
+    fourcc = cv::VideoWriter::fourcc('H','2','6','4');    
   }
 
   int getFrameCount(void) {
