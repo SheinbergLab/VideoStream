@@ -866,7 +866,6 @@ set files [list \
                [file join $video_folder OpenIris-2025Jun23-131340-Right.mp4] \
                [file join $video_folder OpenIris-2025Oct03-143614-Right.mkv] \
                [file join $video_folder glen_2.mkv] \
-               [file join $video_folder human_emcalib-9point-spots_2510241646.mkv] \
 	       [file join $video_folder 16_40_19MJPG-0003.avi] \
               ]
 
@@ -878,8 +877,8 @@ eyetracking::setPupilThreshold 45
 eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
 
-# Start with first video
-playback_mode [lindex $files 4]
+# Start with specific video
+playback_mode [lindex $files 3]
 
 # We have already calibrated this P4 model
 #eyetracking::setP4Model .421 169.5
