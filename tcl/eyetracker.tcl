@@ -719,8 +719,8 @@ proc go_live {} {
     if { !$initialized } {
         flir::configureExposure 700.0
         flir::configureGain 8.0
-        flir::configureROI 720 450 24 24; # width, height, shift left, shift up
         flir::configureImageOrientation 1 0; # flip image horizontal
+	flir::configureBinning 2 2
 	flir::configureFrameRate 200.0
         set ::Registry::camera_initialized 1
     }
@@ -728,16 +728,21 @@ proc go_live {} {
     flir::startAcquisition
 
     # ROI control buttons (compact arrows)
-    add_button -320 -50 30 30 "v" {::ROI::nudgeDown}
-    add_button -320 -85 30 30 "^" {::ROI::nudgeUp}
-    add_button -350 -67 30 30 "<" {::ROI::nudgeLeft}
-    add_button -290 -67 30 30 ">" {::ROI::nudgeRight}
-
-    bind_key $::keys::DOWN {::ROI::nudgeDown}
-    bind_key $::keys::UP {::ROI::nudgeUp}
-    bind_key $::keys::LEFT {::ROI::nudgeLeft}
-    bind_key $::keys::RIGHT {::ROI::nudgeRight}
-
+    set use_roi 0
+    if { $use_roi } {
+        flir::configureROI 720 450 24 24; # width, height, offsetx, offsety
+	
+	add_button -320 -50 30 30 "v" {::ROI::nudgeDown}
+	add_button -320 -85 30 30 "^" {::ROI::nudgeUp}
+	add_button -350 -67 30 30 "<" {::ROI::nudgeLeft}
+	add_button -290 -67 30 30 ">" {::ROI::nudgeRight}
+	
+	bind_key $::keys::DOWN {::ROI::nudgeDown}
+	bind_key $::keys::UP {::ROI::nudgeUp}
+	bind_key $::keys::LEFT {::ROI::nudgeLeft}
+	bind_key $::keys::RIGHT {::ROI::nudgeRight}
+    }
+	
     # Remove the live button
     set source_btn [dict get $::Registry::widgets source_btn]
     remove_widget $source_btn

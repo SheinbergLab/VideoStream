@@ -52,8 +52,8 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
         int camera_id = 0;
         bool flip = false;
         int flip_code = -2;
-        int width = 1920;
-	int height = 1200;
+        int width = 1440;
+	int height = 1080;
 	
         if (params.count("id")) {
             camera_id = std::stoi(params.at("id"));
