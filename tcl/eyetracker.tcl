@@ -96,7 +96,7 @@ proc open_datafile { filename } {
     set folder $::Registry::video_folder
 
     if {[file extension $filename] eq ""} {
-        append filename ".mkv"
+        append filename ".mp4"
     }
 
     set fullpath [file join $folder $filename]

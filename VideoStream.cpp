@@ -132,7 +132,7 @@ std::atomic<int> processFrame{0};
 
 std::atomic<int> frame_width, frame_height;
 
-bool is_color = true;
+bool is_color = false;
 float frame_rate;
 std::string output_file;
 bool overwrite = false;
