@@ -1041,36 +1041,36 @@ public:
 
  bool doOpenFile(void)
   {
-  if (openfile) return 0;
-
-  if (!metadata_only_) {
-    // Check if video parameters are valid
-    int fw = frame_width.load();
-    int fh = frame_height.load();
+    if (openfile) return 0;
     
-    if (fw <= 0 || fh <= 0 || frame_rate <= 0) {
-      std::cerr << "Cannot open video file: invalid dimensions or frame rate ("
-                << fw << "x" << fh << " @ " << frame_rate << " fps)" << std::endl;
-      return false;
+    if (!metadata_only_) {
+      // Check if video parameters are valid
+      int fw = frame_width.load();
+      int fh = frame_height.load();
+      
+      if (fw <= 0 || fh <= 0 || frame_rate <= 0) {
+	std::cerr << "Cannot open video file: invalid dimensions or frame rate ("
+		  << fw << "x" << fh << " @ " << frame_rate << " fps)" << std::endl;
+	return false;
+      }
+      
+      // Check for overwrite
+      if (exists(output_file) && overwrite) {
+	std::remove(output_file.c_str());
+      }
+      
+      video = VideoWriter(output_file,
+			  fourcc,
+			  frame_rate,
+			  Size(fw, fh),
+			  is_color);
+      
+      if (!video.isOpened()) {
+	std::cerr << "Failed to open video file for writing" << std::endl;
+	return false;
+      }
     }
     
-    // Check for overwrite
-    if (exists(output_file) && overwrite) {
-      std::remove(output_file.c_str());
-    }
-
-    video = VideoWriter(output_file,
-			fourcc,
-			frame_rate,
-			Size(fw, fh),
-			is_color);
-    
-    if (!video.isOpened()) {
-      std::cerr << "Failed to open video file for writing" << std::endl;
-      return false;
-    }
-    }
-
     // Open storage
     if (use_sqlite_) {
       RecordingMetadata metadata;
@@ -2513,8 +2513,10 @@ int main(int argc, char **argv)
 	    }	    
 	  }
 
-	  process_queue.push_back(curFrame);
-	  
+	  if (processThread.fileIsOpen()) { 	  
+	    process_queue.push_back(curFrame);
+	  }
+	    
 	  if (curFrame % displayEvery == 0) {
 #if !defined(__APPLE__)
 	    display_queue.push_back(curFrame);
