@@ -1148,7 +1148,8 @@ if (g_frameSource) {
       
       // allow plugins to store data in our db
       storage_manager_.initializePluginStorage();
-      storage_manager_.beginPluginStorageBatch();       
+      storage_manager_.beginPluginStorageBatch();
+      storage_manager_.startRecording();      
     }
     else {
       // Old DYN_GROUP format
