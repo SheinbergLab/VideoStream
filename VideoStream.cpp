@@ -123,6 +123,7 @@ void signal_handler(int signal)
   do_shutdown();
 }
 
+const int FRAME_SENTINEL_OPEN = -3;   // Signal to wakeup and process
 const int FRAME_SENTINEL_CLOSE = -2;  // Signal to close file
 const int FRAME_SENTINEL_END = -1;    // Signal end of stream
 
@@ -863,7 +864,6 @@ class ProcessThread
 
   std::atomic<bool> openfile;
   std::atomic<bool> closefile;
-  std::atomic<bool> do_open;
 
   bool just_opened;
   bool annotate;
@@ -911,7 +911,6 @@ public:
     openfile = false;
     closefile = false;
     overwrite = false;
-    do_open = false;
     just_opened = false;
     only_save_in_obs = true;
     annotate = true;
@@ -1004,11 +1003,14 @@ public:
   bool openFile(char *filename)
   {
     if (openfile) return false;
-    do_open = true;
     obs_count = -1;
     frame_count = 0;
     output_file = std::string(filename);
     metadata_only_ = false;    
+
+    // Push sentinel to the process thread to signal open
+    process_queue.push_back(FRAME_SENTINEL_OPEN);
+       
     return true;
   }
 
@@ -1026,7 +1028,7 @@ public:
     obs_count = -1;
     frame_count = 0;
 
-    do_open.store(true, std::memory_order_release);
+    process_queue.push_back(FRAME_SENTINEL_OPEN);
     
     return true;
   }
@@ -1053,7 +1055,8 @@ public:
 		  << fw << "x" << fh << " @ " << frame_rate << " fps)" << std::endl;
 	return false;
       }
-      
+
+      std::cout << "opening video file" << output_file << std::endl;
       // Check for overwrite
       if (exists(output_file) && overwrite) {
 	std::remove(output_file.c_str());
@@ -1118,6 +1121,30 @@ public:
 	if (!metadata_only_) video.release();
 	return false;
       }
+
+
+#ifdef USE_FLIR
+if (g_frameSource) {
+    FlirCameraSource* flir_source = dynamic_cast<FlirCameraSource*>(g_frameSource);
+    if (flir_source) {      
+	CameraSettings cam_settings;
+	cam_settings.binning_horizontal = flir_source->getBinningH();
+	cam_settings.binning_vertical = flir_source->getBinningV();
+	cam_settings.roi_offset_x = flir_source->getOffsetX();
+	cam_settings.roi_offset_y = flir_source->getOffsetY();
+	cam_settings.roi_width = flir_source->getWidth();
+	cam_settings.roi_height = flir_source->getHeight();
+	cam_settings.exposure_time = flir_source->getExposureTime();
+	cam_settings.frame_rate = flir_source->getFrameRate();
+	cam_settings.gain = flir_source->getGain();
+	cam_settings.pixel_format = "Mono8";  // Or detect from camera
+        
+	if (!storage_manager_.storeCameraSettings(cam_settings)) {
+	  std::cerr << "Warning: Failed to store camera settings" << std::endl;
+	}
+      }
+ }
+#endif      
       
       // allow plugins to store data in our db
       storage_manager_.initializePluginStorage();
@@ -1258,15 +1285,16 @@ public:
   void startProcessThread(void)
   {
     while (1) {
-      if (do_open.load(std::memory_order_acquire)) {
-	doOpenFile();
-	do_open.store(false);
-	just_opened = true;
-      }
-      
       do {
 	processFrame = process_queue.front();
 	process_queue.pop_front();
+
+	// Handle open sentinel - user requested 
+	if (processFrame == FRAME_SENTINEL_OPEN) {
+	    doOpenFile();
+	    just_opened = true;
+	  break;
+	}
 
 	// Handle close sentinel - user requested close
 	if (processFrame == FRAME_SENTINEL_CLOSE) {
@@ -1398,6 +1426,7 @@ ProcessThread processThread;
 
 int open_videoFile(char *filename)
 {
+  
   return processThread.openFile(filename);
 }
 
