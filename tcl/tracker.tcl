@@ -18,7 +18,7 @@ namespace eval ::Registry {
     variable ds_connected 0
     variable datafile {}
     variable datafile_indicator -1
-    variable video_folder /shared/qpcs/data/vstream
+    variable video_folder /usr/data/vstream
 }
 
 # proc to clear all
