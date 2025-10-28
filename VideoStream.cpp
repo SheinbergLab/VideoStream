@@ -942,7 +942,7 @@ public:
 
     //    fourcc = cv::VideoWriter::fourcc('F','F','V','1');
     //    fourcc = cv::VideoWriter::fourcc('X','V','I','D');
-    fourcc = cv::VideoWriter::fourcc('H','2','6','4');    
+    fourcc = cv::VideoWriter::fourcc('A','V','C','1');    
   }
 
   int getFrameCount(void) {
@@ -1053,20 +1053,11 @@ public:
       std::remove(output_file.c_str());
     }
 
-    // Open video file with quality settings
-    std::vector<int> params;
-    if (is_color) {
-      params = {cv::VIDEOWRITER_PROP_QUALITY, 90};
-    } else {
-      params = {cv::VIDEOWRITER_PROP_QUALITY, 90, cv::VIDEOWRITER_PROP_IS_COLOR, 0};
-    }
-    
     video = VideoWriter(output_file,
-			cv::CAP_FFMPEG,
 			fourcc,
 			frame_rate,
 			Size(fw, fh),
-			params);
+			is_color);
     
     if (!video.isOpened()) {
       std::cerr << "Failed to open video file for writing" << std::endl;
