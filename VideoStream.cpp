@@ -868,6 +868,7 @@ class ProcessThread
   int prev_fr;
   int start_obs;
   int end_obs;
+  bool frame_in_obs;
 
   int sfd = -1;
   struct sockaddr_un svaddr;
@@ -949,15 +950,25 @@ public:
   }
 
   bool getUseSQLite() const { return use_sqlite_; }
-  
-  void annotate_frame(Mat frame)
+
+  // this is for storage to video file
+  void annotate_process_frame(Mat frame, bool in_obs)
   {
+    // Draw obs sync indicator square
+    int square_size = 15;
+    cv::Point square_top_left(5, 5);
+    cv::Point square_bottom_right(5 + square_size, 5 + square_size);
+    
+    cv::Scalar square_color = in_obs ? cv::Scalar(255, 255, 255) : cv::Scalar(20, 20, 20);
+    cv::rectangle(frame, square_top_left, square_bottom_right, square_color, cv::FILLED);
+    
+    // Draw frame number
     cv::putText(frame,
 		std::to_string(frame_count),
-		cv::Point(20,20),
+		cv::Point(25 + square_size, 20),
 		cv::FONT_HERSHEY_SIMPLEX,
 		0.7,
-		cv::Scalar(20,20,20));
+		cv::Scalar(20, 20, 20));
   }
 
   bool fileIsOpen(void) {
@@ -1042,12 +1053,21 @@ public:
       std::remove(output_file.c_str());
     }
 
-    // Open video file
+    // Open video file with quality settings
+    std::vector<int> params;
+    if (is_color) {
+      params = {cv::VIDEOWRITER_PROP_QUALITY, 90};
+    } else {
+      params = {cv::VIDEOWRITER_PROP_QUALITY, 90, cv::VIDEOWRITER_PROP_IS_COLOR, 0};
+    }
+    
     video = VideoWriter(output_file,
-                       fourcc,
-                       frame_rate,
-                       Size(fw, fh), is_color);
-          
+			cv::CAP_FFMPEG,
+			fourcc,
+			frame_rate,
+			Size(fw, fh),
+			params);
+    
     if (!video.isOpened()) {
       std::cerr << "Failed to open video file for writing" << std::endl;
       return false;
@@ -1262,11 +1282,12 @@ public:
 	    // Can't check boundaries without both frames
 	    start_obs = false;
 	    end_obs = false;
+	    frame_in_obs = false;
 	  } else {
+	    if (obs.cur_valid) frame_in_obs = true; // used for annotation
 	    // Obs period start
 	    start_obs = (obs.cur_in_obs && !obs.prev_in_obs);
 	    if (start_obs) {
-	      std::cout << "BeginObs" << std::endl;
 	      if (use_sqlite_) {
 		storage_manager_.storeObservationStart(frame_count);
 	      } else {
@@ -1277,7 +1298,6 @@ public:
 	    // Obs period end
 	    end_obs = (!obs.cur_in_obs && obs.prev_in_obs);
 	    if (end_obs) {
-	      std::cout << "EndObs" << std::endl;
 	      if (use_sqlite_) {
 		storage_manager_.storeObservationEnd(frame_count - 1);
 	      } else {
@@ -1296,7 +1316,7 @@ public:
 	      
 	      // Write video frame (unless metadata-only mode)
 	      if (!metadata_only_) {
-		if (annotate) annotate_frame(frame_copy);
+		if (annotate) annotate_process_frame(frame_copy, frame_in_obs);
 		video.write(frame_copy);
 	      }
 	      
@@ -2441,7 +2461,23 @@ int main(int argc, char **argv)
 	if (g_frameSource) {
 	  FrameMetadata metadata;
 	  Mat frame;
+
+#if !defined(__APPLE__)
+	  static double last_known_fps = 0.0;
+	  double current_fps = g_frameSource->getFrameRate();
 	  
+	  if (current_fps != last_known_fps && current_fps > 0) {
+	    // Target max 60 fps display
+	    displayEvery = std::max(1, static_cast<int>(std::round(current_fps / 60.0)));
+	    last_known_fps = current_fps;
+	    
+	    if (verbose) {
+	      std::cout << "Display throttle: showing every " << displayEvery 
+			<< " frame(s) for " << current_fps << " fps source" << std::endl;
+	    }
+	  }
+#endif
+    
 	  if (!g_frameSource->getNextFrame(frame, metadata)) {
 	    if (g_frameSource->isPlaybackMode() && !g_frameSource->isLooping()) {
 
