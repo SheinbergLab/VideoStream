@@ -2943,14 +2943,12 @@ button.secondary:hover {
             WHERE pupil_x IS NOT NULL;
     )";
   }
-  
+
   bool storeFrameData(sqlite3* db, int frame_number) override {
     std::lock_guard<std::mutex> lock(results_mutex_);
     
-    // Only store if we have valid results
-    if (!latest_results_.valid) {
-      return false;
-    }
+    // ALWAYS store a row - even without valid results
+    // This keeps eyetracking_frames synchronized with video frames
     
     const char* sql = R"(
         INSERT INTO eyetracking_frames (
@@ -2966,73 +2964,86 @@ button.secondary:hover {
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
       if (debug_level_ >= DEBUG_CRITICAL) {
-	std::cerr << "Failed to prepare eyetracking insert: " 
-		  << sqlite3_errmsg(db) << std::endl;
+        std::cerr << "Failed to prepare eyetracking insert: " 
+                  << sqlite3_errmsg(db) << std::endl;
       }
       return false;
     }
     
     int col = 1;
     
-    // frame_number and in_blink (always present)
+    // Always bind frame_number
     sqlite3_bind_int(stmt, col++, frame_number);
-    sqlite3_bind_int(stmt, col++, latest_results_.in_blink ? 1 : 0);
     
-    // Pupil data (nullable)
-    if (latest_results_.pupil.detected) {
-        sqlite3_bind_double(stmt, col++, latest_results_.pupil.center.x);
-        sqlite3_bind_double(stmt, col++, latest_results_.pupil.center.y);
-        sqlite3_bind_double(stmt, col++, latest_results_.pupil.radius);
+    // If we have valid results, store them; otherwise store NULLs
+    if (latest_results_.valid) {
+      // in_blink
+      sqlite3_bind_int(stmt, col++, latest_results_.in_blink ? 1 : 0);
+      
+      // Pupil data (nullable)
+      if (latest_results_.pupil.detected) {
+	sqlite3_bind_double(stmt, col++, latest_results_.pupil.center.x);
+	sqlite3_bind_double(stmt, col++, latest_results_.pupil.center.y);
+	sqlite3_bind_double(stmt, col++, latest_results_.pupil.radius);
+      } else {
+	sqlite3_bind_null(stmt, col++);
+	sqlite3_bind_null(stmt, col++);
+	sqlite3_bind_null(stmt, col++);
+      }
+      
+      // P1 data (nullable)
+      if (latest_results_.purkinje.p1_detected) {
+	sqlite3_bind_double(stmt, col++, latest_results_.purkinje.p1_center.x);
+	sqlite3_bind_double(stmt, col++, latest_results_.purkinje.p1_center.y);
+      } else {
+	sqlite3_bind_null(stmt, col++);
+	sqlite3_bind_null(stmt, col++);
+      }
+      
+      // P4 data (nullable)
+      if (latest_results_.purkinje.p4_detected) {
+	sqlite3_bind_double(stmt, col++, latest_results_.purkinje.p4_center.x);
+	sqlite3_bind_double(stmt, col++, latest_results_.purkinje.p4_center.y);
+      } else {
+	sqlite3_bind_null(stmt, col++);
+	sqlite3_bind_null(stmt, col++);
+      }
+      
+      // P4 model status
+      sqlite3_bind_int(stmt, col++, p4_model_.isInitialized() ? 1 : 0);
+      sqlite3_bind_int(stmt, col++, p4_model_.isFrozen() ? 1 : 0);
+      
+      // P4 model parameters (nullable if not initialized)
+      if (p4_model_.isInitialized()) {
+	sqlite3_bind_double(stmt, col++, p4_model_.getMagnitudeRatio());
+	sqlite3_bind_double(stmt, col++, p4_model_.getAngleOffset() * 180.0 / M_PI);
+      } else {
+	sqlite3_bind_null(stmt, col++);
+	sqlite3_bind_null(stmt, col++);
+      }
     } else {
-        sqlite3_bind_null(stmt, col++);
-        sqlite3_bind_null(stmt, col++);
-        sqlite3_bind_null(stmt, col++);
-    }
-    
-    // P1 data (nullable)
-    if (latest_results_.purkinje.p1_detected) {
-        sqlite3_bind_double(stmt, col++, latest_results_.purkinje.p1_center.x);
-        sqlite3_bind_double(stmt, col++, latest_results_.purkinje.p1_center.y);
-    } else {
-        sqlite3_bind_null(stmt, col++);
-        sqlite3_bind_null(stmt, col++);
-    }
-    
-    // P4 data (nullable)
-    if (latest_results_.purkinje.p4_detected) {
-        sqlite3_bind_double(stmt, col++, latest_results_.purkinje.p4_center.x);
-        sqlite3_bind_double(stmt, col++, latest_results_.purkinje.p4_center.y);
-    } else {
-        sqlite3_bind_null(stmt, col++);
-        sqlite3_bind_null(stmt, col++);
-    }
-    
-    // P4 model status
-    sqlite3_bind_int(stmt, col++, p4_model_.isInitialized() ? 1 : 0);
-    sqlite3_bind_int(stmt, col++, p4_model_.isFrozen() ? 1 : 0);
-    
-    // P4 model parameters (nullable if not initialized)
-    if (p4_model_.isInitialized()) {
-        sqlite3_bind_double(stmt, col++, p4_model_.getMagnitudeRatio());
-        sqlite3_bind_double(stmt, col++, p4_model_.getAngleOffset() * 180.0 / M_PI);
-    } else {
-        sqlite3_bind_null(stmt, col++);
-        sqlite3_bind_null(stmt, col++);
+      // No valid results - insert NULL for everything except frame_number
+      sqlite3_bind_int(stmt, col++, 0);  // in_blink = 0 (not blinking)
+      
+      // All other columns are nullable - set to NULL
+      for (int i = 0; i < 11; i++) {  // 11 remaining columns
+	sqlite3_bind_null(stmt, col++);
+      }
     }
     
     int result = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     
     if (result != SQLITE_DONE) {
-        if (debug_level_ >= DEBUG_CRITICAL) {
-            std::cerr << "Failed to insert eyetracking data: " 
-                      << sqlite3_errmsg(db) << std::endl;
-        }
-        return false;
+      if (debug_level_ >= DEBUG_CRITICAL) {
+	std::cerr << "Failed to insert eyetracking data: " 
+		  << sqlite3_errmsg(db) << std::endl;
+      }
+      return false;
     }
     
     return true;
-  }
+  }  
 
   void forwardResults(int frame_idx, const FrameMetadata& metadata,
 		      const PupilData& pupil, const PurkinjeData& purkinje) {
