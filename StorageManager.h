@@ -42,6 +42,7 @@ struct CameraSettings {
     int roi_height;
     float exposure_time;
     float gain;
+    float frame_rate;
     std::string pixel_format;
 };
 
@@ -55,23 +56,30 @@ struct ObservationRange {
 // STORAGE MANAGER CLASS
 // ============================================================================
 
+/**
+ * StorageManager handles SQLite database storage for video recordings.
+ * 
+ * Design: One database per recording
+ * - Each recording gets its own .db file alongside the video file
+ * - No recording_id needed - all data in DB belongs to single recording
+ * - Plugins manage their own tables through the structured storage interface
+ */
 class StorageManager {
 private:
     sqlite3* db_;
-    int64_t current_recording_id_;
     std::string current_db_path_;
     bool recording_open_;
+    bool recording_active_;  // Controls whether frames are written
     
-    // Prepared statements for performance
+    // Prepared statements for base tables only
     sqlite3_stmt* stmt_insert_frame_;
     sqlite3_stmt* stmt_insert_obs_;
-    sqlite3_stmt* stmt_insert_plugin_;
     
     // Batch transaction management
     int frames_since_commit_;
     static constexpr int BATCH_SIZE = 100;
     
-    // Plugin storage state
+    // Plugin state
     bool plugins_initialized_;
     
     // Helper methods
@@ -83,8 +91,6 @@ private:
     bool commitTransaction();
     void checkBatchCommit();
     bool openDatabase(const std::string& db_path, const RecordingMetadata& metadata);
-
-    bool recording_active_;  // controls whether frames are written
     
 public:
     StorageManager();
@@ -97,34 +103,31 @@ public:
                          const std::string& source_video_filename,
                          const RecordingMetadata& metadata);
     bool closeRecording();
+    
     bool isRecordingOpen() const { return recording_open_; }
     std::string getCurrentDBPath() const { return current_db_path_; }
 
+    // Recording control (pause/resume frame storage)
     void startRecording();
     void stopRecording();
     bool isRecordingActive() const { return recording_active_; }
     
-    // Data storage
+    // Base table data storage
     bool storeFrame(const FrameData& frame);
     bool storeObservationStart(int frame_number);
     bool storeObservationEnd(int frame_number);
-    bool storePluginData(int frame_number, 
-                        const std::string& plugin_name,
-                        const std::string& json_data);
+    bool storeCameraSettings(const CameraSettings& settings);
     
-    // Plugin structured storage support
+    // Plugin storage interface
     bool initializePluginStorage();
     bool storeFrameWithPlugins(int frame_number, int buffer_index);
     void beginPluginStorageBatch();
     void endPluginStorageBatch();
-
-  bool storeCameraSettings(const CameraSettings& settings);
-
-  
-    // Provide database handle for plugins (use with caution)
+    
+    // Provide database handle for plugins
     sqlite3* getDatabase() { return db_; }
     
-    // Query interface (for future use)
+    // Query interface
     bool getRecordingMetadata(RecordingMetadata& metadata);
     std::vector<FrameData> getFrameRange(int start_frame, int end_frame);
     std::vector<ObservationRange> getObservations();

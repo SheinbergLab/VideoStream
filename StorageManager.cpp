@@ -18,12 +18,10 @@ extern AnalysisPluginRegistry g_pluginRegistry;
 
 StorageManager::StorageManager() 
     : db_(nullptr),
-      current_recording_id_(-1),
       recording_open_(false),
       recording_active_(false),        
       stmt_insert_frame_(nullptr),
       stmt_insert_obs_(nullptr),
-      stmt_insert_plugin_(nullptr),
       plugins_initialized_(false),      
       frames_since_commit_(0) {
 }
@@ -53,9 +51,10 @@ bool StorageManager::executeSQL(const char* sql) {
 }
 
 bool StorageManager::createTables() {
+    // Simplified schema: one database = one recording
+    // No recording_id needed, no foreign keys
     const char* sql = R"(
-        CREATE TABLE IF NOT EXISTS recordings (
-            recording_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS recording_metadata (
             filename TEXT NOT NULL,
             start_time INTEGER,
             frame_rate REAL,
@@ -66,7 +65,6 @@ bool StorageManager::createTables() {
         );
 
         CREATE TABLE IF NOT EXISTS camera_settings (
-            recording_id INTEGER PRIMARY KEY,
             binning_horizontal INTEGER DEFAULT 1,
             binning_vertical INTEGER DEFAULT 1,
             roi_offset_x INTEGER DEFAULT 0,
@@ -75,75 +73,54 @@ bool StorageManager::createTables() {
             roi_height INTEGER,
             exposure_time REAL,
             gain REAL,
-            pixel_format TEXT,
-            FOREIGN KEY (recording_id) REFERENCES recordings(recording_id)
+            frame_rate REAL,
+            pixel_format TEXT
         );
 
         CREATE TABLE IF NOT EXISTS frames (
-            frame_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recording_id INTEGER NOT NULL,
-            frame_number INTEGER NOT NULL,
+            frame_number INTEGER PRIMARY KEY,
             relative_frame_id INTEGER,
             timestamp_us INTEGER,
             system_time_us INTEGER,
-            line_status INTEGER,
-            FOREIGN KEY (recording_id) REFERENCES recordings(recording_id)
+            line_status INTEGER
         );
         
         CREATE TABLE IF NOT EXISTS observations (
             obs_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recording_id INTEGER NOT NULL,
-            start_frame INTEGER,
-            stop_frame INTEGER,
-            FOREIGN KEY (recording_id) REFERENCES recordings(recording_id)
+            start_frame INTEGER NOT NULL,
+            stop_frame INTEGER
         );
         
-        CREATE TABLE IF NOT EXISTS plugin_data (
-            data_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recording_id INTEGER NOT NULL,
-            frame_number INTEGER NOT NULL,
-            plugin_name TEXT NOT NULL,
-            data_json TEXT,
-            FOREIGN KEY (recording_id) REFERENCES recordings(recording_id)
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_frames_recording 
-            ON frames(recording_id, frame_number);
-        CREATE INDEX IF NOT EXISTS idx_plugin_data_recording 
-            ON plugin_data(recording_id, frame_number);
-        CREATE INDEX IF NOT EXISTS idx_plugin_data_plugin 
-            ON plugin_data(plugin_name, recording_id);
+        CREATE INDEX IF NOT EXISTS idx_frames_number ON frames(frame_number);
+        CREATE INDEX IF NOT EXISTS idx_obs_frames ON observations(start_frame, stop_frame);
     )";
     
     return executeSQL(sql);
 }
 
 bool StorageManager::prepareStatements() {
+    // Frame insert statement
     const char* sql_frame = 
-        "INSERT INTO frames (recording_id, frame_number, relative_frame_id, "
+        "INSERT INTO frames (frame_number, relative_frame_id, "
         "timestamp_us, system_time_us, line_status) "
-        "VALUES (?, ?, ?, ?, ?, ?)";
+        "VALUES (?, ?, ?, ?, ?)";
     
     if (sqlite3_prepare_v2(db_, sql_frame, -1, &stmt_insert_frame_, nullptr) != SQLITE_OK) {
-        std::cerr << "Failed to prepare frame insert statement" << std::endl;
+        std::cerr << "Failed to prepare frame insert statement: " 
+                  << sqlite3_errmsg(db_) << std::endl;
         return false;
     }
     
+    // Observation insert statement
     const char* sql_obs = 
-        "INSERT INTO observations (recording_id, start_frame, stop_frame) "
-        "VALUES (?, ?, ?)";
+        "INSERT INTO observations (start_frame, stop_frame) "
+        "VALUES (?, ?)";
     
     if (sqlite3_prepare_v2(db_, sql_obs, -1, &stmt_insert_obs_, nullptr) != SQLITE_OK) {
-        std::cerr << "Failed to prepare observation insert statement" << std::endl;
-        return false;
-    }
-    
-    const char* sql_plugin = 
-        "INSERT INTO plugin_data (recording_id, frame_number, plugin_name, data_json) "
-        "VALUES (?, ?, ?, ?)";
-    
-    if (sqlite3_prepare_v2(db_, sql_plugin, -1, &stmt_insert_plugin_, nullptr) != SQLITE_OK) {
-        std::cerr << "Failed to prepare plugin insert statement" << std::endl;
+        std::cerr << "Failed to prepare observation insert statement: "
+                  << sqlite3_errmsg(db_) << std::endl;
+        sqlite3_finalize(stmt_insert_frame_);
+        stmt_insert_frame_ = nullptr;
         return false;
     }
     
@@ -158,10 +135,6 @@ void StorageManager::finalizeStatements() {
     if (stmt_insert_obs_) {
         sqlite3_finalize(stmt_insert_obs_);
         stmt_insert_obs_ = nullptr;
-    }
-    if (stmt_insert_plugin_) {
-        sqlite3_finalize(stmt_insert_plugin_);
-        stmt_insert_plugin_ = nullptr;
     }
 }
 
@@ -212,7 +185,6 @@ bool StorageManager::openMetadataOnly(const std::string& base_filename,
     }
     
     // Create unique database filename with source reference
-    // e.g., video_reprocess_001.db, video_openiris_001.db
     std::string db_path = base_filename + ".db";
     
     // Create modified metadata that references source video
@@ -233,90 +205,57 @@ bool StorageManager::openDatabase(const std::string& db_path,
         sqlite3_close(db_);
         db_ = nullptr;
         
-        // Fire error event
         fireEvent(VstreamEvent("vstream/storage_open_failed",
-			"file " + db_path + " error " + sqlite3_errmsg(db_)));
+                               "file " + db_path + " error " + sqlite3_errmsg(db_)));
         return false;
     }
     
     // Enable WAL mode for better concurrency
     executeSQL("PRAGMA journal_mode=WAL");
     
-    // Create tables
+    // Create base tables
     if (!createTables()) {
         sqlite3_close(db_);
         db_ = nullptr;
         fireEvent(VstreamEvent("vstream/storage_open_failed",
-			"file " + db_path + " error table_creation_failed"));
+                               "file " + db_path + " error table_creation_failed"));
         return false;
     }
     
-    // Prepare statements
+    // Prepare base statements
     if (!prepareStatements()) {
         sqlite3_close(db_);
         db_ = nullptr;
         fireEvent(VstreamEvent("vstream/storage_open_failed",
-			"file " + db_path + " error statement_preparation_failed"));
+                               "file " + db_path + " error statement_preparation_failed"));
         return false;
     }
     
-    // Insert recording metadata
+    // Store recording metadata (single row)
     std::ostringstream sql;
-    sql << "INSERT INTO recordings (filename, start_time, frame_rate, width, height, "
-        << "is_color, codec) VALUES ('"
-        << metadata.filename << "', "
+    sql << "INSERT INTO recording_metadata "
+        << "(filename, start_time, frame_rate, width, height, is_color, codec) "
+        << "VALUES ("
+        << "'" << metadata.filename << "', "
         << metadata.start_time << ", "
         << metadata.frame_rate << ", "
         << metadata.width << ", "
         << metadata.height << ", "
-        << (metadata.is_color ? 1 : 0) << ", '"
-        << metadata.codec << "')";
+        << (metadata.is_color ? 1 : 0) << ", "
+        << "'" << metadata.codec << "')";
     
     if (!executeSQL(sql.str().c_str())) {
+        std::cerr << "Failed to store recording metadata" << std::endl;
         finalizeStatements();
         sqlite3_close(db_);
         db_ = nullptr;
         fireEvent(VstreamEvent("vstream/storage_open_failed",
-			"file " + db_path + " error metadata_insert_failed"));
+                               "file " + db_path + " error metadata_insert_failed"));
         return false;
     }
     
-    current_recording_id_ = sqlite3_last_insert_rowid(db_);
-
-// Store camera settings if using FLIR
-#ifdef USE_FLIR
-extern IFrameSource* g_frameSource;
-FlirCameraSource* flirSource = dynamic_cast<FlirCameraSource*>(g_frameSource);
-if (flirSource) {
-    CameraSettings cam_settings;
-    cam_settings.binning_horizontal = flirSource->getBinningH();
-    cam_settings.binning_vertical = flirSource->getBinningV();
-    cam_settings.roi_offset_x = flirSource->getOffsetX();
-    cam_settings.roi_offset_y = flirSource->getOffsetY();
-    cam_settings.roi_width = flirSource->getWidth();
-    cam_settings.roi_height = flirSource->getHeight();
-    cam_settings.exposure_time = flirSource->getExposureTime();
-    cam_settings.gain = flirSource->getGain();
-    cam_settings.pixel_format = "Mono8"; // or get from camera
-    
-    storeCameraSettings(cam_settings);
-}
-#endif
-    
     recording_open_ = true;
-    recording_active_ = false;  // Open but not recording yet
-    
-    // Start first transaction
-    beginTransaction();
-    
     std::cout << "Opened recording database: " << db_path << std::endl;
-    std::cout << "Recording ID: " << current_recording_id_ << std::endl;
-    
-    // Fire success event
-
-    std::string data = "file " + db_path + " id " +
-      std::to_string(current_recording_id_);
-    fireEvent(VstreamEvent("vstream/storage_opened", data));
     
     return true;
 }
@@ -326,101 +265,63 @@ bool StorageManager::closeRecording() {
         return false;
     }
     
-    // Commit any pending frames
-    if (frames_since_commit_ > 0) {
-        commitTransaction();
-    }
+    // Commit any pending transaction
+    commitTransaction();
     
+    // Finalize prepared statements
     finalizeStatements();
     
+    // Close database
     if (db_) {
-      // Checkpoint the WAL and truncates to zero bytes
-      sqlite3_wal_checkpoint_v2(db_, nullptr,
-				SQLITE_CHECKPOINT_TRUNCATE, nullptr, nullptr);
-      
-      sqlite3_close(db_);
-      db_ = nullptr;
+        int rc = sqlite3_close(db_);
+        if (rc != SQLITE_OK) {
+            std::cerr << "Warning: sqlite3_close returned error: " 
+                      << sqlite3_errmsg(db_) << " (code " << rc << ")" << std::endl;
+            // Force close even with errors
+            sqlite3_close_v2(db_);
+        }
+        db_ = nullptr;
     }
     
     recording_open_ = false;
-    current_recording_id_ = -1;
     recording_active_ = false;
+    plugins_initialized_ = false;
+    current_db_path_.clear();
     
-    // Fire close event
-    fireEvent(VstreamEvent("vstream/storage_closed",
-		    "file " + current_db_path_));
+    std::cout << "Closed recording database" << std::endl;
     
     return true;
 }
 
 void StorageManager::startRecording() {
-    if (recording_open_ && !recording_active_) {
-        recording_active_ = true;
-        std::cout << "Recording ACTIVE" << std::endl;
-        
-        fireEvent(VstreamEvent("vstream/storage_recording_started",
-			"file " + current_db_path_));
-    }
+    recording_active_ = true;
 }
 
 void StorageManager::stopRecording() {
-    if (recording_active_) {
-        recording_active_ = false;
-        
-        // Commit any pending frames immediately
-        if (frames_since_commit_ > 0) {
-            commitTransaction();
-            beginTransaction();
-        }
-        
-        std::cout << "Recording STOPPED" << std::endl;
-        
-        fireEvent(VstreamEvent("vstream/storage_recording_stopped",
-			"file " + current_db_path_));
-    }
+    recording_active_ = false;
 }
-
 
 // ============================================================================
 // DATA STORAGE
 // ============================================================================
-
-bool StorageManager::storeCameraSettings(const CameraSettings& settings) {
-    if (!db_ || current_recording_id_ < 0) {
-        return false;
-    }
-    
-    std::ostringstream sql;
-    sql << "INSERT INTO camera_settings (recording_id, binning_horizontal, "
-        << "binning_vertical, roi_offset_x, roi_offset_y, roi_width, roi_height, "
-        << "exposure_time, gain, pixel_format) VALUES ("
-        << current_recording_id_ << ", "
-        << settings.binning_horizontal << ", "
-        << settings.binning_vertical << ", "
-        << settings.roi_offset_x << ", "
-        << settings.roi_offset_y << ", "
-        << settings.roi_width << ", "
-        << settings.roi_height << ", "
-        << settings.exposure_time << ", "
-        << settings.gain << ", '"
-        << settings.pixel_format << "')";
-    
-    return executeSQL(sql.str().c_str());
-}
 
 bool StorageManager::storeFrame(const FrameData& frame) {
     if (!recording_open_ || !stmt_insert_frame_) {
         return false;
     }
     
+    if (!recording_active_) {
+        return true;  // Not an error, just not recording
+    }
+    
     sqlite3_reset(stmt_insert_frame_);
     
-    sqlite3_bind_int64(stmt_insert_frame_, 1, current_recording_id_);
-    sqlite3_bind_int(stmt_insert_frame_, 2, frame.frame_number);
-    sqlite3_bind_int(stmt_insert_frame_, 3, frame.relative_frame_id);
-    sqlite3_bind_int64(stmt_insert_frame_, 4, frame.timestamp_us);
-    sqlite3_bind_int64(stmt_insert_frame_, 5, frame.system_time_us);
-    sqlite3_bind_int(stmt_insert_frame_, 6, frame.line_status);
+    // Bind parameters (no recording_id needed)
+    sqlite3_bind_int(stmt_insert_frame_, 1, frame.frame_number);
+    sqlite3_bind_int(stmt_insert_frame_, 2, frame.relative_frame_id);
+    sqlite3_bind_int64(stmt_insert_frame_, 3, frame.timestamp_us);
+    sqlite3_bind_int64(stmt_insert_frame_, 4, frame.system_time_us);
+    sqlite3_bind_int(stmt_insert_frame_, 5, frame.line_status);
     
     int rc = sqlite3_step(stmt_insert_frame_);
     if (rc != SQLITE_DONE) {
@@ -429,21 +330,27 @@ bool StorageManager::storeFrame(const FrameData& frame) {
     }
     
     checkBatchCommit();
-    
     return true;
 }
 
 bool StorageManager::storeObservationStart(int frame_number) {
-    if (!recording_open_) {
+    if (!recording_open_ || !stmt_insert_obs_) {
         return false;
     }
     
-    // Insert with only start_frame, stop_frame will be updated later
-    std::ostringstream sql;
-    sql << "INSERT INTO observations (recording_id, start_frame, stop_frame) VALUES ("
-        << current_recording_id_ << ", " << frame_number << ", NULL)";
+    sqlite3_reset(stmt_insert_obs_);
     
-    return executeSQL(sql.str().c_str());
+    // Insert observation with start frame, NULL stop frame
+    sqlite3_bind_int(stmt_insert_obs_, 1, frame_number);
+    sqlite3_bind_null(stmt_insert_obs_, 2);  // stop_frame is NULL initially
+    
+    int rc = sqlite3_step(stmt_insert_obs_);
+    if (rc != SQLITE_DONE) {
+        std::cerr << "Failed to insert observation start: " << sqlite3_errmsg(db_) << std::endl;
+        return false;
+    }
+    
+    return true;
 }
 
 bool StorageManager::storeObservationEnd(int frame_number) {
@@ -456,34 +363,37 @@ bool StorageManager::storeObservationEnd(int frame_number) {
     sql << "UPDATE observations SET stop_frame = " << frame_number
         << " WHERE obs_id = ("
         << "SELECT obs_id FROM observations "
-        << "WHERE recording_id = " << current_recording_id_
-        << " AND stop_frame IS NULL "
+        << "WHERE stop_frame IS NULL "
         << "ORDER BY obs_id DESC LIMIT 1)";
     
     return executeSQL(sql.str().c_str());
 }
 
-bool StorageManager::storePluginData(int frame_number, 
-                                     const std::string& plugin_name,
-                                     const std::string& json_data) {
-    if (!recording_open_ || !stmt_insert_plugin_) {
+bool StorageManager::storeCameraSettings(const CameraSettings& settings) {
+    if (!recording_open_) {
         return false;
     }
     
-    sqlite3_reset(stmt_insert_plugin_);
+    // Single row table - delete any existing and insert new
+    executeSQL("DELETE FROM camera_settings");
     
-    sqlite3_bind_int64(stmt_insert_plugin_, 1, current_recording_id_);
-    sqlite3_bind_int(stmt_insert_plugin_, 2, frame_number);
-    sqlite3_bind_text(stmt_insert_plugin_, 3, plugin_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt_insert_plugin_, 4, json_data.c_str(), -1, SQLITE_TRANSIENT);
+    std::ostringstream sql;
+    sql << "INSERT INTO camera_settings ("
+        << "binning_horizontal, binning_vertical, "
+        << "roi_offset_x, roi_offset_y, roi_width, roi_height, "
+        << "exposure_time, gain, frame_rate, pixel_format) VALUES ("
+        << settings.binning_horizontal << ", "
+        << settings.binning_vertical << ", "
+        << settings.roi_offset_x << ", "
+        << settings.roi_offset_y << ", "
+        << settings.roi_width << ", "
+        << settings.roi_height << ", "
+        << settings.exposure_time << ", "
+        << settings.gain << ", "
+        << settings.frame_rate << ", "       
+        << "'" << settings.pixel_format << "')";
     
-    int rc = sqlite3_step(stmt_insert_plugin_);
-    if (rc != SQLITE_DONE) {
-        std::cerr << "Failed to insert plugin data: " << sqlite3_errmsg(db_) << std::endl;
-        return false;
-    }
-    
-    return true;
+    return executeSQL(sql.str().c_str());
 }
 
 // ============================================================================
@@ -495,12 +405,11 @@ bool StorageManager::getRecordingMetadata(RecordingMetadata& metadata) {
         return false;
     }
     
-    std::ostringstream sql;
-    sql << "SELECT filename, start_time, frame_rate, width, height, is_color, codec "
-        << "FROM recordings WHERE recording_id = " << current_recording_id_;
+    const char* sql = "SELECT filename, start_time, frame_rate, width, height, is_color, codec "
+                     "FROM recording_metadata LIMIT 1";
     
     sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         return false;
     }
     
@@ -529,8 +438,8 @@ std::vector<FrameData> StorageManager::getFrameRange(int start_frame, int end_fr
     
     std::ostringstream sql;
     sql << "SELECT frame_number, relative_frame_id, timestamp_us, system_time_us, line_status "
-        << "FROM frames WHERE recording_id = " << current_recording_id_
-        << " AND frame_number >= " << start_frame
+        << "FROM frames "
+        << "WHERE frame_number >= " << start_frame
         << " AND frame_number <= " << end_frame
         << " ORDER BY frame_number";
     
@@ -560,13 +469,11 @@ std::vector<ObservationRange> StorageManager::getObservations() {
         return observations;
     }
     
-    std::ostringstream sql;
-    sql << "SELECT obs_id, start_frame, stop_frame FROM observations "
-        << "WHERE recording_id = " << current_recording_id_
-        << " ORDER BY start_frame";
+    const char* sql = "SELECT obs_id, start_frame, stop_frame FROM observations "
+                     "ORDER BY start_frame";
     
     sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         return observations;
     }
     
@@ -593,49 +500,65 @@ std::string StorageManager::getLastError() const {
     return "No database connection";
 }
 
-
 // ============================================================================
 // PLUGIN STORAGE METHODS
 // ============================================================================
 
 bool StorageManager::initializePluginStorage() {
     if (!db_) {
-        std::cerr << "Database not open" << std::endl;
+        std::cerr << "initializePluginStorage: Database not open" << std::endl;
         return false;
     }
     
     if (plugins_initialized_) {
-        return true; // Already initialized
+        std::cout << "Plugins already initialized for this recording" << std::endl;
+        return true;
     }
     
+    std::cout << "=== Initializing Plugin Storage ===" << std::endl;
+    
     auto plugin_names = g_pluginRegistry.listPlugins();
+    std::cout << "Found " << plugin_names.size() << " registered plugins" << std::endl;
+    
     for (const auto& name : plugin_names) {
         auto* plugin = g_pluginRegistry.getPlugin(name);
-        if (plugin && plugin->usesStructuredStorage()) {
+        if (!plugin) {
+            std::cerr << "WARNING: Plugin '" << name << "' returned null pointer" << std::endl;
+            continue;
+        }
+        
+        if (plugin->usesStructuredStorage()) {
+            std::cout << "  Initializing plugin: " << name << std::endl;
+            
             std::string schema = plugin->getTableSchema();
             
             if (schema.empty()) {
-                std::cerr << "Plugin " << name 
+                std::cerr << "  ERROR: Plugin " << name 
                           << " claims to use structured storage but has no schema" 
                           << std::endl;
                 continue;
             }
             
+            // Execute the schema SQL to create tables
             char* err_msg = nullptr;
             int rc = sqlite3_exec(db_, schema.c_str(), nullptr, nullptr, &err_msg);
             
             if (rc != SQLITE_OK) {
-                std::cerr << "Failed to create tables for plugin " << name 
-                          << ": " << err_msg << std::endl;
-                sqlite3_free(err_msg);
+                std::cerr << "  ERROR: Failed to create tables for plugin " << name 
+                          << ": " << (err_msg ? err_msg : "unknown error") << std::endl;
+                if (err_msg) sqlite3_free(err_msg);
                 return false;
             }
             
-            std::cout << "Initialized storage for plugin: " << name << std::endl;
+            std::cout << "  ✓ Created tables for plugin: " << name << std::endl;
+        } else {
+            std::cout << "  Plugin " << name << " does not use structured storage" << std::endl;
         }
     }
     
     plugins_initialized_ = true;
+    std::cout << "=== Plugin Storage Initialized ===" << std::endl;
+    
     return true;
 }
 
@@ -644,22 +567,21 @@ bool StorageManager::storeFrameWithPlugins(int frame_number, int buffer_index) {
         return false;
     }
     
+    if (!recording_active_) {
+        return true;  // Not an error, just not recording
+    }
+    
     auto plugin_names = g_pluginRegistry.listPlugins();
     for (const auto& name : plugin_names) {
         auto* plugin = g_pluginRegistry.getPlugin(name);
         if (!plugin) continue;
         
         if (plugin->usesStructuredStorage()) {
-            // Use structured storage
+            // Plugin manages its own table inserts
             plugin->storeFrameData(db_, frame_number);
             // Note: Don't treat as error if plugin has no data for this frame
-        } else {
-            // Fallback to JSON serialization
-            std::string json_data = plugin->serializeResults(buffer_index);
-            if (json_data != "{}") {
-                storePluginData(frame_number, name, json_data);
-            }
         }
+        // Note: Removed fallback JSON serialization - plugins should use structured storage
     }
     
     return true;
@@ -668,6 +590,10 @@ bool StorageManager::storeFrameWithPlugins(int frame_number, int buffer_index) {
 void StorageManager::beginPluginStorageBatch() {
     if (!db_) return;
     
+    // Start transaction for batch inserts
+    beginTransaction();
+    
+    // Notify plugins that batching is starting
     auto plugin_names = g_pluginRegistry.listPlugins();
     for (const auto& name : plugin_names) {
         auto* plugin = g_pluginRegistry.getPlugin(name);
@@ -680,6 +606,7 @@ void StorageManager::beginPluginStorageBatch() {
 void StorageManager::endPluginStorageBatch() {
     if (!db_) return;
     
+    // Notify plugins that batching is ending
     auto plugin_names = g_pluginRegistry.listPlugins();
     for (const auto& name : plugin_names) {
         auto* plugin = g_pluginRegistry.getPlugin(name);
@@ -687,4 +614,7 @@ void StorageManager::endPluginStorageBatch() {
             plugin->endStorageBatch(db_);
         }
     }
+    
+    // Commit transaction
+    commitTransaction();
 }
