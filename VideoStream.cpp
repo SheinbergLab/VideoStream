@@ -945,7 +945,7 @@ public:
 
     //    fourcc = cv::VideoWriter::fourcc('F','F','V','1');
     //    fourcc = cv::VideoWriter::fourcc('X','V','I','D');
-    fourcc = cv::VideoWriter::fourcc('A','V','C','1');    
+    fourcc = cv::VideoWriter::fourcc('a','v','c','1');    
   }
 
   int getFrameCount(void) {

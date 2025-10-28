@@ -124,7 +124,7 @@ proc handle_dpoint {event_name event_data} {
         "ess/in_obs" {
 	    # this allows dataserver to set obs status
 	    # FLIR will use DIO, but other sources can use this
-	    set ::vstream::dsInObs $data
+	    #set ::vstream::dsInObs $data
 	}
 	"ess/datafile" {
 	    if { $data != "" } {
