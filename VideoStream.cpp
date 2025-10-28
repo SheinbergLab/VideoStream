@@ -123,6 +123,9 @@ void signal_handler(int signal)
   do_shutdown();
 }
 
+const int FRAME_SENTINEL_CLOSE = -2;  // Signal to close file
+const int FRAME_SENTINEL_END = -1;    // Signal end of stream
+
 /* Buffer to hold video frames */
 int nFrames = 50;
 FrameBufferManager frameBufferManager(nFrames);
@@ -990,8 +993,11 @@ public:
   
   bool closeFile(void)
   {
-    if (!openfile) return false;
-    closefile = true;
+    if (!openfile.load(std::memory_order_acquire)) return false;
+    
+    // Push sentinel to wake up the process thread
+    process_queue.push_back(FRAME_SENTINEL_CLOSE);
+    
     return true;
   }
   
@@ -1225,6 +1231,30 @@ public:
     return last;
   }
 
+  void doCloseFile() {
+    if (!openfile.load()) return;  // Already closed
+    
+    if (!metadata_only_) {
+      video.release();
+    }
+    
+    if (use_sqlite_) {
+      storage_manager_.endPluginStorageBatch();
+      storage_manager_.closeRecording();
+      
+      if (metadata_only_) {
+	std::string data = "file " + metadata_base_name_ + ".db";
+	fireEvent(VstreamEvent("vstream/metadata_recording_closed", data));
+      } else {
+	fireEvent(VstreamEvent("vstream/recording_closed", "file " + output_file));
+      }
+    } else {
+      writeFrameDG(dg, output_file);
+    }
+    
+    openfile.store(false, std::memory_order_release);
+  }
+  
   void startProcessThread(void)
   {
     while (1) {
@@ -1237,7 +1267,19 @@ public:
       do {
 	processFrame = process_queue.front();
 	process_queue.pop_front();
-	
+
+	// Handle close sentinel - user requested close
+	if (processFrame == FRAME_SENTINEL_CLOSE) {
+	  doCloseFile();
+	  break;
+	}
+
+	if (processFrame == FRAME_SENTINEL_END || processFrame >= nFrames) {
+	  doCloseFile();
+	  return;  // Exit thread entirely
+	}
+
+    
 	if (just_opened) {
 	  just_opened = false;
 	  // Get initial frame metadata
@@ -1347,52 +1389,7 @@ public:
 	    }
 	  }
 	}
-      } while (processFrame >= 0 && process_queue.size());
-      
-      if (processFrame < 0 || processFrame >= nFrames) {
-	if (openfile.load()) {
-	  if (!metadata_only_) {
-	    video.release();
-	  }
-	  if (use_sqlite_) {
-	    storage_manager_.endPluginStorageBatch(); 	    
-	    storage_manager_.closeRecording();
-	    
-	    // Fire event
-	    if (metadata_only_) {
-	      std::string data = "file " + metadata_base_name_ + ".db";
-	      fireEvent(VstreamEvent("vstream/metadata_recording_closed", data));
-	    } else {
-	      fireEvent(VstreamEvent("vstream/recording_closed","file " + output_file));
-	    }
-	  } else {
-	    writeFrameDG(dg, output_file);
-	  }
-	}
-	break;
-      }
-      
-      if (closefile) {
-	if (!metadata_only_) {
-	  video.release();
-	}
-	openfile = false;
-	closefile = false;
-	if (use_sqlite_) {
-	  storage_manager_.endPluginStorageBatch(); 	  
-	  storage_manager_.closeRecording();
-	  
-	  // Fire event
-	  if (metadata_only_) {
-	    std::string data = "file " + metadata_base_name_ + ".db";
-	    fireEvent(VstreamEvent("vstream/metadata_recording_closed", data));
-	  } else {
-	    fireEvent(VstreamEvent("vstream/recording_closed", "file " + output_file));
-	  }
-	} else {
-	  writeFrameDG(dg, output_file);
-	}
-      }
+      } while (process_queue.size());
     }
   }  
 };
