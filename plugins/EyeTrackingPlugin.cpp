@@ -713,7 +713,7 @@ private:
 		       const cv::Point2f& pupil_center_local,
 		       float pupil_radius) {
     
-    float search_radius = pupil_radius * 1.5f;
+    float search_radius = pupil_radius * 2.0f;
     
     cv::Rect p1_search_rect(
 			    pupil_center_local.x - search_radius,
@@ -732,7 +732,7 @@ private:
     
     std::vector<int> thresholds = {220, 200, 180, 160, 140};
     
-    // NEW: Store candidates with their scores
+    // Store candidates with their scores
     struct P1Candidate {
       cv::Point2f position;
       float score;
@@ -757,13 +757,16 @@ private:
       for (const auto& contour : contours) {
 	float area = cv::contourArea(contour);
         
-	if (area < 1 || area > 400) continue;
+	if (area < 1) continue;
+	if (area > 500) {
+	  continue;
+	}
     
-    // shouldn't deviate from previous area by too much    
-    if (last_p1_area_ > 0) {
+	// shouldn't deviate from previous area by too much    
+	if (last_p1_area_ > 0) {
 	  float size_ratio = area / last_p1_area_;
-      if (size_ratio < 0.3f || size_ratio > 3.0f) continue;
-    }
+	  if (size_ratio < 0.3f || size_ratio > 3.0f) continue;
+	}
 
 	total_candidates++;
         
@@ -844,10 +847,10 @@ private:
       
       // Distance check
       float dist = cv::norm(p1_local - pupil_center_local);
-      if (dist > pupil_radius * 1.5f) {
+      if (dist > pupil_radius * 2.0f) {
 	if (debug_level_ >= DEBUG_VERBOSE && i == 0) {
 	  std::cout << "P1 candidate #" << (i+1) << " rejected: dist=" << dist 
-		    << " > " << (pupil_radius * 1.5f) << std::endl;
+		    << " > " << (pupil_radius * 2.0f) << std::endl;
 	}
 	continue;  // Try next candidate
       }
@@ -991,8 +994,7 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
     return cv::Point2f(x + dx, y + dy);
 }
   
-#if 1
-  cv::Point2f findP4ByBrightestSpot(const cv::Mat& search_region,
+ cv::Point2f findP4ByBrightestSpot(const cv::Mat& search_region,
                                    const cv::Mat& search_mask) {
     if (search_region.empty()) {
         return cv::Point2f(-1, -1);
@@ -1002,58 +1004,23 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
     cv::Point min_loc, max_loc;
     cv::minMaxLoc(search_region, &min_val, &max_val, &min_loc, &max_loc, search_mask);
     
-    if (debug_level_ >= DEBUG_VERBOSE) {
-        std::cout << "P4 bright spot: intensity=" << max_val << std::endl;
+    // Relax threshold during blink recovery
+    float effective_threshold = p4_min_intensity_;
+    if (blink_detector_.isRecovering()) {
+        effective_threshold *= 0.8f;  // 20% lower during recovery
     }
     
-    if (max_val < p4_min_intensity_) {
+    if (debug_level_ >= DEBUG_VERBOSE) {
+        std::cout << "P4 bright spot: intensity=" << max_val 
+                  << " threshold=" << effective_threshold << std::endl;
+    }
+    
+    if (max_val < effective_threshold) {
         return cv::Point2f(-1, -1);
     }
     
-    
     return refineP4SubPixelWeighted(search_region, max_loc);
 }
-#else
-  cv::Point2f findP4ByBrightestSpot(const cv::Mat& search_region,
-                                       const cv::Mat& search_mask) {
-        if (search_region.empty()) {
-            return cv::Point2f(-1, -1);
-        }
-        
-        double min_val, max_val;
-        cv::Point min_loc, max_loc;
-        cv::minMaxLoc(search_region, &min_val, &max_val, &min_loc, &max_loc, search_mask);
-        
-        if (debug_level_ >= DEBUG_VERBOSE) {
-            std::cout << "P4 bright spot: intensity=" << max_val << std::endl;
-        }
-        
-        if (max_val < p4_min_intensity_) {
-            return cv::Point2f(-1, -1);
-        }
-        
-        // Sub-pixel refinement
-        cv::Rect refinement_roi(max_loc.x - 1, max_loc.y - 1, 3, 3);
-        refinement_roi &= cv::Rect(0, 0, search_region.cols, search_region.rows);
-        
-        if (refinement_roi.area() < 9) {
-            return cv::Point2f(max_loc);
-        }
-        
-        cv::Mat neighborhood = search_region(refinement_roi);
-        cv::Moments m = cv::moments(neighborhood, false);
-        
-        if (m.m00 > 0) {
-            cv::Point2f refined(
-                refinement_roi.x + m.m10 / m.m00,
-                refinement_roi.y + m.m01 / m.m00
-            );
-            return refined;
-        }
-        
-        return cv::Point2f(max_loc);
-    }
-#endif
   
     // ========================================================================
     // P4 DETECTION
