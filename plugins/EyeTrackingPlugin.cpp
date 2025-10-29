@@ -515,6 +515,7 @@ private:
   float p1_max_distance_ratio_;
   cv::Size p1_centroid_roi_size_;
   float last_p1_area_ = -1.0f; 
+  float p1_pupil_radius_max_ = 1.25;
   
   // P4 detection
   P4Validator p4_validator_;
@@ -713,7 +714,7 @@ private:
 		       const cv::Point2f& pupil_center_local,
 		       float pupil_radius) {
     
-    float search_radius = pupil_radius * 2.0f;
+    float search_radius = pupil_radius * p1_pupil_radius_max_;
     
     cv::Rect p1_search_rect(
 			    pupil_center_local.x - search_radius,
@@ -847,7 +848,7 @@ private:
       
       // Distance check
       float dist = cv::norm(p1_local - pupil_center_local);
-      if (dist > pupil_radius * 2.0f) {
+      if (dist > pupil_radius * p1_pupil_radius_max_) {
 	if (debug_level_ >= DEBUG_VERBOSE && i == 0) {
 	  std::cout << "P1 candidate #" << (i+1) << " rejected: dist=" << dist 
 		    << " > " << (pupil_radius * 2.0f) << std::endl;
@@ -2921,6 +2922,7 @@ button.secondary:hover {
     return R"(
         CREATE TABLE IF NOT EXISTS eyetracking_frames (
             frame_number INTEGER PRIMARY KEY,
+            obs_id INTEGER,
             in_blink INTEGER NOT NULL,
             pupil_x REAL,
             pupil_y REAL,
@@ -2935,6 +2937,9 @@ button.secondary:hover {
             p4_angle_offset_deg REAL
         );
         
+       CREATE INDEX IF NOT EXISTS idx_eyetracking_obs
+            ON eyetracking_frames(obs_id);
+        
         CREATE INDEX IF NOT EXISTS idx_eyetracking_blink 
             ON eyetracking_frames(in_blink);
             
@@ -2943,8 +2948,7 @@ button.secondary:hover {
             WHERE pupil_x IS NOT NULL;
     )";
   }
-
-  bool storeFrameData(sqlite3* db, int frame_number) override {
+  bool storeFrameData(sqlite3* db, int frame_number, int obs_id) override {
     std::lock_guard<std::mutex> lock(results_mutex_);
     
     // ALWAYS store a row - even without valid results
@@ -2952,13 +2956,13 @@ button.secondary:hover {
     
     const char* sql = R"(
         INSERT INTO eyetracking_frames (
-            frame_number, in_blink,
+            frame_number, obs_id, in_blink,
             pupil_x, pupil_y, pupil_radius,
             p1_x, p1_y,
             p4_x, p4_y,
             p4_model_initialized, p4_model_frozen,
             p4_magnitude_ratio, p4_angle_offset_deg
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
     
     sqlite3_stmt* stmt;
@@ -2974,6 +2978,13 @@ button.secondary:hover {
     
     // Always bind frame_number
     sqlite3_bind_int(stmt, col++, frame_number);
+    
+    // Bind obs id (or null if outside obs period)
+    if (obs_id >= 0) {
+   	 sqlite3_bind_int(stmt, col++, obs_id);
+	} else {
+     sqlite3_bind_null(stmt, col++);
+    }
     
     // If we have valid results, store them; otherwise store NULLs
     if (latest_results_.valid) {
