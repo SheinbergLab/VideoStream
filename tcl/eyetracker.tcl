@@ -877,10 +877,12 @@ set files [list \
                [file join $video_folder glen_2.mkv] \
 	       [file join $video_folder 16_40_19MJPG-0003.avi] \
 	       [file join $video_folder human_planko-bounce-multiworld_2510271453.mp4] \
-	       [file join $vstream_folder human_emcalib-9point-spots_2510281744.mp4] \
+	       [file join $vstream_folder human_emcalib-9point-spots_2510291250.mp4] \
+	       [file join $vstream_folder human_planko-bounce-multiworld_2510291255.mp4] \
               ]
 
 # Default parameters
+eyetracking::setROI 300 100 270 240
 eyetracking::setP1MaxJump 6
 eyetracking::setP1MinIntensity 210
 eyetracking::setP4MaxJump 6
