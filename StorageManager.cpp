@@ -292,7 +292,9 @@ bool StorageManager::closeRecording() {
     }
     
     // Commit any pending transaction
-    commitTransaction();
+    if (sqlite3_get_autocommit(db_) == 0) {
+      commitTransaction();
+    }
     
     // Finalize prepared statements
     finalizeStatements();
