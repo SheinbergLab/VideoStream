@@ -1722,8 +1722,13 @@ public:
 	    imshow( "Frame", dframe );
 	  }
 
-	  int key = waitKeyEx(10);
+	  int key = waitKeyEx(5);
 	  if (key != -1) {
+	      std::cout << "Key received: " << key << " at frame " << displayFrame 
+              << " queue_size: " << display_queue.size() << std::endl;
+
+	  
+	  
 	    std::string callback = g_keyboardCallbacks.getCallback(key);
 	    if (!callback.empty()) {
 	      std::ostringstream cmd;
