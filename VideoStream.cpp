@@ -1392,7 +1392,8 @@ if (g_frameSource) {
 		  std::chrono::duration_cast<std::chrono::microseconds>(
 									frame_metadata.systemTime - on_systemTimestamp).count();
 		fdata.line_status = frame_metadata.lineStatus;
-		
+
+		storage_manager_.setObsState(frame_in_obs);
 		storage_manager_.storeFrame(fdata);
 		storage_manager_.storeFrameWithPlugins(frame_count, prev_fr);
 	      }
