@@ -259,7 +259,6 @@ static int getPixelIntensityCmd(ClientData clientData, Tcl_Interp *interp,
 // bind_key key callback
 // supports special keys like arrows, function keys, etc.
 // In tclproc.cpp
-
 int TclCmd_BindKey(ClientData clientData, Tcl_Interp *interp, 
                    int objc, Tcl_Obj *objv[]) {
     if (objc != 3) {
@@ -287,15 +286,24 @@ int TclCmd_BindKey(ClientData clientData, Tcl_Interp *interp,
                 Tcl_NewStringObj("invalid keycode in angle brackets", -1));
             return TCL_ERROR;
         }
-        g_keyboardCallbacks.registerCallback(key, callback);
-    } else if (len == 1) {
-        // Single character - register BOTH versions
-        key = static_cast<int>(keyStr[0]);
+        
+        // Register the key
         g_keyboardCallbacks.registerCallback(key, callback);
         
-        // Also register Qt version (ASCII + 0x100000)
-        int qt_key = key + 1048576;
-        g_keyboardCallbacks.registerCallback(qt_key, callback);
+        // For ANY key under 256, also register Qt version
+        if (key > 0 && key < 256) {
+            int qt_key = key + 1048576;
+            g_keyboardCallbacks.registerCallback(qt_key, callback);
+            std::cout << "Registered key " << key << " and Qt variant " << qt_key << std::endl;
+        }
+        
+    } else if (len == 1) {
+        // Single character
+        key = static_cast<int>(keyStr[0]);
+        
+        // Register both standard and Qt versions
+        g_keyboardCallbacks.registerCallback(key, callback);
+        g_keyboardCallbacks.registerCallback(key + 1048576, callback);
         
         // For letters, also handle case variations
         if (key >= 'A' && key <= 'Z') {
@@ -307,6 +315,7 @@ int TclCmd_BindKey(ClientData clientData, Tcl_Interp *interp,
             g_keyboardCallbacks.registerCallback(key - 32, callback);           // uppercase
             g_keyboardCallbacks.registerCallback(key - 32 + 1048576, callback); // Qt uppercase
         }
+        
     } else {
         Tcl_SetObjResult(interp, 
             Tcl_NewStringObj("key must be single character, <keycode>, or empty string", -1));
