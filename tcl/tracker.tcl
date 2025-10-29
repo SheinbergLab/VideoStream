@@ -270,6 +270,8 @@ proc onEvent {type data} {
     }
 }
 
+proc do_exit { args } { ::vstream::exit }
+
 proc toggle_insets { args } {
     set ::Registry::insets_visible [expr {!$::Registry::insets_visible}]
     ::eyetracking::toggleInsets $::Registry::insets_visible
@@ -372,7 +374,7 @@ proc show_frame_info { code } {
     puts "═══════════════════════════════════════════\n"
 }
 
-proc accept_p4_sample {} {
+proc accept_p4_sample { args } {
     if {[catch {eyetracking::acceptP4Sample} result]} {
         puts "❌ $result"
     } else {
@@ -380,12 +382,12 @@ proc accept_p4_sample {} {
     }
 }
 
-proc reset_p4_model {} {
+proc reset_p4_model { args } {
     eyetracking::resetP4Model
     eyetracking::setDetectionMode pupil_p1
 }
 
-proc calibrate_p4_model {} {
+proc calibrate_p4_model { args } {
     set status [eyetracking::getP4ModelStatus]
     set count [dict get $status samples]
     set initialized [dict get $status initialized]
@@ -692,9 +694,9 @@ proc live_mode { } {
     
     set ::Registry::paused 0  ;# Reset pause state
     
-    clear_widgets
-    clearRegistry
-    clear_key_bindings
+#    clear_widgets
+#    clearRegistry
+#    clear_key_bindings
 
     # Button row
     add_button -340 -50 80 40 Accept accept_p4_sample

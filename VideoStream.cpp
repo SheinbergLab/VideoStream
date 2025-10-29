@@ -1680,32 +1680,6 @@ public:
 #endif    
   }
 
-
-  int normalizeKeyCode(int key) {
-    // Qt backend adds 0x100000 (1048576) to ASCII codes
-    if (key >= 1048576 && key < 1048576 + 256) {
-      int normalized = key - 1048576;
-      
-      // Qt gives us lowercase letters, but we might want uppercase
-      if (normalized >= 97 && normalized <= 122) {
-	// Convert a-z to A-Z for consistency
-	return normalized - 32;
-      }
-      return normalized;
-    }
-    
-    // Qt arrow keys to standard X11 codes
-    switch(key) {
-    case 1113938: return 65362;  // Up
-    case 1113940: return 65364;  // Down  
-    case 1113937: return 65361;  // Left
-    case 1113939: return 65363;  // Right
-      // Add more as needed
-    }
-    
-    return key;  // Return unchanged if not Qt-specific
-  }
-  
   void startDisplayThread(void)
   {
     while (1) {
@@ -1749,9 +1723,9 @@ public:
 	  }
 
 	  int key = waitKeyEx(5);
+	  if (key == 27 || key == 1048603) { do_shutdown(); continue; } 
 	  if (key != -1) {
-	    int normalized_key = normalizeKeyCode(key);	    
-	    std::string callback = g_keyboardCallbacks.getCallback(normalized_key);
+	    std::string callback = g_keyboardCallbacks.getCallback(key);
 	    if (!callback.empty()) {
 	      std::ostringstream cmd;
 	      cmd << callback << " " << key;
