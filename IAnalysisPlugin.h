@@ -61,7 +61,9 @@ public:
      * @param frame_number Sequential frame number in output video
      * @return true if data was stored successfully
      */
-    virtual bool storeFrameData(sqlite3* db, int frame_number) { return false; }
+    virtual bool storeFrameData(sqlite3* db, int frame_number, int obs_id) { 
+    	return false; 
+    }
     
     /**
      * Optional: Called before a batch of frames will be stored
