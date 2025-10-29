@@ -1723,7 +1723,6 @@ public:
 	  }
 
 	  int key = waitKeyEx(5);
-	  if (key == 27 || key == 1048603) { do_shutdown(); continue; } 
 	  if (key != -1) {
 	    std::string callback = g_keyboardCallbacks.getCallback(key);
 	    if (!callback.empty()) {
@@ -1734,6 +1733,7 @@ public:
 	      // Handle built-in keys
 	      switch (key) {
 	      case 27:  // ESC
+	      case 1048603:
 		do_shutdown();
 		break;
 	      default:

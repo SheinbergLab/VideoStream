@@ -276,10 +276,10 @@ int TclCmd_BindKey(ClientData clientData, Tcl_Interp *interp,
     if (len == 0) {
         // Empty string means catch-all handler
         key = -1;
+        g_keyboardCallbacks.registerCallback(key, callback);
     } else if (keyStr[0] == '<' && keyStr[len-1] == '>' && len > 2) {
         // Angle bracket syntax: <keycode>
-        std::string codeStr(keyStr + 1, len - 2);  // Extract between < and >
-        
+        std::string codeStr(keyStr + 1, len - 2);
         char* endptr;
         key = strtol(codeStr.c_str(), &endptr, 10);
         if (*endptr != '\0') {
@@ -287,16 +287,32 @@ int TclCmd_BindKey(ClientData clientData, Tcl_Interp *interp,
                 Tcl_NewStringObj("invalid keycode in angle brackets", -1));
             return TCL_ERROR;
         }
+        g_keyboardCallbacks.registerCallback(key, callback);
     } else if (len == 1) {
-        // Single character - use its ASCII value
+        // Single character - register BOTH versions
         key = static_cast<int>(keyStr[0]);
+        g_keyboardCallbacks.registerCallback(key, callback);
+        
+        // Also register Qt version (ASCII + 0x100000)
+        int qt_key = key + 1048576;
+        g_keyboardCallbacks.registerCallback(qt_key, callback);
+        
+        // For letters, also handle case variations
+        if (key >= 'A' && key <= 'Z') {
+            // Register lowercase versions too
+            g_keyboardCallbacks.registerCallback(key + 32, callback);           // lowercase
+            g_keyboardCallbacks.registerCallback(key + 32 + 1048576, callback); // Qt lowercase
+        } else if (key >= 'a' && key <= 'z') {
+            // Register uppercase versions too  
+            g_keyboardCallbacks.registerCallback(key - 32, callback);           // uppercase
+            g_keyboardCallbacks.registerCallback(key - 32 + 1048576, callback); // Qt uppercase
+        }
     } else {
         Tcl_SetObjResult(interp, 
             Tcl_NewStringObj("key must be single character, <keycode>, or empty string", -1));
         return TCL_ERROR;
     }
     
-    g_keyboardCallbacks.registerCallback(key, callback);
     return TCL_OK;
 }
 
