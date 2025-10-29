@@ -869,12 +869,15 @@ if { [file exists /home/lab] } {
     set video_folder /Users/sheinb/Desktop/trial-videos
 }
 
+set vstream_folder /Users/sheinb/src/dserv/data/vstream
+
 set files [list \
                [file join $video_folder OpenIris-2025Jun23-131340-Right.mp4] \
                [file join $video_folder OpenIris-2025Oct03-143614-Right.mkv] \
                [file join $video_folder glen_2.mkv] \
 	       [file join $video_folder 16_40_19MJPG-0003.avi] \
 	       [file join $video_folder human_planko-bounce-multiworld_2510271453.mp4] \
+	       [file join $vstream_folder human_emcalib-9point-spots_2510281744.mp4] \
               ]
 
 # Default parameters
@@ -887,7 +890,7 @@ eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
 
 # Start with specific video
-playback_mode [lindex $files 4]
+playback_mode [lindex $files 5]
 
 # We have already calibrated this P4 model
 #eyetracking::setP4Model .421 169.5
