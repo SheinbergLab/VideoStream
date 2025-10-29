@@ -70,7 +70,11 @@ private:
     std::string current_db_path_;
     bool recording_open_;
     bool recording_active_;  // Controls whether frames are written
-    
+
+    bool in_obs_ = false;
+    int current_obs_id_ = -1;
+    int next_obs_id_ = 0;
+      
     // Prepared statements for base tables only
     sqlite3_stmt* stmt_insert_frame_;
     sqlite3_stmt* stmt_insert_obs_;
@@ -111,6 +115,9 @@ public:
     void startRecording();
     void stopRecording();
     bool isRecordingActive() const { return recording_active_; }
+    
+    void resetObsState();
+    void setObsState(bool in_obs);
     
     // Base table data storage
     bool storeFrame(const FrameData& frame);
