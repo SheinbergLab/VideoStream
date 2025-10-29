@@ -33,6 +33,28 @@ StorageManager::~StorageManager() {
 }
 
 // ============================================================================
+// OBS TRACKING
+// ============================================================================
+
+
+void StorageManager::setObsState(bool in_obs) {
+  if (in_obs && !in_obs_) {
+    // Entering obs period
+    current_obs_id_ = next_obs_id_++;
+  } else if (!in_obs && in_obs_) {
+    // Leaving obs period
+    current_obs_id_ = -1;
+  }
+  in_obs_ = in_obs;
+}
+
+void StorageManager::resetObsState() {
+    in_obs_ = false;
+    current_obs_id_ = -1;
+    next_obs_id_ = 0;
+}
+
+// ============================================================================
 // SQL EXECUTION HELPERS
 // ============================================================================
 
@@ -253,8 +275,10 @@ bool StorageManager::openDatabase(const std::string& db_path,
                                "file " + db_path + " error metadata_insert_failed"));
         return false;
     }
-    
+        
+    resetObsState();  
     recording_open_ = true;
+    
     std::cout << "Opened recording database: " << db_path << std::endl;
     
     return true;
@@ -578,7 +602,7 @@ bool StorageManager::storeFrameWithPlugins(int frame_number, int buffer_index) {
         
         if (plugin->usesStructuredStorage()) {
             // Plugin manages its own table inserts
-            plugin->storeFrameData(db_, frame_number);
+            plugin->storeFrameData(db_, frame_number, current_obs_id_);
             // Note: Don't treat as error if plugin has no data for this frame
         }
         // Note: Removed fallback JSON serialization - plugins should use structured storage
