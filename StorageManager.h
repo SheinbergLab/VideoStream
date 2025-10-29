@@ -27,6 +27,7 @@ struct RecordingMetadata {
 
 struct FrameData {
     int frame_number;
+    int obs_id;  
     int relative_frame_id;   // Offset from recording start frame ID
     int64_t timestamp_us;    // Microseconds from start
     int64_t system_time_us;  // System time microseconds from start
@@ -118,7 +119,8 @@ public:
     
     void resetObsState();
     void setObsState(bool in_obs);
-    
+    int getCurrentObsId(void) { return current_obs_id_; }
+  
     // Base table data storage
     bool storeFrame(const FrameData& frame);
     bool storeObservationStart(int frame_number);

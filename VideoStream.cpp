@@ -1384,8 +1384,11 @@ if (g_frameSource) {
 	      
 	      // Store frame metadata
 	      if (use_sqlite_) {
+		storage_manager_.setObsState(frame_in_obs);
+
 		FrameData fdata;
 		fdata.frame_number = frame_count;
+		fdata.obs_id = storage_manager_.getCurrentObsId(); 
 		fdata.relative_frame_id = (int)(frame_metadata.frameID - on_frameID);
 		fdata.timestamp_us = (frame_metadata.timestamp - on_frameTimestamp) / 1000;
 		fdata.system_time_us =
@@ -1393,7 +1396,6 @@ if (g_frameSource) {
 									frame_metadata.systemTime - on_systemTimestamp).count();
 		fdata.line_status = frame_metadata.lineStatus;
 
-		storage_manager_.setObsState(frame_in_obs);
 		storage_manager_.storeFrame(fdata);
 		storage_manager_.storeFrameWithPlugins(frame_count, prev_fr);
 	      }
