@@ -502,6 +502,7 @@ private:
   // ROI
   cv::Rect current_roi_;
   bool roi_enabled_;
+  std::mutex roi_mutex_;
   
   // Pupil detection
   int pupil_threshold_;
@@ -515,7 +516,8 @@ private:
   float p1_max_distance_ratio_;
   cv::Size p1_centroid_roi_size_;
   float last_p1_area_ = -1.0f; 
-  float p1_pupil_radius_max_ = 1.25;
+  float p1_pupil_radius_max_ = 1.75;
+  float last_p1_intensity_ = -1; 
   
   // P4 detection
   P4Validator p4_validator_;
@@ -600,38 +602,68 @@ private:
     // ========================================================================
     // PUPIL DETECTION
     // ========================================================================
+  PupilData detectPupil(const cv::Mat& frame) {
+    PupilData result = {cv::Point2f(-1, -1), -1, false};
     
-    PupilData detectPupil(const cv::Mat& frame) {
-        PupilData result = {cv::Point2f(-1, -1), -1, false};
-        
-        cv::Mat roi_frame = roi_enabled_ ? frame(current_roi_) : frame;
-        cv::Mat gray_roi = roi_enabled_ ? gray_buffer_(current_roi_) : gray_buffer_;
-        cv::Mat binary_roi = roi_enabled_ ? binary_buffer_(current_roi_) : binary_buffer_;
-        
-        if (roi_frame.channels() > 1) {
-            cv::cvtColor(roi_frame, gray_roi, cv::COLOR_BGR2GRAY);
-        } else {
-            roi_frame.copyTo(gray_roi);
-        }
-        
-        cv::threshold(gray_roi, binary_roi, pupil_threshold_, 255, cv::THRESH_BINARY_INV);
-        
-        cv::Moments m = cv::moments(binary_roi, true);
-        
-        if (m.m00 > 0) {
-            cv::Point2f center(m.m10 / m.m00, m.m01 / m.m00);
-            float radius = std::sqrt(m.m00 / M_PI);
-            
-            if (roi_enabled_) {
-                center.x += current_roi_.x;
-                center.y += current_roi_.y;
-            }
-            
-            result = {center, radius, true};
-        }
-        
-        return result;
+    // Thread-safe copy of ROI settings
+    cv::Rect roi;
+    bool use_roi;
+    {
+      std::lock_guard<std::mutex> lock(roi_mutex_);
+      roi = current_roi_;
+      use_roi = roi_enabled_;
     }
+    
+    // Validate ROI against current frame
+    if (use_roi) {
+        if (roi.x < 0 || roi.y < 0 || 
+            roi.x + roi.width > frame.cols || 
+            roi.y + roi.height > frame.rows ||
+            roi.width <= 0 || roi.height <= 0) {
+            use_roi = false;  // Invalid ROI, process full frame
+        }
+    }
+    
+    // Get the working region from input frame
+    cv::Mat roi_frame = use_roi ? frame(roi) : frame;
+    
+    // Allocate working buffers to match roi_frame size
+    // (Don't take ROI of buffers - allocate them to correct size)
+    if (gray_buffer_.size() != roi_frame.size()) {
+        gray_buffer_ = cv::Mat(roi_frame.size(), CV_8UC1);
+    }
+    if (binary_buffer_.size() != roi_frame.size()) {
+        binary_buffer_ = cv::Mat(roi_frame.size(), CV_8UC1);
+    }
+    
+    // Convert to grayscale
+    if (roi_frame.channels() > 1) {
+        cv::cvtColor(roi_frame, gray_buffer_, cv::COLOR_BGR2GRAY);
+    } else {
+        roi_frame.copyTo(gray_buffer_);
+    }
+    
+    // Threshold
+    cv::threshold(gray_buffer_, binary_buffer_, pupil_threshold_, 255, cv::THRESH_BINARY_INV);
+    
+    // Find pupil center
+    cv::Moments m = cv::moments(binary_buffer_, true);
+    
+    if (m.m00 > 0) {
+        cv::Point2f center(m.m10 / m.m00, m.m01 / m.m00);
+        float radius = std::sqrt(m.m00 / M_PI);
+        
+        // Adjust coordinates back to full frame if using ROI
+        if (use_roi) {
+            center.x += roi.x;
+            center.y += roi.y;
+        }
+        
+        result = {center, radius, true};
+    }
+    
+    return result;
+}
 
     // ========================================================================
     // P1 SUB-PIXEL REFINEMENT
@@ -738,6 +770,7 @@ private:
       cv::Point2f position;
       float score;
       float area;
+      float intensity;
       bool operator<(const P1Candidate& other) const {
 	return score > other.score;  // Sort descending
       }
@@ -808,13 +841,13 @@ private:
 	float vertical_bias = (spot_global.y > pupil_center_local.y) ? 1.2f : 1.0f;
         
 	float size_penalty = (area > 150) ? 0.8f : 1.0f;
-
-    // reward candidates that are about the same size
+	
+	// reward candidates that are about the same size
 	float size_consistency = 1.0f;
 	if (last_p1_area_ > 0) {
 	  float size_ratio = area / last_p1_area_;
 	  if (size_ratio < 0.6f || size_ratio > 1.7f) {
-		size_consistency = 0.5f;
+	    size_consistency = 0.5f;
 	  }
 	}
         
@@ -822,7 +855,7 @@ private:
 	  vertical_bias * size_penalty * size_consistency;
 	
 	// Add to candidate list instead of immediately picking best
-	candidates.push_back({center_rel, score, area});
+	candidates.push_back({center_rel, score, area, (float) effective_intensity});
       }
     }
     
@@ -883,7 +916,8 @@ private:
 		  << candidates[i].score << ")" << std::endl;
       }
       
-      last_p1_area_ = candidates[i].area; 
+      last_p1_area_ = candidates[i].area;
+      last_p1_intensity_ = candidates[i].intensity;      
       return p1_local;
     }
     
@@ -894,6 +928,7 @@ private:
     
     // don't have P1 area to track
     last_p1_area_ = -1.0f;
+    last_p1_intensity_ = -1.0f;
     
     return cv::Point2f(-1, -1);
   }
@@ -1030,35 +1065,56 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
   cv::Point2f detectP4(const cv::Mat& gray_roi,
 		       const cv::Point2f& pupil_center_local,
 		       const cv::Point2f& p1_local,
-		       float pupil_radius) {
+		       float pupil_radius,
+		       bool use_roi,
+		       const cv::Rect& roi) {
     
     cv::Mat search_mask = cv::Mat::zeros(gray_roi.size(), CV_8UC1);
     cv::Point2f predicted_p4_local(-1, -1);
     
     if (p4_model_.isInitialized()) {
-      // Use model prediction to constrain search
-      predicted_p4_local = p4_model_.predict(pupil_center_local, p1_local);
+      // Convert ROI-local coordinates to full-frame for model prediction
+      cv::Point2f pupil_full = pupil_center_local;
+      cv::Point2f p1_full = p1_local;
       
-        if (predicted_p4_local.x > 0) {
-            cv::Rect predictive_roi(
-                predicted_p4_local.x - p4_search_roi_size_.width / 2,
-                predicted_p4_local.y - p4_search_roi_size_.height / 2,
-                p4_search_roi_size_.width,
-                p4_search_roi_size_.height
-            );
-            
-            predictive_roi &= cv::Rect(0, 0, gray_roi.cols, gray_roi.rows);
-            
-            if (predictive_roi.area() > 0) {
-                search_mask(predictive_roi) = 255;
-                
-                if (debug_level_ >= DEBUG_VERBOSE) {
-                    std::cout << "P4 prediction: (" << predicted_p4_local.x 
-                              << "," << predicted_p4_local.y << ")" << std::endl;
-                }
-            }
+      if (use_roi) {
+        pupil_full.x += roi.x;
+        pupil_full.y += roi.y;
+        p1_full.x += roi.x;
+        p1_full.y += roi.y;
+      }
+      
+      // Predict in full-frame coordinates (matching training data)
+      cv::Point2f predicted_p4_full = p4_model_.predict(pupil_full, p1_full);
+    
+      // Convert prediction back to ROI-local coordinates for search
+      predicted_p4_local = predicted_p4_full;
+      if (use_roi && predicted_p4_full.x > 0) {
+        predicted_p4_local.x -= roi.x;
+        predicted_p4_local.y -= roi.y;
+      }
+      
+      if (predicted_p4_local.x > 0) {
+        cv::Rect predictive_roi(
+				predicted_p4_local.x - p4_search_roi_size_.width / 2,
+				predicted_p4_local.y - p4_search_roi_size_.height / 2,
+				p4_search_roi_size_.width,
+				p4_search_roi_size_.height
+				);
+        
+        predictive_roi &= cv::Rect(0, 0, gray_roi.cols, gray_roi.rows);
+        
+        if (predictive_roi.area() > 0) {
+	  search_mask(predictive_roi) = 255;
+          
+	  if (debug_level_ >= DEBUG_VERBOSE) {
+	    std::cout << "P4 prediction: (" << predicted_p4_local.x 
+		      << "," << predicted_p4_local.y << ")" << std::endl;
+	  }
         }
-    } else {
+      }
+    }
+    else {
         // Model not initialized - search within pupil boundary
         float search_radius = pupil_radius * 0.85f;
         cv::circle(search_mask, pupil_center_local, search_radius, 255, -1);
@@ -1106,136 +1162,163 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
 	if (detection_mode_ == MODE_PUPIL_ONLY) {
 	  return result;
 	}	
-        
-        cv::Mat roi_frame = roi_enabled_ ? frame(current_roi_) : frame;
-        cv::Mat gray_roi = roi_enabled_ ? gray_buffer_(current_roi_) : gray_buffer_;
-        
-        if (roi_frame.channels() > 1) {
-            cv::cvtColor(roi_frame, gray_roi, cv::COLOR_BGR2GRAY);
-        } else {
-            roi_frame.copyTo(gray_roi);
-        }
-        
-        cv::GaussianBlur(gray_roi, gray_roi, cv::Size(3, 3), 0.5);
-        
-        cv::Point2f pupil_center_local = pupil.center;
-        if (roi_enabled_) {
-            pupil_center_local.x -= current_roi_.x;
-            pupil_center_local.y -= current_roi_.y;
-        }
-        
-        // P1 DETECTION (only if mode >= MODE_PUPIL_P1)
-        cv::Point2f p1_local = detectP1(gray_roi, pupil_center_local, pupil.radius);
-        
-        static int p1_loss_counter = 0;
-        static int p1_recovery_countdown = 0;
-        const int P1_LOSS_THRESHOLD = 5;
-        const int P1_RECOVERY_FRAMES = 5;
-        
-        if (debug_level_ >= DEBUG_VERBOSE && 
-            (p1_local.x < 0 || blink_detector_.isInBlink())) {
-            std::cout << "P1: detected=" << (p1_local.x >= 0)
-                      << " blink=" << blink_detector_.isInBlink()
-                      << " recovery=" << blink_detector_.isRecovering() << std::endl;
-        }
 
-
-	// Signal blink events
-	static bool was_in_blink = false;
-	bool currently_in_blink = blink_detector_.isInBlink();
-	
-	if (!was_in_blink && currently_in_blink) {
-	  // Blink started
-	  fireEvent(VstreamEvent("eyetracking/blink_start",
-			  "frame " + std::to_string(frame_idx)));
-	} else if (was_in_blink && !currently_in_blink) {
-	  // Blink ended
-	  fireEvent(VstreamEvent("eyetracking/blink_end",
-			  "frame " + std::to_string(frame_idx)));
-	}
-	was_in_blink = currently_in_blink;
-	
-	static bool p1_was_lost = false;
-        if (p1_local.x < 0) {
-            p1_loss_counter++;
-            if (p1_loss_counter == P1_LOSS_THRESHOLD) {
-                p1_validator_.reset();
-                p1_recovery_countdown = P1_RECOVERY_FRAMES;
-
-		fireEvent(VstreamEvent("eyetracking/p1_lost",
-				"frame " + std::to_string(frame_idx)));
-		p1_was_lost = true;		
-
-                if (debug_level_ >= DEBUG_CRITICAL) {
-                    std::cout << "⚠️ P1 lost - resetting validator" << std::endl;
-                }
-            }
-        } else {
-	  if (p1_was_lost) {
-            // P1 recovered
-	    fireEvent(VstreamEvent("eyetracking/p1_recovered",
-			    "frame " + std::to_string(frame_idx)));
-            p1_was_lost = false;
-	  }
-	  
-	  p1_loss_counter = 0;
-	  if (p1_recovery_countdown > 0) {
-	    p1_recovery_countdown--;
-	  }
-        }
-        
-        if (p1_local.x > 0) {
-            cv::Point2f p1_full = p1_local;
-            if (roi_enabled_) {
-                p1_full.x += current_roi_.x;
-                p1_full.y += current_roi_.y;
-            }
-            
-            bool is_valid = blink_detector_.isRecovering() || 
-                           p1_recovery_countdown > 0 ||
-                           p1_validator_.isValid(p1_full);
-            
-            if (is_valid) {
-                result.p1_detected = true;
-                result.p1_center = p1_full;
-                
-                if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() && 
-                    p1_recovery_countdown == 0) {
-                    p1_validator_.update(p1_full);
-                }
-            } else if (debug_level_ >= DEBUG_NORMAL) {
-	      float jump_dist = p1_validator_.getJumpDistance();
-	      float max_allowed = p1_validator_.getMaxJump();
-	      int candidate_count = p1_validator_.getCandidateCount();
-	      
-	      std::cout << "⚠️ P1 rejected: "
-			<< "jump=" << std::fixed << std::setprecision(1) << jump_dist << "px "
-			<< "(max=" << max_allowed << "px, "
-			<< (jump_dist / max_allowed * 100) << "% over) "
-			<< "pos=(" << p1_full.x << "," << p1_full.y << ")";
-	      
-	      if (candidate_count > 0) {
-		std::cout << " [tracking " << candidate_count << "/3]";
-	      }
-	      
-	      std::cout << std::endl;
-	    }
-        }
+ // Thread-safe copy of ROI settings
+    cv::Rect roi;
+    bool use_roi;
+    {
+        std::lock_guard<std::mutex> lock(roi_mutex_);
+        roi = current_roi_;
+        use_roi = roi_enabled_;
+    }
     
+    // Validate ROI against current frame
+    if (use_roi) {
+        if (roi.x < 0 || roi.y < 0 || 
+            roi.x + roi.width > frame.cols || 
+            roi.y + roi.height > frame.rows ||
+            roi.width <= 0 || roi.height <= 0) {
+            use_roi = false;
+        }
+    }
+    
+    // Get working region from input frame
+    cv::Mat roi_frame = use_roi ? frame(roi) : frame;
+    
+    // Allocate working buffer to match roi_frame size
+    if (gray_buffer_.size() != roi_frame.size()) {
+        gray_buffer_ = cv::Mat(roi_frame.size(), CV_8UC1);
+    }
+    
+    // Convert to grayscale
+    if (roi_frame.channels() > 1) {
+        cv::cvtColor(roi_frame, gray_buffer_, cv::COLOR_BGR2GRAY);
+    } else {
+        roi_frame.copyTo(gray_buffer_);
+    }
+    	
+    cv::GaussianBlur(gray_buffer_, gray_buffer_, cv::Size(3, 3), 0.5);
+
+    // Adjust pupil center to local coordinates if using ROI
+    cv::Point2f pupil_center_local = pupil.center;
+    if (use_roi) {
+        pupil_center_local.x -= roi.x;
+        pupil_center_local.y -= roi.y;
+    }
         
-        // P4 DETECTION
-        if (detection_mode_ == MODE_FULL && result.p1_detected) {
-            cv::Point2f p4_local = detectP4(gray_roi, pupil_center_local, p1_local, pupil.radius);
-            
-            if (p4_local.x > 0) {
-                cv::Point2f p4_full = p4_local;
-                if (roi_enabled_) {
-                    p4_full.x += current_roi_.x;
-                    p4_full.y += current_roi_.y;
-                }
-                
-                bool is_valid = blink_detector_.isRecovering() || 
-                               p4_validator_.isValid(p4_full, pupil.center);
+    // P1 DETECTION (only if mode >= MODE_PUPIL_P1)
+    cv::Point2f p1_local = detectP1(gray_buffer_, pupil_center_local, pupil.radius);
+        
+    static int p1_loss_counter = 0;
+    static int p1_recovery_countdown = 0;
+    const int P1_LOSS_THRESHOLD = 5;
+    const int P1_RECOVERY_FRAMES = 5;
+    
+    if (debug_level_ >= DEBUG_VERBOSE && 
+	(p1_local.x < 0 || blink_detector_.isInBlink())) {
+      std::cout << "P1: detected=" << (p1_local.x >= 0)
+		<< " blink=" << blink_detector_.isInBlink()
+		<< " recovery=" << blink_detector_.isRecovering() << std::endl;
+    }
+    
+    
+    // Signal blink events
+    static bool was_in_blink = false;
+    bool currently_in_blink = blink_detector_.isInBlink();
+    
+    if (!was_in_blink && currently_in_blink) {
+      // Blink started
+      fireEvent(VstreamEvent("eyetracking/blink_start",
+			     "frame " + std::to_string(frame_idx)));
+    } else if (was_in_blink && !currently_in_blink) {
+      // Blink ended
+      fireEvent(VstreamEvent("eyetracking/blink_end",
+			     "frame " + std::to_string(frame_idx)));
+    }
+    was_in_blink = currently_in_blink;
+    
+    static bool p1_was_lost = false;
+    if (p1_local.x < 0) {
+      p1_loss_counter++;
+      if (p1_loss_counter == P1_LOSS_THRESHOLD) {
+	p1_validator_.reset();
+	p1_recovery_countdown = P1_RECOVERY_FRAMES;
+	
+	fireEvent(VstreamEvent("eyetracking/p1_lost",
+			       "frame " + std::to_string(frame_idx)));
+	p1_was_lost = true;		
+	
+	if (debug_level_ >= DEBUG_CRITICAL) {
+	  std::cout << "⚠️ P1 lost - resetting validator" << std::endl;
+	}
+      }
+    } else {
+      if (p1_was_lost) {
+	// P1 recovered
+	fireEvent(VstreamEvent("eyetracking/p1_recovered",
+			       "frame " + std::to_string(frame_idx)));
+	p1_was_lost = false;
+      }
+      
+      p1_loss_counter = 0;
+      if (p1_recovery_countdown > 0) {
+	p1_recovery_countdown--;
+      }
+    }
+    
+    if (p1_local.x > 0) {
+      cv::Point2f p1_full = p1_local;
+      if (use_roi) {
+                p1_full.x += roi.x;
+                p1_full.y += roi.y;
+            }
+      
+      bool is_valid = blink_detector_.isRecovering() || 
+	p1_recovery_countdown > 0 ||
+	p1_validator_.isValid(p1_full);
+      
+      if (is_valid) {
+	result.p1_detected = true;
+	result.p1_center = p1_full;
+        
+	if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() && 
+	    p1_recovery_countdown == 0) {
+	  p1_validator_.update(p1_full);
+	}
+      } else if (debug_level_ >= DEBUG_NORMAL) {
+	float jump_dist = p1_validator_.getJumpDistance();
+	float max_allowed = p1_validator_.getMaxJump();
+	int candidate_count = p1_validator_.getCandidateCount();
+	
+	std::cout << "⚠️ P1 rejected: "
+		  << "jump=" << std::fixed << std::setprecision(1) << jump_dist << "px "
+		  << "(max=" << max_allowed << "px, "
+		  << (jump_dist / max_allowed * 100) << "% over) "
+		  << "pos=(" << p1_full.x << "," << p1_full.y << ")";
+	
+	if (candidate_count > 0) {
+	  std::cout << " [tracking " << candidate_count << "/3]";
+	}
+	
+	std::cout << std::endl;
+      }
+    }
+    
+    
+    // P4 DETECTION
+    if (detection_mode_ == MODE_FULL && result.p1_detected) {
+      cv::Point2f p4_local = detectP4(gray_buffer_, pupil_center_local, p1_local, pupil.radius,
+				      use_roi, roi);
+      
+      if (p4_local.x > 0) {
+	cv::Point2f p4_full = p4_local;
+	if (use_roi) {
+	  p4_full.x += roi.x;
+	  p4_full.y += roi.y;
+	}
+	
+	bool is_valid = blink_detector_.isRecovering() || 
+	  p4_validator_.isValid(p4_full, pupil.center);
                 
                 if (!is_valid && debug_level_ >= DEBUG_NORMAL) {
                     std::cout << "⚠️ P4 rejected by validator" << std::endl;
@@ -1495,6 +1578,7 @@ static int resetTrackingStateCmd(ClientData clientData, Tcl_Interp *interp,
         EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
         
         if (objc == 1) {
+	  std::lock_guard<std::mutex> lock(plugin->roi_mutex_);	  
             const cv::Rect& roi = plugin->current_roi_;
             Tcl_Obj* resultList = Tcl_NewListObj(0, nullptr);
             Tcl_ListObjAppendElement(interp, resultList, Tcl_NewIntObj(roi.x));
@@ -3210,8 +3294,26 @@ bool drawOverlay(cv::Mat& frame, int frame_idx) override {
     
     if (!latest_results_.valid) return false;
 
+ cv::Rect roi;
+    bool use_roi;
+    {
+        std::lock_guard<std::mutex> roi_lock(roi_mutex_);
+        roi = current_roi_;
+        use_roi = roi_enabled_;
+    }
+    
+    // Validate ROI against current frame
+    if (use_roi) {
+        if (roi.x < 0 || roi.y < 0 || 
+            roi.x + roi.width > frame.cols || 
+            roi.y + roi.height > frame.rows ||
+            roi.width <= 0 || roi.height <= 0) {
+            use_roi = false;
+        }
+    }
+    
     // Extract gray FIRST, before any drawing on overlay
-    cv::Mat roi_frame = roi_enabled_ ? frame(current_roi_) : frame;
+    cv::Mat roi_frame = use_roi ? frame(roi) : frame;
     cv::Mat gray_for_inset;
     if (roi_frame.channels() > 1) {
         cv::cvtColor(roi_frame, gray_for_inset, cv::COLOR_BGR2GRAY);
@@ -3223,10 +3325,10 @@ bool drawOverlay(cv::Mat& frame, int frame_idx) override {
     cv::Mat overlay = frame.clone();
     double alpha = 0.6;  // Transparency factor (0.0 = fully transparent, 1.0 = opaque)
     
-    if (roi_enabled_) {
-      cv::rectangle(overlay, current_roi_, cv::Scalar(255, 255, 0), 2);
+    if (use_roi) {
+      cv::rectangle(overlay, roi, cv::Scalar(255, 255, 0), 2);
       cv::putText(overlay, "ROI", 
-		  cv::Point(current_roi_.x + 5, current_roi_.y + 20),
+		  cv::Point(roi.x + 5, roi.y + 20),
 		  cv::FONT_HERSHEY_SIMPLEX, 0.5, 
 		  cv::Scalar(255, 255, 0), 1);
     }
@@ -3251,6 +3353,14 @@ bool drawOverlay(cv::Mat& frame, int frame_idx) override {
       // Blue marker with yellow text - visible against dark pupil
       cv::circle(overlay, latest_results_.purkinje.p1_center, 
 		 4, cv::Scalar(255, 0, 0), 1);
+      if (last_p1_intensity_ > 0) {
+	std::string intensity_text = "I=" + std::to_string((int)last_p1_intensity_);
+	cv::putText(overlay, intensity_text,
+		    cv::Point(latest_results_.purkinje.p1_center.x + 10,
+			      latest_results_.purkinje.p1_center.y - 10),
+		    cv::FONT_HERSHEY_SIMPLEX, 0.4,
+		    cv::Scalar(255, 255, 0), 1);
+      }
       cv::drawMarker(overlay, latest_results_.purkinje.p1_center,
 		     cv::Scalar(255, 0, 0), cv::MARKER_CROSS, 6, 1);
       cv::putText(overlay, "P1", 
