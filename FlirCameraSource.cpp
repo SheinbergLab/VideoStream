@@ -508,77 +508,58 @@ bool FlirCameraSource::setROIOffset(int offsetX, int offsetY) {
     }
 }
 
-bool FlirCameraSource::configureBinning(int horizontal, int vertical) {
-    if (!nodeMapPtr) return false;
+void FlirCameraSource::setBinning(int horizontal, int vertical)
+{
+  try {
+    Spinnaker::GenApi::INodeMap& nodeMap = pCam->GetNodeMap();
     
-    try {
-        bool wasStreaming = pCam->IsStreaming();
-        if (wasStreaming) {
-            pCam->EndAcquisition();
-        }
-
-	// Set BinningSelector first
-        CEnumerationPtr ptrBinningSelector = nodeMapPtr->GetNode("BinningSelector");
-        if (IsAvailable(ptrBinningSelector)) {
-            std::cout << "BinningSelector available, current: " 
-                      << ptrBinningSelector->GetCurrentEntry()->GetSymbolic() << std::endl;
-            
-            if (IsWritable(ptrBinningSelector)) {
-                CEnumEntryPtr ptrAll = ptrBinningSelector->GetEntryByName("All");
-                if (IsAvailable(ptrAll)) {
-                    ptrBinningSelector->SetIntValue(ptrAll->GetValue());
-                    std::cout << "Set BinningSelector to All" << std::endl;
-                }
-            }
-        }
-	
-        // Set horizontal binning
-        CIntegerPtr ptrBinningHorizontal = nodeMapPtr->GetNode("BinningHorizontal");
-        if (IsAvailable(ptrBinningHorizontal) && IsWritable(ptrBinningHorizontal)) {
-            ptrBinningHorizontal->SetValue(horizontal);
-            binning_h = static_cast<int>(ptrBinningHorizontal->GetValue());
-            std::cout << "Horizontal binning set to: " << binning_h << std::endl;
-        } else {
-            std::cerr << "BinningHorizontal not available" << std::endl;
-            if (wasStreaming) pCam->BeginAcquisition();
-            return false;
-        }
-        
-        // Set vertical binning
-        CIntegerPtr ptrBinningVertical = nodeMapPtr->GetNode("BinningVertical");
-        if (IsAvailable(ptrBinningVertical) && IsWritable(ptrBinningVertical)) {
-            ptrBinningVertical->SetValue(vertical);
-            binning_v = static_cast<int>(ptrBinningVertical->GetValue());
-            std::cout << "Vertical binning set to: " << binning_v << std::endl;
-        } else {
-            std::cerr << "BinningVertical not available" << std::endl;
-            if (wasStreaming) pCam->BeginAcquisition();
-            return false;
-        }
-        
-        // Update width/height after binning change
-        CIntegerPtr ptrWidth = nodeMapPtr->GetNode("Width");
-        if (IsAvailable(ptrWidth) && IsReadable(ptrWidth)) {
-            width = static_cast<int>(ptrWidth->GetValue());
-        }
-        
-        CIntegerPtr ptrHeight = nodeMapPtr->GetNode("Height");
-        if (IsAvailable(ptrHeight) && IsReadable(ptrHeight)) {
-            height = static_cast<int>(ptrHeight->GetValue());
-        }
-        
-        frame_width = width;
-        frame_height = height;
-        
-        if (wasStreaming) {
-            pCam->BeginAcquisition();
-        }
-        
-        return true;
-    } catch (Spinnaker::Exception &e) {
-        std::cerr << "Error configuring binning: " << e.what() << std::endl;
-        return false;
+    // Stop acquisition if running
+    bool wasAcquiring = pCam->IsStreaming();
+    if (wasAcquiring) {
+      pCam->EndAcquisition();
     }
+    
+    // Reset ROI to maximum before changing binning
+    Spinnaker::GenApi::CIntegerPtr ptrWidth = nodeMap.GetNode("Width");
+    Spinnaker::GenApi::CIntegerPtr ptrHeight = nodeMap.GetNode("Height");
+    Spinnaker::GenApi::CIntegerPtr ptrOffsetX = nodeMap.GetNode("OffsetX");
+    Spinnaker::GenApi::CIntegerPtr ptrOffsetY = nodeMap.GetNode("OffsetY");
+    
+    if (IsWritable(ptrOffsetX)) ptrOffsetX->SetValue(0);
+    if (IsWritable(ptrOffsetY)) ptrOffsetY->SetValue(0);
+    if (IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMax());
+    if (IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMax());
+    
+    // Now set binning selector and binning amount
+    CEnumerationPtr ptrBinningSelector = nodeMap.GetNode("BinningSelector");
+    if (IsWritable(ptrBinningSelector)) {
+      CEnumEntryPtr ptrBinningSelectorAll = ptrBinningSelector->GetEntryByName("All");
+      if (IsReadable(ptrBinningSelectorAll)) {
+        ptrBinningSelector->SetIntValue(ptrBinningSelectorAll->GetValue());
+      }
+    }
+    
+    Spinnaker::GenApi::CIntegerPtr ptrBinningHorizontal = nodeMap.GetNode("BinningHorizontal");
+    Spinnaker::GenApi::CIntegerPtr ptrBinningVertical = nodeMap.GetNode("BinningVertical");
+    
+    if (IsWritable(ptrBinningHorizontal)) {
+      ptrBinningHorizontal->SetValue(horizontal);
+      std::cout << "Set horizontal binning to " << horizontal << std::endl;
+    }
+    
+    if (IsWritable(ptrBinningVertical)) {
+      ptrBinningVertical->SetValue(vertical);
+      std::cout << "Set vertical binning to " << vertical << std::endl;
+    }
+    
+    // Restart acquisition if it was running
+    if (wasAcquiring) {
+      pCam->BeginAcquisition();
+    }
+    
+  } catch (Spinnaker::Exception& e) {
+    std::cerr << "Error setting binning: " << e.what() << std::endl;
+  }
 }
 
 bool FlirCameraSource::configureROI(int w, int h, int offsetX, int offsetY) {
