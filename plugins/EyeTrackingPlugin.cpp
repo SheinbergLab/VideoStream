@@ -371,12 +371,12 @@ class BlinkDetector {
 private:
     bool in_blink_;
     int recovery_countdown_;
-    static constexpr int RECOVERY_FRAMES = 5;
+    static constexpr int RECOVERY_FRAMES = 15;
     
     float baseline_radius_;
     bool baseline_initialized_;
-    static constexpr float BLINK_ENTER_RATIO = 0.5f;
-    static constexpr float BLINK_EXIT_RATIO = 0.7f;
+    static constexpr float BLINK_ENTER_RATIO = 0.6f;
+    static constexpr float BLINK_EXIT_RATIO = 0.8f;
     static constexpr int BASELINE_UPDATE_FRAMES = 10;
     int frames_since_update_;
 
@@ -547,7 +547,7 @@ private:
     int p1_min_intensity = 140;
     float p4_max_jump = 20.0f;
     int p4_min_intensity = 140;
-    float p4_max_prediction_error = 13.0f;
+    float p4_max_prediction_error = 18.0f;
     std::string detection_mode = "pupil_p1";
   } settings_;
   
@@ -791,15 +791,15 @@ private:
       for (const auto& contour : contours) {
 	float area = cv::contourArea(contour);
         
-	if (area < 1) continue;
-	if (area > 500) {
+	if (area < 80) continue;
+	if (area > 700) {
 	  continue;
 	}
     
 	// shouldn't deviate from previous area by too much    
 	if (last_p1_area_ > 0) {
 	  float size_ratio = area / last_p1_area_;
-	  if (size_ratio < 0.3f || size_ratio > 3.0f) continue;
+	  if (size_ratio < 0.7f || size_ratio > 2.0f) continue;
 	}
 
 	total_candidates++;
@@ -1331,15 +1331,14 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
                     if (debug_level_ >= DEBUG_VERBOSE) {
                         std::cout << "✓ P4 accepted at (" << p4_full.x << "," << p4_full.y << ")" << std::endl;
                     }
-                    
-                    if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering()) {
-                        p4_validator_.update(p4_full, pupil.center);
 
-			// Only update the model if it's already initialized (not calibrating)
-			if (p4_model_.isInitialized() && !p4_model_.isFrozen()) {
-			  p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
-			}
-                    }
+		    p4_validator_.update(p4_full, pupil.center);		    
+
+		    // But only update MODEL after recovery
+		    if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() &&
+			p4_model_.isInitialized() && !p4_model_.isFrozen()) {
+		      p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
+		    }		    
                 }
             }
         }
@@ -1406,7 +1405,17 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
                 bool was_in_blink = blink_detector_.isInBlink();
                 
                 blink_detector_.update(pupil.detected, pupil.radius);
-                
+
+		if (debug_level_ >= DEBUG_NORMAL && pupil.detected) {
+		  std::cout << "Frame " << frame_data.frame_idx 
+			    << ": pupil_r=" << std::fixed << std::setprecision(1) << pupil.radius
+			    << " baseline=" << blink_detector_.getBaselineRadius()
+			    << " ratio=" << std::setprecision(2) << (pupil.radius / blink_detector_.getBaselineRadius())
+			    << " blink=" << blink_detector_.isInBlink()
+			    << " recovering=" << blink_detector_.isRecovering()
+			    << std::endl;
+		}
+		
                 if (blink_detector_.shouldResetValidators()) {
                     p1_validator_.reset();
                     p4_validator_.reset();                
