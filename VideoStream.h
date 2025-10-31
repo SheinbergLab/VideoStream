@@ -21,10 +21,10 @@ typedef struct _proginfo_t {
   IFrameSource** frameSource;  // Pointer to pointer so we can update it
   
   // Frame properties
-  float* frame_rate;
   std::atomic<int>* frame_width;
   std::atomic<int>* frame_height;
-  bool* is_color;
+  std::atomic<float>* frame_rate;
+  std::atomic<bool>* is_color;
   DservSocket *dservSocket;
   const char *ds_host;
   int ds_port;
@@ -106,6 +106,8 @@ extern "C" {
 
 extern std::atomic<int> frame_width;
 extern std::atomic<int> frame_height;
+extern std::atomic<float> frame_rate;
+extern std::atomic<bool>  is_color;
 
 #endif
 
