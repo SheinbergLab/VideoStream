@@ -16,11 +16,12 @@
 #include "SharedQueue.hpp"
 #include "IAnalysisPlugin.h"
 #include "AnalysisPluginRegistry.h"
-
+#include "SourceManager.h"
 #include "DataserverForwarder.h"
 #include "VstreamEvent.h"
 
 extern AnalysisPluginRegistry g_pluginRegistry;
+extern SourceManager* g_sourceManager;
 
 // ============================================================================
 // DEBUG LEVELS
@@ -54,12 +55,12 @@ private:
     // Candidate tracking for relocation
     cv::Point2f candidate_position_;
     int candidate_count_;
-    static constexpr int RELOCATION_THRESHOLD = 3;
+    int relocation_threshold_;
 
 public:
-    P1Validator(float max_jump = 15.0f) 
+    P1Validator(float max_jump = 15.0f, int relocation_threshold = 3) 
         : initialized_(false), max_jump_pixels_(max_jump), last_jump_distance_(0.0f),
-          candidate_position_(-1, -1), candidate_count_(0) {}
+          candidate_position_(-1, -1), candidate_count_(0), relocation_threshold_(relocation_threshold) {}
 
     bool isValid(const cv::Point2f& new_pos) {
         if (!initialized_) {
@@ -101,7 +102,7 @@ public:
             candidate_position_ = (candidate_position_ * (candidate_count_ - 1) + new_pos) / 
                                   static_cast<float>(candidate_count_);
             
-            if (candidate_count_ >= RELOCATION_THRESHOLD) {
+            if (candidate_count_ >= relocation_threshold_) {
                 // Accept the relocation!
                 return true;
             }
@@ -371,19 +372,20 @@ class BlinkDetector {
 private:
     bool in_blink_;
     int recovery_countdown_;
-    static constexpr int RECOVERY_FRAMES = 15;
+    int recovery_frames_;
     
     float baseline_radius_;
     bool baseline_initialized_;
     static constexpr float BLINK_ENTER_RATIO = 0.6f;
     static constexpr float BLINK_EXIT_RATIO = 0.8f;
-    static constexpr int BASELINE_UPDATE_FRAMES = 10;
+    int baseline_update_frames_;
     int frames_since_update_;
 
 public:
-    BlinkDetector() : in_blink_(false), recovery_countdown_(0),
-                     baseline_radius_(0), baseline_initialized_(false),
-                     frames_since_update_(0) {}
+    BlinkDetector(int recovery_frames = 25, int baseline_update_frames = 10) 
+        : in_blink_(false), recovery_countdown_(0), recovery_frames_(recovery_frames),
+          baseline_radius_(0), baseline_initialized_(false),
+          frames_since_update_(0), baseline_update_frames_(baseline_update_frames) {}
 
     void update(bool pupil_detected, float pupil_radius) {
         if (pupil_detected && !in_blink_ && recovery_countdown_ == 0) {
@@ -392,7 +394,7 @@ public:
                 baseline_initialized_ = true;
             } else {
                 frames_since_update_++;
-                if (frames_since_update_ >= BASELINE_UPDATE_FRAMES) {
+                if (frames_since_update_ >= baseline_update_frames_) {
                     baseline_radius_ = 0.95f * baseline_radius_ + 0.05f * pupil_radius;
                     frames_since_update_ = 0;
                 }
@@ -413,12 +415,12 @@ public:
         if (blink_condition) {
             if (!in_blink_) {
                 in_blink_ = true;
-                recovery_countdown_ = RECOVERY_FRAMES;
+                recovery_countdown_ = recovery_frames_;
             }
         } else {
             if (in_blink_) {
                 in_blink_ = false;
-                recovery_countdown_ = RECOVERY_FRAMES;
+                recovery_countdown_ = recovery_frames_;
             }
         }
     }
@@ -433,7 +435,7 @@ public:
     bool isRecovering() const { return recovery_countdown_ > 0; }
     
     bool shouldResetValidators() const {
-        return in_blink_ && recovery_countdown_ == RECOVERY_FRAMES;
+        return in_blink_ && recovery_countdown_ == recovery_frames_;
     }
     
     float getBaselineRadius() const { return baseline_radius_; }
@@ -539,6 +541,8 @@ private:
   std::atomic<bool> debug_next_frame_;
   std::atomic<bool> show_insets_;
   
+  // Frame source for getting frame rate
+  IFrameSource* frame_source_;
 
   // Settings storage
   struct Settings {
@@ -550,6 +554,42 @@ private:
     float p4_max_prediction_error = 18.0f;
     std::string detection_mode = "pupil_p1";
   } settings_;
+  
+  // Frame-rate-dependent timing thresholds (in frames)
+  struct TimingThresholds {
+    int p1_loss_threshold;        // Frames without P1 before reset
+    int p1_recovery_frames;       // Frames to skip validation after P1 loss
+    int p1_relocation_frames;     // Frames needed to confirm P1 relocation
+    int blink_recovery_frames;    // Frames to recover after blink
+    int baseline_update_frames;   // Frames between baseline updates
+    
+    // Initialize with default time constants (assuming 250 Hz)
+    TimingThresholds() 
+      : p1_loss_threshold(5),
+        p1_recovery_frames(5),
+        p1_relocation_frames(3),
+        blink_recovery_frames(25),
+        baseline_update_frames(10) {}
+    
+    // Calculate frame counts from time constants and frame rate
+    void calculateFromFrameRate(float fps) {
+      float frame_time_ms = 1000.0f / fps;
+      
+      // Time constants in milliseconds
+      constexpr float P1_LOSS_TIME_MS = 20.0f;
+      constexpr float P1_RECOVERY_TIME_MS = 20.0f;
+      constexpr float P1_RELOCATION_TIME_MS = 12.0f;
+      constexpr float BLINK_RECOVERY_TIME_MS = 100.0f;
+      constexpr float BASELINE_UPDATE_TIME_MS = 40.0f;
+      
+      // Convert to frame counts
+      p1_loss_threshold = static_cast<int>(std::ceil(P1_LOSS_TIME_MS / frame_time_ms));
+      p1_recovery_frames = static_cast<int>(std::ceil(P1_RECOVERY_TIME_MS / frame_time_ms));
+      p1_relocation_frames = static_cast<int>(std::ceil(P1_RELOCATION_TIME_MS / frame_time_ms));
+      blink_recovery_frames = static_cast<int>(std::ceil(BLINK_RECOVERY_TIME_MS / frame_time_ms));
+      baseline_update_frames = static_cast<int>(std::ceil(BASELINE_UPDATE_TIME_MS / frame_time_ms));
+    }
+  } timing_;
   
     void fireSettingChanged(const std::string& setting_name, const std::string& value) {
         std::map<std::string, std::string> data;
@@ -791,8 +831,8 @@ private:
       for (const auto& contour : contours) {
 	float area = cv::contourArea(contour);
         
-	if (area < 80) continue;
-	if (area > 700) {
+	if (area < 2) continue;
+	if (area > 800) {
 	  continue;
 	}
     
@@ -1211,8 +1251,9 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
         
     static int p1_loss_counter = 0;
     static int p1_recovery_countdown = 0;
-    const int P1_LOSS_THRESHOLD = 5;
-    const int P1_RECOVERY_FRAMES = 5;
+    // Use dynamic thresholds from timing_ struct
+    const int P1_LOSS_THRESHOLD = timing_.p1_loss_threshold;
+    const int P1_RECOVERY_FRAMES = timing_.p1_recovery_frames;
     
     if (debug_level_ >= DEBUG_VERBOSE && 
 	(p1_local.x < 0 || blink_detector_.isInBlink())) {
@@ -1567,7 +1608,7 @@ static int resetTrackingStateCmd(ClientData clientData, Tcl_Interp *interp,
     // Keeps detection mode and calibrated P4 model intact
     plugin->p1_validator_.reset();
     plugin->p4_validator_.reset();
-    plugin->blink_detector_ = BlinkDetector();
+    plugin->updateTimingThresholds();
     
     // If we were in a blink, fire event to clear UI indicators
     if (was_in_blink) {
@@ -1718,6 +1759,8 @@ static int acceptP4SampleCmd(ClientData clientData, Tcl_Interp *interp,
   static int calibrateP4ModelCmd(ClientData clientData, Tcl_Interp *interp,
 				 int objc, Tcl_Obj *const objv[]) {
     EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+
+    plugin->updateTimingThresholds();
     
     // Check if already calibrated
     if (plugin->p4_model_.isInitialized()) {
@@ -2187,7 +2230,7 @@ public:
 	  detection_mode_(MODE_PUPIL_P1),
           roi_enabled_(false),
           pupil_threshold_(45),
-          p1_validator_(15.0f),
+          p1_validator_(15.0f, 3),
           p1_min_intensity_(140),
           p1_max_distance_ratio_(1.5f),
           p1_centroid_roi_size_(cv::Size(19, 19)),
@@ -2203,7 +2246,8 @@ public:
 	  show_insets_(false),
           debug_level_(DEBUG_CRITICAL),
 	  debug_next_frame_(false),	  
-          profile_flags_(PROFILE_NONE) {
+          profile_flags_(PROFILE_NONE),
+          frame_source_(nullptr) {
         latest_results_.valid = false;
     }
     
@@ -2216,7 +2260,47 @@ public:
         analysis_thread_ = std::thread(&EyeTrackingPlugin::analysisThreadFunc, this);
         return true;
     }
+
+  // ========================================================================
+  // FRAME TIMING
+  // ========================================================================
+  
+  float getCurrentFrameRate() const {
+    if (g_sourceManager) {
+      IFrameSource* source = g_sourceManager->getCurrentSource();
+      if (source && source->isOpen()) {
+	float fps = source->getFrameRate();
+	if (fps > 0) {
+	  return fps;
+	}
+      }
+    }
+    return 250.0f;  // Default fallback if source unavailable
+  }
+  
+  // Recalculate timing thresholds based on current frame rate
+  void updateTimingThresholds() {
+    float fps = getCurrentFrameRate();
     
+    if (debug_level_ >= DEBUG_CRITICAL) {
+      std::cout << "⏱️  Updating timing for " << fps << " Hz" << std::endl;
+    }
+    
+    timing_.calculateFromFrameRate(fps);
+    
+    // Recreate BlinkDetector with new timing
+    blink_detector_ = BlinkDetector(timing_.blink_recovery_frames, 
+				    timing_.baseline_update_frames);
+    
+    if (debug_level_ >= DEBUG_CRITICAL) {
+      std::cout << "   P1 loss: " << timing_.p1_loss_threshold << " frames" << std::endl;
+      std::cout << "   P1 recovery: " << timing_.p1_recovery_frames << " frames" << std::endl;
+      std::cout << "   P1 relocation: " << timing_.p1_relocation_frames << " frames" << std::endl;
+      std::cout << "   Blink recovery: " << timing_.blink_recovery_frames << " frames" << std::endl;
+      std::cout << "   Baseline update: " << timing_.baseline_update_frames << " frames" << std::endl;
+    }
+  }
+  
     void shutdown() override {
         running_ = false;
 
@@ -3475,7 +3559,10 @@ extern "C" {
         
         g_pluginRegistry.registerPlugin(plugin);
         plugin->registerTclCommands(interp);
-        Tcl_PkgProvide(interp, "Eyetracking", "1.0");
+
+	plugin->updateTimingThresholds();
+	
+	Tcl_PkgProvide(interp, "Eyetracking", "1.0");
         
         return TCL_OK;
     }
