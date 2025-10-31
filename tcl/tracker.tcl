@@ -657,7 +657,7 @@ proc go_live {} {
         flir::configureGain 8.0
         flir::configureImageOrientation 1 0; # flip image horizontal
 	flir::configureBinning 2 2
-	flir::configureFrameRate 250.0
+	flir::configureFrameRate 400.0
         set ::Registry::camera_initialized 1
     }
     
