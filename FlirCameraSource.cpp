@@ -508,7 +508,7 @@ bool FlirCameraSource::setROIOffset(int offsetX, int offsetY) {
     }
 }
 
-void FlirCameraSource::setBinning(int horizontal, int vertical)
+bool FlirCameraSource::configureBinning(int horizontal, int vertical)
 {
   try {
     Spinnaker::GenApi::INodeMap& nodeMap = pCam->GetNodeMap();
@@ -556,9 +556,10 @@ void FlirCameraSource::setBinning(int horizontal, int vertical)
     if (wasAcquiring) {
       pCam->BeginAcquisition();
     }
-    
+    return true;
   } catch (Spinnaker::Exception& e) {
     std::cerr << "Error setting binning: " << e.what() << std::endl;
+    return false;
   }
 }
 
