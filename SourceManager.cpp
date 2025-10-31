@@ -119,7 +119,14 @@ bool SourceManager::startSource(const std::string& type,
     
     int new_width = current_source_->getWidth();
     int new_height = current_source_->getHeight();
+    float new_fps = current_source_->getFrameRate();
     bool new_is_color = current_source_->isColor();
+
+    // *** Update global variables for recording ***
+    frame_width = new_width;
+    frame_height = new_height;
+    frame_rate = new_fps;
+    is_color = new_is_color;
     
     bool properties_changed = (last_width_ != -1 && 
 			       (last_width_ != new_width || 
