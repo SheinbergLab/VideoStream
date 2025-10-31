@@ -2239,6 +2239,14 @@ int main(int argc, char **argv)
   
   cxxopts::Options options("videostream","video streaming example program");
 
+
+  WatchdogThread watchdogTimer;
+  std::thread watchdog_thread;
+  std::thread process_thread;
+#if !defined(__APPLE__)
+  std::thread display_thread;
+#endif
+  
   
   options.add_options()
     ("v,verbose", "Verbose mode", cxxopts::value<bool>(verbose))
@@ -2316,6 +2324,9 @@ int main(int argc, char **argv)
   
   displayEvery = display_every;
   programInfo.name = argv[0];
+  programInfo.argv = argv;
+  programInfo.argc = argc;
+  programInfo.script_file = startup_file;
   programInfo.display = init_display;
   programInfo.sourceManager = &g_sourceManager;
   programInfo.widgetManager = &g_widgetManager;
@@ -2411,11 +2422,6 @@ int main(int argc, char **argv)
   
   std::signal(SIGINT, signal_handler);
   
-  setupTcl(&programInfo);
-		    
-  WatchdogThread watchdogTimer;
-  std::thread watchdog_thread(&WatchdogThread::startWatchdog, &watchdogTimer);
-
   TcpipThread tcpServer;
   tcpServer.port = port;
   cout << "Starting cmd server on port " << tcpServer.port << std::endl;
@@ -2439,23 +2445,43 @@ int main(int argc, char **argv)
     cout << "Starting ds server on port " << dservSocket.dsport << std::endl;
   std::thread ds_thread = dservSocket.start_server();
 
+  setupTcl(&programInfo);
+
   if (startup_file) {
     if (sourceFile(startup_file) != TCL_OK) {
       std::cerr << Tcl_GetStringResult(interp) << std::endl;
     }
+    
+    // Check if startup script requested shutdown
+    if (done) {
+      wsServer.shutdown();
+      tcpServer.shutdown();
+      dservSocket.shutdown();
+      
+      if (ws_thread.joinable()) ws_thread.detach();
+      if (net_thread.joinable()) net_thread.join();
+      if (ds_thread.joinable()) ds_thread.join();
+      
+      if (g_dataForwarder) {
+	g_dataForwarder->stop();
+	delete g_dataForwarder;
+      }
+      
+      processShutdownCommands();
+      return 0;
+    }
   }
   
-  std::thread process_thread(&ProcessThread::startProcessThread, &processThread);
+  process_thread = std::thread(&ProcessThread::startProcessThread, &processThread);
 
 #if !defined(__APPLE__)
-  std::thread display_thread(&DisplayThread::startDisplayThread, &displayThread);
-#endif
-  
-#if !defined(__APPLE__)
+  display_thread = std::thread(&DisplayThread::startDisplayThread, &displayThread);
   if (init_display) displayThread.show();
   displayThread.setScale(scale);
 #endif
 
+  watchdog_thread = std::thread(&WatchdogThread::startWatchdog, &watchdogTimer);
+  
   // Ready to accept "fired" events
   events_ready = true;
   
@@ -2597,61 +2623,58 @@ int main(int argc, char **argv)
       }
     }
 
-  // stop and cleanup sampling thread manager
+cleanup:
   if (programInfo.samplingManager) {
     programInfo.samplingManager->stop();
     delete programInfo.samplingManager;
-    programInfo.samplingManager = nullptr;
   }
   
   g_pluginRegistry.shutdownAll();
   
-  process_queue.push_back(-1);
-  process_thread.join();
-  
+  // Only cleanup threads that were actually started
+  if (process_thread.joinable()) {
+    process_queue.push_back(-1);
+    process_thread.join();
+  }
+
 #if !defined(__APPLE__)
-  display_queue.push_back(-1);
-  display_thread.join();
+  if (display_thread.joinable()) {
+    display_queue.push_back(-1);
+    display_thread.join();
+  }
 #endif
 
-  watchdogTimer.m_bDone = true;
-  watchdog_thread.join();
+  if (watchdog_thread.joinable()) {
+    watchdogTimer.m_bDone = true;
+    watchdog_thread.join();
+  }
 
   g_wsServer = nullptr;
+
   
-  // Cleanup
   if (g_dataForwarder) {
     g_dataForwarder->stop();
     delete g_dataForwarder;
-    g_dataForwarder = nullptr;
   }
   
   g_sourceManager.stopSource();
-  g_frameSource = nullptr;
   
-  // Give CoreMediaIO time to settle
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   wsServer.shutdown();
   if (ws_thread.joinable()) {
-    ws_thread.detach();  // uWebSockets handles its own cleanup
+    ws_thread.detach();
   }
- 
+  
   tcpServer.shutdown();
   dservSocket.shutdown();
 
-  // Join instead of detach
-  if (net_thread.joinable()) {
-    net_thread.join();
-  }
-  if (ds_thread.joinable()) {
-    ds_thread.join();
-  }
+  if (net_thread.joinable()) net_thread.join();
+  if (ds_thread.joinable()) ds_thread.join();
 
-  
   if (verbose) std::cout << "Shutting down" << std::endl;
 
-  processShutdownCommands();
+  processShutdownCommands();  
   
   return 0;
 }
