@@ -6,7 +6,9 @@ typedef struct _proginfo_t {
   char *name;
   Tcl_Interp *interp;
   int display;
-
+  char **argv;
+  int argc;
+  const char *script_file;
   SourceManager* sourceManager;
   SamplingManager *samplingManager;
   ReviewModeSource* reviewSource;
