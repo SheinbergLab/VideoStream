@@ -882,7 +882,7 @@ set files [list \
               ]
 
 # Default parameters
-eyetracking::setROI 300 100 270 240
+eyetracking::setROI 160 80 430 360
 eyetracking::setP1MaxJump 6
 eyetracking::setP1MinIntensity 210
 eyetracking::setP4MaxJump 6
@@ -892,7 +892,7 @@ eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
 
 # Start with specific video
-playback_mode [lindex $files 5]
+playback_mode [lindex $files 6]
 
 # We have already calibrated this P4 model
 #eyetracking::setP4Model .421 169.5
