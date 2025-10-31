@@ -1786,8 +1786,45 @@ static int fireEventCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+void addArgsToInterp(Tcl_Interp *interp, int argc, char **argv, const char *script_file)
+{
+  int tcl_argc = 0;
+  char **tcl_argv = NULL;
+  
+  // Find "--" separator
+  for (int i = 0; i < argc; ++i) {
+    if (strcmp(argv[i], "--") == 0) {
+      tcl_argc = argc - i - 1;  // Number of args after "--"
+      tcl_argv = &argv[i + 1];   // Pointer to first arg after "--"
+      break;
+    }
+  }
+  
+  // Set argv0 to the script filename (not the C program name)
+  if (script_file) {
+    Tcl_SetVar(interp, "argv0", script_file, TCL_GLOBAL_ONLY);
+  }
+  
+  // Build argv list from tcl_argv
+  Tcl_Obj *argvList = Tcl_NewListObj(0, NULL);
+  for (int i = 0; i < tcl_argc; ++i) {
+    Tcl_ListObjAppendElement(interp, argvList, Tcl_NewStringObj(tcl_argv[i], -1));
+  }
+  
+  Tcl_SetVar2Ex(interp, "argv", NULL, argvList, TCL_GLOBAL_ONLY);
+  
+  // Set argc (number of elements in argv, NOT including argv0)
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%d", tcl_argc);
+  Tcl_SetVar(interp, "argc", buf, TCL_GLOBAL_ONLY);
+}  
+
+		     
 void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 {
+  // setup argv0, argv, argc
+  addArgsToInterp(interp, p->argc, p->argv, p->script_file);
+  
   Tcl_CreateCommand(interp, "ping", (Tcl_CmdProc *) pingCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
 
