@@ -767,7 +767,7 @@ proc connect_to_dataserver { host } {
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
 
 # Default parameters
-eyetracking::setROI 300 100 270 240
+eyetracking::setROI 160 80 430 365
 eyetracking::setP1MaxJump 6
 eyetracking::setP1MinIntensity 210
 eyetracking::setP4MaxJump 6
