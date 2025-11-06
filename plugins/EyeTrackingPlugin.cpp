@@ -1070,6 +1070,135 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
     return cv::Point2f(x + dx, y + dy);
 }
   
+ cv::Point2f findP4BySpiralSearch(const cv::Mat& search_region,
+                                   const cv::Mat& search_mask,
+                                   const cv::Point2f& predicted_center_local) {
+    if (search_region.empty()) {
+        return cv::Point2f(-1, -1);
+    }
+    
+    // Relax threshold during blink recovery
+    float effective_threshold = p4_min_intensity_;
+    if (blink_detector_.isRecovering()) {
+        effective_threshold *= 0.8f;  // 20% lower during recovery
+    }
+    
+    // Start at predicted center and spiral outward
+    int center_x = cvRound(predicted_center_local.x);
+    int center_y = cvRound(predicted_center_local.y);
+    
+    // Check if center is within bounds and masked
+    if (center_x < 0 || center_x >= search_region.cols ||
+        center_y < 0 || center_y >= search_region.rows) {
+        // Fallback to global search
+        return findP4ByBrightestSpot(search_region, search_mask);
+    }
+    
+    // Best candidate found so far
+    cv::Point best_loc(-1, -1);
+    double best_intensity = effective_threshold;
+    int best_distance = INT_MAX;
+    
+    // Spiral search parameters
+    const int max_radius = 15;  // Search up to 15 pixels from center
+    
+    // Check center first
+    if (search_mask.at<uchar>(center_y, center_x) > 0) {
+        double intensity = search_region.at<uchar>(center_y, center_x);
+        if (intensity >= effective_threshold) {
+            best_loc = cv::Point(center_x, center_y);
+            best_intensity = intensity;
+            best_distance = 0;
+        }
+    }
+    
+    // Spiral outward in square rings
+    for (int radius = 1; radius <= max_radius; radius++) {
+        // Top edge: left to right
+        for (int x = center_x - radius; x <= center_x + radius; x++) {
+            int y = center_y - radius;
+            if (x >= 0 && x < search_region.cols && y >= 0 && y < search_region.rows &&
+                search_mask.at<uchar>(y, x) > 0) {
+                double intensity = search_region.at<uchar>(y, x);
+                
+                // Prefer closer locations if intensity is similar (within 10%)
+                int dist = radius;
+                if (intensity > best_intensity * 1.1 ||  // Significantly brighter
+                    (intensity >= best_intensity * 0.9 && dist < best_distance)) {  // Similar but closer
+                    best_loc = cv::Point(x, y);
+                    best_intensity = intensity;
+                    best_distance = dist;
+                }
+            }
+        }
+        
+        // Bottom edge: left to right
+        for (int x = center_x - radius; x <= center_x + radius; x++) {
+            int y = center_y + radius;
+            if (x >= 0 && x < search_region.cols && y >= 0 && y < search_region.rows &&
+                search_mask.at<uchar>(y, x) > 0) {
+                double intensity = search_region.at<uchar>(y, x);
+                int dist = radius;
+                if (intensity > best_intensity * 1.1 ||
+                    (intensity >= best_intensity * 0.9 && dist < best_distance)) {
+                    best_loc = cv::Point(x, y);
+                    best_intensity = intensity;
+                    best_distance = dist;
+                }
+            }
+        }
+        
+        // Left edge: top to bottom (excluding corners already done)
+        for (int y = center_y - radius + 1; y < center_y + radius; y++) {
+            int x = center_x - radius;
+            if (x >= 0 && x < search_region.cols && y >= 0 && y < search_region.rows &&
+                search_mask.at<uchar>(y, x) > 0) {
+                double intensity = search_region.at<uchar>(y, x);
+                int dist = radius;
+                if (intensity > best_intensity * 1.1 ||
+                    (intensity >= best_intensity * 0.9 && dist < best_distance)) {
+                    best_loc = cv::Point(x, y);
+                    best_intensity = intensity;
+                    best_distance = dist;
+                }
+            }
+        }
+        
+        // Right edge: top to bottom (excluding corners already done)
+        for (int y = center_y - radius + 1; y < center_y + radius; y++) {
+            int x = center_x + radius;
+            if (x >= 0 && x < search_region.cols && y >= 0 && y < search_region.rows &&
+                search_mask.at<uchar>(y, x) > 0) {
+                double intensity = search_region.at<uchar>(y, x);
+                int dist = radius;
+                if (intensity > best_intensity * 1.1 ||
+                    (intensity >= best_intensity * 0.9 && dist < best_distance)) {
+                    best_loc = cv::Point(x, y);
+                    best_intensity = intensity;
+                    best_distance = dist;
+                }
+            }
+        }
+        
+        // Early exit if we found something good and close
+        if (best_distance <= radius && best_intensity > effective_threshold * 1.2) {
+            break;
+        }
+    }
+    
+    if (debug_level_ >= DEBUG_VERBOSE) {
+        std::cout << "P4 spiral search: best at distance=" << best_distance 
+                  << " intensity=" << best_intensity 
+                  << " threshold=" << effective_threshold << std::endl;
+    }
+    
+    if (best_loc.x < 0) {
+        return cv::Point2f(-1, -1);
+    }
+    
+    return refineP4SubPixelWeighted(search_region, best_loc);
+}
+
  cv::Point2f findP4ByBrightestSpot(const cv::Mat& search_region,
                                    const cv::Mat& search_mask) {
     if (search_region.empty()) {
@@ -1124,6 +1253,17 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
         p1_full.y += roi.y;
       }
       
+      if (debug_level_ >= DEBUG_VERBOSE) {
+          std::cout << "P4 model inputs:" << std::endl;
+          std::cout << "  Pupil (local): (" << pupil_center_local.x << "," << pupil_center_local.y 
+                    << ") full: (" << pupil_full.x << "," << pupil_full.y << ")" << std::endl;
+          std::cout << "  P1 (local): (" << p1_local.x << "," << p1_local.y 
+                    << ") full: (" << p1_full.x << "," << p1_full.y << ")" << std::endl;
+          if (use_roi) {
+              std::cout << "  ROI offset: (" << roi.x << "," << roi.y << ")" << std::endl;
+          }
+      }
+      
       // Predict in full-frame coordinates (matching training data)
       cv::Point2f predicted_p4_full = p4_model_.predict(pupil_full, p1_full);
     
@@ -1148,8 +1288,17 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
 	  search_mask(predictive_roi) = 255;
           
 	  if (debug_level_ >= DEBUG_VERBOSE) {
-	    std::cout << "P4 prediction: (" << predicted_p4_local.x 
-		      << "," << predicted_p4_local.y << ")" << std::endl;
+	    cv::Point2f predicted_p4_full = predicted_p4_local;
+	    if (use_roi) {
+	      predicted_p4_full.x += roi.x;
+	      predicted_p4_full.y += roi.y;
+	    }
+	    std::cout << "P4 prediction (local): (" << predicted_p4_local.x 
+		      << "," << predicted_p4_local.y << ") full: ("
+		      << predicted_p4_full.x << "," << predicted_p4_full.y << ")" << std::endl;
+	    std::cout << "  Search ROI (local): [" << predictive_roi.x << "," << predictive_roi.y 
+		      << "] size " << predictive_roi.width << "x" << predictive_roi.height << std::endl;
+	    std::cout << "  Gray ROI size: " << gray_roi.cols << "x" << gray_roi.rows << std::endl;
 	  }
         }
       }
@@ -1164,20 +1313,61 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
     float p1_exclusion_radius = pupil_radius * 0.3f;
     cv::circle(search_mask, p1_local, p1_exclusion_radius, 0, -1);
     
-    cv::Point2f p4_candidate = findP4ByBrightestSpot(gray_roi, search_mask);
+    // Use spiral search if model is initialized (we have a good prediction)
+    // Otherwise fall back to global brightest spot
+    cv::Point2f p4_candidate;
+    if (p4_model_.isInitialized() && predicted_p4_local.x > 0) {
+        p4_candidate = findP4BySpiralSearch(gray_roi, search_mask, predicted_p4_local);
+    } else {
+        p4_candidate = findP4ByBrightestSpot(gray_roi, search_mask);
+    }
     
     if (p4_candidate.x < 0) {
         return cv::Point2f(-1, -1);
+    }
+    
+    // Validate that P4 is within ROI bounds
+    if (p4_candidate.x < 0 || p4_candidate.x >= gray_roi.cols ||
+        p4_candidate.y < 0 || p4_candidate.y >= gray_roi.rows) {
+        if (debug_level_ >= DEBUG_NORMAL) {
+            std::cout << "⚠️ P4 candidate outside ROI bounds: (" 
+                      << p4_candidate.x << "," << p4_candidate.y 
+                      << ") ROI size: " << gray_roi.cols << "x" << gray_roi.rows << std::endl;
+        }
+        return cv::Point2f(-1, -1);
+    }
+    
+    // Debug: Show found P4 in both coordinate systems
+    if (debug_level_ >= DEBUG_VERBOSE) {
+        cv::Point2f p4_candidate_full = p4_candidate;
+        if (use_roi) {
+            p4_candidate_full.x += roi.x;
+            p4_candidate_full.y += roi.y;
+        }
+        std::cout << "P4 candidate (local): (" << p4_candidate.x 
+                  << "," << p4_candidate.y << ") full: ("
+                  << p4_candidate_full.x << "," << p4_candidate_full.y << ")" << std::endl;
     }
     
     // Validate prediction error if model is initialized
     if (p4_model_.isInitialized() && predicted_p4_local.x > 0) {
         float prediction_error = cv::norm(p4_candidate - predicted_p4_local);
         
+        // DIAGNOSTIC OUTPUT
+        if (debug_level_ >= DEBUG_VERBOSE) {
+            std::cout << "  Prediction error calculation:" << std::endl;
+            std::cout << "    predicted_p4_local: (" << predicted_p4_local.x << ", " << predicted_p4_local.y << ")" << std::endl;
+            std::cout << "    p4_candidate: (" << p4_candidate.x << ", " << p4_candidate.y << ")" << std::endl;
+            std::cout << "    difference: (" << (p4_candidate.x - predicted_p4_local.x) << ", " 
+                      << (p4_candidate.y - predicted_p4_local.y) << ")" << std::endl;
+            std::cout << "    error (norm): " << prediction_error << " pixels" << std::endl;
+        }
+        
         if (prediction_error > p4_max_prediction_error_) {
             if (debug_level_ >= DEBUG_NORMAL) {
                 std::cout << "⚠️ P4 prediction error too large: " << prediction_error 
-                         << " > " << p4_max_prediction_error_ << std::endl;
+                         << " > " << p4_max_prediction_error_ 
+                         << " (both in local ROI coordinates)" << std::endl;
             }
             return cv::Point2f(-1, -1);
         }
@@ -1370,7 +1560,8 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
                     result.p4_center = p4_full;
                     
                     if (debug_level_ >= DEBUG_VERBOSE) {
-                        std::cout << "✓ P4 accepted at (" << p4_full.x << "," << p4_full.y << ")" << std::endl;
+                        std::cout << "✓ P4 accepted (full-frame): (" << p4_full.x << "," << p4_full.y 
+                                  << ") local: (" << p4_local.x << "," << p4_local.y << ")" << std::endl;
                     }
 
 		    p4_validator_.update(p4_full, pupil.center);		    
