@@ -518,7 +518,7 @@ private:
   float p1_max_distance_ratio_;
   cv::Size p1_centroid_roi_size_;
   float last_p1_area_ = -1.0f; 
-  float p1_pupil_radius_max_ = 1.75;
+  float p1_pupil_radius_max_ = 2.0;
   float last_p1_intensity_ = -1; 
   
   // P4 detection
