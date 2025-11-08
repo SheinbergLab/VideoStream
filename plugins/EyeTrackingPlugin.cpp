@@ -164,36 +164,46 @@ private:
     cv::Point2f last_p4_position_;
     cv::Point2f last_pupil_center_;
     float max_jump_pixels_;
-
+    
 public:
     P4Validator(float max_jump = 10.0f) 
         : initialized_(false), max_jump_pixels_(max_jump) {}
-
-    bool isValid(const cv::Point2f& new_p4, const cv::Point2f& pupil_center) {
+    
+    bool isValid(const cv::Point2f& new_p4, const cv::Point2f& pupil_center, 
+                 float pupil_radius = -1.0f) {  // ADD pupil_radius parameter
+        
+        // CRITICAL: P4 must be inside pupil
+        if (pupil_radius > 0) {
+            float dist_from_center = cv::norm(new_p4 - pupil_center);
+            if (dist_from_center > pupil_radius * 0.95f) {  // Allow 5% margin for edge cases
+                return false;
+            }
+        }
+        
         if (!initialized_) return true;
-
+        
         float p4_movement = cv::norm(new_p4 - last_p4_position_);
         float pupil_movement = cv::norm(pupil_center - last_pupil_center_);
-
+        
         // Allow P4 to move more if pupil also moved
         float adjusted_max = max_jump_pixels_ + pupil_movement;
         return p4_movement < adjusted_max;
     }
-
+    
     void update(const cv::Point2f& p4_pos, const cv::Point2f& pupil_center) {
         last_p4_position_ = p4_pos;
         last_pupil_center_ = pupil_center;
         initialized_ = true;
     }
-
+    
     void reset() {
         initialized_ = false;
     }
-
+    
     void setMaxJump(float max_jump) {
         max_jump_pixels_ = max_jump;
     }
-
+    
     float getMaxJump() const {
         return max_jump_pixels_;
     }  
@@ -515,11 +525,15 @@ private:
   // P1 detection
   P1Validator p1_validator_;
   int p1_min_intensity_;
+  int p1_min_area_;
+  int p1_max_area_;
   float p1_max_distance_ratio_;
   cv::Size p1_centroid_roi_size_;
   float last_p1_area_ = -1.0f; 
-  float p1_pupil_radius_max_ = 2.0;
+  float p1_pupil_radius_max_;
   float last_p1_intensity_ = -1; 
+  float typical_p1_area_ = 120.0f;  // Reasonable default
+  int p1_area_samples_ = 0;
   
   // P4 detection
   P4Validator p4_validator_;
@@ -527,6 +541,8 @@ private:
   cv::Size p4_search_roi_size_;
   float p4_max_prediction_error_;
   int p4_min_intensity_;
+
+  float proximity_weight_ = 1.5f;  // bonus for being close to center
   
   cv::Point2f p4_last_known_position_;
   bool p4_pending_sample_active_;
@@ -547,9 +563,12 @@ private:
   // Settings storage
   struct Settings {
     int pupil_threshold = 45;
+    float p1_pupil_radius_max = 1.5;
     float p1_max_jump = 15.0f;
     int p1_min_intensity = 140;
-    float p4_max_jump = 20.0f;
+    float p1_min_area = 50.0f;
+    float p1_max_area = 600.0f;
+    float p4_max_jump = 25.0f;
     int p4_min_intensity = 140;
     float p4_max_prediction_error = 18.0f;
     std::string detection_mode = "pupil_p1";
@@ -560,6 +579,8 @@ private:
     int p1_loss_threshold;        // Frames without P1 before reset
     int p1_recovery_frames;       // Frames to skip validation after P1 loss
     int p1_relocation_frames;     // Frames needed to confirm P1 relocation
+    int p4_loss_threshold;        // Frames without P4 before reset
+    int p4_recovery_frames;       // Frames to skip validation after P4 loss
     int blink_recovery_frames;    // Frames to recover after blink
     int baseline_update_frames;   // Frames between baseline updates
     
@@ -568,7 +589,9 @@ private:
       : p1_loss_threshold(5),
         p1_recovery_frames(5),
         p1_relocation_frames(3),
-        blink_recovery_frames(25),
+	p4_loss_threshold(5),     
+        p4_recovery_frames(8),
+	blink_recovery_frames(25),
         baseline_update_frames(10) {}
     
     // Calculate frame counts from time constants and frame rate
@@ -578,14 +601,19 @@ private:
       // Time constants in milliseconds
       constexpr float P1_LOSS_TIME_MS = 20.0f;
       constexpr float P1_RECOVERY_TIME_MS = 20.0f;
-      constexpr float P1_RELOCATION_TIME_MS = 12.0f;
-      constexpr float BLINK_RECOVERY_TIME_MS = 100.0f;
+      constexpr float P1_RELOCATION_TIME_MS = 15.0f;
+      constexpr float P4_LOSS_TIME_MS = 20.0f;
+      constexpr float P4_RECOVERY_TIME_MS = 30.0f;
+      constexpr float BLINK_RECOVERY_TIME_MS = 150.0f;
       constexpr float BASELINE_UPDATE_TIME_MS = 40.0f;
       
       // Convert to frame counts
       p1_loss_threshold = static_cast<int>(std::ceil(P1_LOSS_TIME_MS / frame_time_ms));
       p1_recovery_frames = static_cast<int>(std::ceil(P1_RECOVERY_TIME_MS / frame_time_ms));
       p1_relocation_frames = static_cast<int>(std::ceil(P1_RELOCATION_TIME_MS / frame_time_ms));
+      p4_loss_threshold = static_cast<int>(std::ceil(P4_LOSS_TIME_MS / frame_time_ms));
+      p4_recovery_frames = static_cast<int>(std::ceil(P4_RECOVERY_TIME_MS / frame_time_ms));
+
       blink_recovery_frames = static_cast<int>(std::ceil(BLINK_RECOVERY_TIME_MS / frame_time_ms));
       baseline_update_frames = static_cast<int>(std::ceil(BASELINE_UPDATE_TIME_MS / frame_time_ms));
     }
@@ -607,6 +635,8 @@ private:
 			   std::to_string(settings_.pupil_threshold));
         fireSettingChanged("p1_max_jump",
 			   std::to_string(settings_.p1_max_jump));
+        fireSettingChanged("p1_pupil_radius_max",
+			   std::to_string(settings_.p1_pupil_radius_max));
         fireSettingChanged("p1_min_intensity",
 			   std::to_string(settings_.p1_min_intensity));
         fireSettingChanged("p4_max_jump",
@@ -784,7 +814,8 @@ private:
     
   cv::Point2f detectP1(const cv::Mat& gray_roi, 
 		       const cv::Point2f& pupil_center_local,
-		       float pupil_radius) {
+		       float pupil_radius,
+		       bool in_desperation = false) {  // NEW PARAMETER
     
     float search_radius = pupil_radius * p1_pupil_radius_max_;
     
@@ -831,13 +862,25 @@ private:
       for (const auto& contour : contours) {
 	float area = cv::contourArea(contour);
         
-	if (area < 2) continue;
+	if (area < 20) continue;
 	if (area > 800) {
 	  continue;
 	}
-    
-	// shouldn't deviate from previous area by too much    
-	if (last_p1_area_ > 0) {
+
+	// Relax area constraints in desperation mode
+	if (!in_desperation) {
+	  if (area < p1_min_area_ || area > p1_max_area_) {
+	    if (debug_level_ >= DEBUG_VERBOSE) {
+	      std::cout << "P1 candidate rejected: area=" << area 
+			<< " outside [" << p1_min_area_ << "," << p1_max_area_ << "]" 
+			<< std::endl;
+	    }
+	    continue;
+	  }
+	}
+    	
+	// Relax size ratio check in desperation mode
+	if (last_p1_area_ > 0 && !in_desperation) {
 	  float size_ratio = area / last_p1_area_;
 	  if (size_ratio < 0.7f || size_ratio > 2.0f) continue;
 	}
@@ -856,7 +899,9 @@ private:
 	  circularity = std::max(0.0f, std::min(1.0f, circularity));
 	}
         
-	float circularity_threshold = (area > 100) ? 0.3f : 0.5f;
+	// Relax circularity in desperation mode
+	float circularity_threshold = in_desperation ? 0.2f : 
+	  ((area > 100) ? 0.3f : 0.5f);
 	if (circularity < circularity_threshold) continue;
         
 	cv::Rect bbox = cv::boundingRect(contour);
@@ -879,12 +924,26 @@ private:
 	
 	cv::Point2f spot_global = center_rel + cv::Point2f(p1_search_rect.x, p1_search_rect.y);
 	float vertical_bias = (spot_global.y > pupil_center_local.y) ? 1.2f : 1.0f;
-        
-	float size_penalty = (area > 150) ? 0.8f : 1.0f;
+
+	float size_score = 1.0f;
+	if (last_p1_area_ < 0 || blink_detector_.isRecovering() || in_desperation) {
+	  // Acquisition mode: STRONGLY prefer larger P1
+	  if (area >= 100) {
+	    size_score = 1.5f;  // Big bonus for large spots
+	  } else if (area >= 50) {
+	    size_score = 0.7f;  // Penalty for medium
+	  } else {
+	    size_score = 0.3f;  // Strong penalty for tiny spots
+	  }
+	} else {
+	  // Tracking mode
+	  size_score = 1.0f;
+	}	
+	
 	
 	// reward candidates that are about the same size
 	float size_consistency = 1.0f;
-	if (last_p1_area_ > 0) {
+	if (last_p1_area_ > 0 && !in_desperation) {
 	  float size_ratio = area / last_p1_area_;
 	  if (size_ratio < 0.6f || size_ratio > 1.7f) {
 	    size_consistency = 0.5f;
@@ -892,7 +951,7 @@ private:
 	}
         
 	float score = effective_intensity * circularity * compactness * 
-	  vertical_bias * size_penalty * size_consistency;
+	  vertical_bias * size_score * size_consistency;
 	
 	// Add to candidate list instead of immediately picking best
 	candidates.push_back({center_rel, score, area, (float) effective_intensity});
@@ -900,7 +959,8 @@ private:
     }
     
     if (debug_level_ >= DEBUG_VERBOSE) {
-      std::cout << "P1: " << total_candidates << " candidates" << std::endl;
+      std::cout << "P1: " << total_candidates << " candidates" 
+		<< (in_desperation ? " (DESPERATION)" : "") << std::endl;
     }
     
     if (candidates.empty()) {
@@ -936,18 +996,27 @@ private:
 	p1_full.y += current_roi_.y;
       }
       
-      // Validator check - if rejected, try next candidate
-      if (!p1_validator_.isValid(p1_full)) {
-	if (debug_level_ >= DEBUG_VERBOSE && i == 0) {
-	  std::cout << "⚠️  P1 candidate #" << (i+1) << " rejected: "
-		    << "jump=" << std::fixed << std::setprecision(1) 
-		    << p1_validator_.getJumpDistance() << "px "
-		    << "(max=" << p1_validator_.getMaxJump() << "px, "
-		    << (p1_validator_.getJumpDistance() / p1_validator_.getMaxJump() * 100) 
-		    << "% over) "
-		    << "pos=(" << p1_full.x << "," << p1_full.y << ")" << std::endl;
+      // SKIP VALIDATOR CHECK IN DESPERATION MODE
+      if (!in_desperation) {
+	// Validator check - if rejected, try next candidate
+	if (!p1_validator_.isValid(p1_full)) {
+	  if (debug_level_ >= DEBUG_VERBOSE && i == 0) {
+	    std::cout << "⚠️  P1 candidate #" << (i+1) << " rejected: "
+		      << "jump=" << std::fixed << std::setprecision(1) 
+		      << p1_validator_.getJumpDistance() << "px "
+		      << "(max=" << p1_validator_.getMaxJump() << "px, "
+		      << (p1_validator_.getJumpDistance() / p1_validator_.getMaxJump() * 100) 
+		      << "% over) "
+		      << "pos=(" << p1_full.x << "," << p1_full.y << ")" << std::endl;
+	  }
+	  continue;  // Try next candidate
 	}
-	continue;  // Try next candidate
+      } else {
+	// In desperation mode - just report what we're accepting
+	if (debug_level_ >= DEBUG_CRITICAL && i == 0) {
+	  std::cout << "🆘 P1 desperation mode accepting candidate #" << (i+1) 
+		    << " (skipping validation)" << std::endl;
+	}
       }
       
       // Found a valid candidate!
@@ -1068,6 +1137,77 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
     }
     
     return cv::Point2f(x + dx, y + dy);
+}
+
+cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
+                                             const cv::Mat& search_mask,
+                                             const cv::Point2f& predicted_center_local) {
+    if (search_region.empty()) {
+        return cv::Point2f(-1, -1);
+    }
+    
+    // Relax threshold during blink recovery
+    float effective_threshold = p4_min_intensity_;
+    if (blink_detector_.isRecovering()) {
+        effective_threshold *= 0.8f;  // 20% lower during recovery
+    }
+    
+    int center_x = cvRound(predicted_center_local.x);
+    int center_y = cvRound(predicted_center_local.y);
+    
+    // Validate center is in bounds
+    if (center_x < 0 || center_x >= search_region.cols ||
+        center_y < 0 || center_y >= search_region.rows) {
+        // Fallback to global search
+        return findP4ByBrightestSpot(search_region, search_mask);
+    }
+    
+    cv::Point best_loc(-1, -1);
+    double best_score = -1e9;
+    double best_intensity = 0;
+    float best_distance = 0;
+    
+    // Raster scan through entire search region
+    for (int y = 0; y < search_region.rows; y++) {
+        for (int x = 0; x < search_region.cols; x++) {
+            // Skip masked pixels
+            if (search_mask.at<uchar>(y, x) == 0) continue;
+            
+            double intensity = search_region.at<uchar>(y, x);
+            
+            // Skip pixels below threshold
+            if (intensity < effective_threshold) continue;
+            
+            // Calculate distance from predicted center
+            float dx = x - center_x;
+            float dy = y - center_y;
+            float distance = std::sqrt(dx*dx + dy*dy);
+            
+            // Score = intensity - distance penalty
+            // Higher proximity_weight_ means stronger preference for center
+            double score = intensity - distance * proximity_weight_;
+            
+            if (score > best_score) {
+                best_score = score;
+                best_loc = cv::Point(x, y);
+                best_intensity = intensity;
+                best_distance = distance;
+            }
+        }
+    }
+    
+    if (debug_level_ >= DEBUG_VERBOSE) {
+        std::cout << "P4 proximity search: best at distance=" << best_distance 
+                  << " intensity=" << best_intensity 
+                  << " threshold=" << effective_threshold 
+                  << " score=" << best_score << std::endl;
+    }
+    
+    if (best_loc.x < 0) {
+        return cv::Point2f(-1, -1);
+    }
+    
+    return refineP4SubPixelWeighted(search_region, best_loc);
 }
   
  cv::Point2f findP4BySpiralSearch(const cv::Mat& search_region,
@@ -1317,7 +1457,8 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
     // Otherwise fall back to global brightest spot
     cv::Point2f p4_candidate;
     if (p4_model_.isInitialized() && predicted_p4_local.x > 0) {
-        p4_candidate = findP4BySpiralSearch(gray_roi, search_mask, predicted_p4_local);
+      //              p4_candidate = findP4BySpiralSearch(gray_roi, search_mask, predicted_p4_local);
+      p4_candidate = findP4ByProximityWeightedSearch(gray_roi, search_mask, predicted_p4_local);      
     } else {
         p4_candidate = findP4ByBrightestSpot(gray_roi, search_mask);
     }
@@ -1379,8 +1520,8 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
     // ========================================================================
     // MAIN PURKINJE COORDINATOR
     // ========================================================================
-    
-  PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
+
+PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
 			      int frame_idx) {
         PurkinjeData result = {{-1, -1}, {-1, -1}, false, false};
         
@@ -1437,13 +1578,23 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
     }
         
     // P1 DETECTION (only if mode >= MODE_PUPIL_P1)
-    cv::Point2f p1_local = detectP1(gray_buffer_, pupil_center_local, pupil.radius);
-        
+    
+    // Declare static variables first
     static int p1_loss_counter = 0;
     static int p1_recovery_countdown = 0;
+    static bool p1_was_lost = false;
+    static int p1_desperation_countdown = 0;
+    
     // Use dynamic thresholds from timing_ struct
     const int P1_LOSS_THRESHOLD = timing_.p1_loss_threshold;
     const int P1_RECOVERY_FRAMES = timing_.p1_recovery_frames;
+    const int P1_DESPERATION_FRAMES = 10;  // Stay in desperation mode for multiple frames
+    
+    // NOW check if we should be in desperation mode
+    bool in_desperation = (p1_loss_counter > P1_LOSS_THRESHOLD * 5);
+    
+    cv::Point2f p1_local = detectP1(gray_buffer_, pupil_center_local, pupil.radius, 
+                                     in_desperation);
     
     if (debug_level_ >= DEBUG_VERBOSE && 
 	(p1_local.x < 0 || blink_detector_.isInBlink())) {
@@ -1451,7 +1602,6 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
 		<< " blink=" << blink_detector_.isInBlink()
 		<< " recovery=" << blink_detector_.isRecovering() << std::endl;
     }
-    
     
     // Signal blink events
     static bool was_in_blink = false;
@@ -1468,8 +1618,9 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
     }
     was_in_blink = currently_in_blink;
     
-    static bool p1_was_lost = false;
+    // Handle P1 detection/validation
     if (p1_local.x < 0) {
+      // No P1 candidate detected
       p1_loss_counter++;
       if (p1_loss_counter == P1_LOSS_THRESHOLD) {
 	p1_validator_.reset();
@@ -1483,63 +1634,176 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
 	  std::cout << "⚠️ P1 lost - resetting validator" << std::endl;
 	}
       }
-    } else {
-      if (p1_was_lost) {
-	// P1 recovered
-	fireEvent(VstreamEvent("eyetracking/p1_recovered",
-			       "frame " + std::to_string(frame_idx)));
-	p1_was_lost = false;
+      
+      // Check if we should enter desperation mode
+      if (p1_loss_counter > P1_LOSS_THRESHOLD * 5 && p1_desperation_countdown == 0) {
+	p1_desperation_countdown = P1_DESPERATION_FRAMES;
+	if (debug_level_ >= DEBUG_CRITICAL) {
+	  std::cout << "🆘 Entering P1 desperation mode (loss_counter=" 
+		    << p1_loss_counter << ")" << std::endl;
+	}
       }
       
-      p1_loss_counter = 0;
-      if (p1_recovery_countdown > 0) {
-	p1_recovery_countdown--;
-      }
-    }
-    
-    if (p1_local.x > 0) {
+    } else {
+      // P1 candidate detected - convert to full-frame coordinates
       cv::Point2f p1_full = p1_local;
       if (use_roi) {
-                p1_full.x += roi.x;
-                p1_full.y += roi.y;
-            }
+	p1_full.x += roi.x;
+	p1_full.y += roi.y;
+      }
       
-      bool is_valid = blink_detector_.isRecovering() || 
-	p1_recovery_countdown > 0 ||
-	p1_validator_.isValid(p1_full);
-      
-      if (is_valid) {
-	result.p1_detected = true;
-	result.p1_center = p1_full;
-        
-	if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() && 
-	    p1_recovery_countdown == 0) {
-	  p1_validator_.update(p1_full);
+      // Debug validation state
+      if (debug_level_ >= DEBUG_NORMAL) {
+	std::cout << "P1 validation check: "
+		  << "loss_counter=" << p1_loss_counter
+		  << " recovery_countdown=" << p1_recovery_countdown
+		  << " desperation_countdown=" << p1_desperation_countdown
+		  << " blink_recovering=" << blink_detector_.isRecovering()
+		  << " validator_initialized=" << p1_validator_.isInitialized()
+		  << " candidate_count=" << p1_validator_.getCandidateCount();
+	if (p1_validator_.isInitialized()) {
+	  std::cout << " last_pos=(" << p1_validator_.getLastPosition().x 
+		    << "," << p1_validator_.getLastPosition().y << ")";
 	}
-      } else if (debug_level_ >= DEBUG_NORMAL) {
-	float jump_dist = p1_validator_.getJumpDistance();
-	float max_allowed = p1_validator_.getMaxJump();
-	int candidate_count = p1_validator_.getCandidateCount();
-	
-	std::cout << "⚠️ P1 rejected: "
-		  << "jump=" << std::fixed << std::setprecision(1) << jump_dist << "px "
-		  << "(max=" << max_allowed << "px, "
-		  << (jump_dist / max_allowed * 100) << "% over) "
-		  << "pos=(" << p1_full.x << "," << p1_full.y << ")";
-	
-	if (candidate_count > 0) {
-	  std::cout << " [tracking " << candidate_count << "/3]";
-	}
-	
 	std::cout << std::endl;
       }
+      
+      // Determine validation mode
+      bool in_recovery = (p1_recovery_countdown > 0) || blink_detector_.isRecovering();
+      bool in_desperation = (p1_desperation_countdown > 0);
+      
+      // Validate the candidate
+      bool is_valid = in_desperation || in_recovery || p1_validator_.isValid(p1_full);
+      
+      if (is_valid) {
+	// Success!
+	result.p1_detected = true;
+	result.p1_center = p1_full;
+	
+	if (p1_was_lost) {
+	  fireEvent(VstreamEvent("eyetracking/p1_recovered",
+				 "frame " + std::to_string(frame_idx)));
+	  p1_was_lost = false;
+	}
+	
+	// Gradually reduce loss counter when in desperation mode
+	// (don't snap to 0 immediately or we'll exit desperation too soon)
+	if (in_desperation) {
+	  p1_loss_counter = std::max(0, p1_loss_counter - 2);
+	  if (debug_level_ >= DEBUG_CRITICAL) {
+	    std::cout << "✓ P1 accepted in desperation mode (loss_counter now " 
+		      << p1_loss_counter << ")" << std::endl;
+	  }
+	} else {
+	  // Normal operation - reset counter
+	  p1_loss_counter = 0;
+	}
+	
+	// Update validator whenever we have valid P1 (even during recovery/desperation)
+	// This allows it to adapt to the new position
+	if (!blink_detector_.isInBlink()) {
+	  p1_validator_.update(p1_full);
+	}
+	
+	// Decrement recovery countdown on successful detection
+	if (p1_recovery_countdown > 0) {
+	  p1_recovery_countdown--;
+	}
+	
+	// Decrement desperation countdown
+	if (p1_desperation_countdown > 0) {
+	  p1_desperation_countdown--;
+	  if (p1_desperation_countdown == 0 && debug_level_ >= DEBUG_CRITICAL) {
+	    std::cout << "✓ Exiting P1 desperation mode" << std::endl;
+	  }
+	}
+	
+      } else {
+	// Rejected by validator - treat as a loss
+	p1_loss_counter++;
+	
+	if (debug_level_ >= DEBUG_NORMAL) {
+	  float jump_dist = p1_validator_.getJumpDistance();
+	  float max_allowed = p1_validator_.getMaxJump();
+	  int candidate_count = p1_validator_.getCandidateCount();
+	  
+	  std::cout << "⚠️ P1 rejected: "
+		    << "jump=" << std::fixed << std::setprecision(1) << jump_dist << "px "
+		    << "(max=" << max_allowed << "px, "
+		    << (jump_dist / max_allowed * 100) << "% over) "
+		    << "pos=(" << p1_full.x << "," << p1_full.y << ")";
+	  
+	  if (candidate_count > 0) {
+	    std::cout << " [tracking " << candidate_count << "/3]";
+	  }
+	  
+	  std::cout << std::endl;
+	}
+	
+	// Check if we should enter desperation mode
+	if (p1_loss_counter > P1_LOSS_THRESHOLD * 5 && p1_desperation_countdown == 0) {
+	  p1_desperation_countdown = P1_DESPERATION_FRAMES;
+	  if (debug_level_ >= DEBUG_CRITICAL) {
+	    std::cout << "🆘 Entering P1 desperation mode (loss_counter=" 
+		      << p1_loss_counter << ")" << std::endl;
+	  }
+	}
+      }
     }
-    
-    
+        
     // P4 DETECTION
     if (detection_mode_ == MODE_FULL && result.p1_detected) {
-      cv::Point2f p4_local = detectP4(gray_buffer_, pupil_center_local, p1_local, pupil.radius,
+
+      // Track P4 loss and recovery
+      static int p4_loss_counter = 0;
+      static int p4_recovery_countdown = 0;
+      static bool p4_was_lost = false;
+      const int P4_LOSS_THRESHOLD = timing_.p4_loss_threshold;  // Add to timing_ struct
+      const int P4_RECOVERY_FRAMES = timing_.p4_recovery_frames;  // Add to timing_ struct
+      
+      // Also track extended P1 loss - reset P4 if P1 was gone for a while
+      static int frames_without_p1 = 0;
+      if (!result.p1_detected) {
+        frames_without_p1++;
+        if (frames_without_p1 == 15) {  // ~0.3 seconds at 50fps
+	  p4_validator_.reset();
+	  if (debug_level_ >= DEBUG_CRITICAL) {
+	    std::cout << "⚠️ Extended P1 loss - resetting P4 tracking" << std::endl;
+	  }
+        }
+      } else {
+        frames_without_p1 = 0;
+      }
+      
+      cv::Point2f p4_local = detectP4(gray_buffer_, pupil_center_local,
+				      p1_local, pupil.radius,
 				      use_roi, roi);
+      if (p4_local.x < 0) {
+        p4_loss_counter++;
+        if (p4_loss_counter == P4_LOSS_THRESHOLD) {
+	  p4_validator_.reset();
+	  p4_recovery_countdown = P4_RECOVERY_FRAMES;
+	  
+	  fireEvent(VstreamEvent("eyetracking/p4_lost",
+				 "frame " + std::to_string(frame_idx)));
+	  p4_was_lost = true;
+	  
+	  if (debug_level_ >= DEBUG_CRITICAL) {
+	    std::cout << "⚠️ P4 lost - resetting validator and model" << std::endl;
+	  }
+        }
+      } else {
+        if (p4_was_lost) {
+	  fireEvent(VstreamEvent("eyetracking/p4_recovered",
+				 "frame " + std::to_string(frame_idx)));
+	  p4_was_lost = false;
+        }
+        
+        p4_loss_counter = 0;
+        if (p4_recovery_countdown > 0) {
+	  p4_recovery_countdown--;
+        }
+      }
       
       if (p4_local.x > 0) {
 	cv::Point2f p4_full = p4_local;
@@ -1548,9 +1812,11 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
 	  p4_full.y += roi.y;
 	}
 	
-	bool is_valid = blink_detector_.isRecovering() || 
-	  p4_validator_.isValid(p4_full, pupil.center);
-                
+	bool is_valid =
+	  blink_detector_.isRecovering() ||
+	  p4_recovery_countdown > 0 ||
+	  p4_validator_.isValid(p4_full, pupil.center, pupil.radius);
+	
                 if (!is_valid && debug_level_ >= DEBUG_NORMAL) {
                     std::cout << "⚠️ P4 rejected by validator" << std::endl;
                 }
@@ -1563,9 +1829,11 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
                         std::cout << "✓ P4 accepted (full-frame): (" << p4_full.x << "," << p4_full.y 
                                   << ") local: (" << p4_local.x << "," << p4_local.y << ")" << std::endl;
                     }
-
-		    p4_validator_.update(p4_full, pupil.center);		    
-
+		    if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() &&
+			p4_recovery_countdown == 0) {  // ADD THIS CHECK
+		      p4_validator_.update(p4_full, pupil.center);
+		    }
+	
 		    // But only update MODEL after recovery
 		    if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() &&
 			p4_model_.isInitialized() && !p4_model_.isFrozen()) {
@@ -1577,7 +1845,7 @@ cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
         
         return result;
     }
-
+  
     // ========================================================================
     // ANALYSIS THREAD
     // ========================================================================
@@ -2084,6 +2352,45 @@ static int setPupilThresholdCmd(ClientData clientData, Tcl_Interp *interp,
     return TCL_OK;
 }
 
+static int setP1MinAreaCmd(ClientData clientData, Tcl_Interp *interp,
+			   int objc, Tcl_Obj *const objv[]) {
+  EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+  
+  if (objc == 1) {
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(plugin->p1_min_area_));
+    return TCL_OK;
+  }
+  
+  double area;
+  if (Tcl_GetDoubleFromObj(interp, objv[1], &area) != TCL_OK) {
+    return TCL_ERROR;
+  }
+  
+  plugin->p1_min_area_ = area;
+  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(area));
+  return TCL_OK;
+}
+
+
+static int setP1MaxAreaCmd(ClientData clientData, Tcl_Interp *interp,
+			   int objc, Tcl_Obj *const objv[]) {
+  EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+  
+  if (objc == 1) {
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(plugin->p1_max_area_));
+    return TCL_OK;
+  }
+  
+  double area;
+  if (Tcl_GetDoubleFromObj(interp, objv[1], &area) != TCL_OK) {
+    return TCL_ERROR;
+  }
+  
+  plugin->p1_max_area_ = area;
+  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(area));
+  return TCL_OK;
+}  
+  
 static int setP4MaxPredictionErrorCmd(ClientData clientData, Tcl_Interp *interp,
                                        int objc, Tcl_Obj *const objv[]) {
     EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
@@ -2103,12 +2410,44 @@ static int setP4MaxPredictionErrorCmd(ClientData clientData, Tcl_Interp *interp,
     return TCL_OK;
 }
 
+static int setP1PupilRadiusMaxCmd(ClientData clientData, Tcl_Interp *interp,
+				  int objc, Tcl_Obj *const objv[]) {
+  EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+
+  if (objc == 1) {
+    Tcl_SetObjResult(interp,
+		     Tcl_NewDoubleObj(plugin->settings_.p1_pupil_radius_max));
+    return TCL_OK;
+  }
+  
+  if (objc != 2) {
+    Tcl_WrongNumArgs(interp, 1, objv, "radius_multiplier");
+    return TCL_ERROR;
+  }
+  
+  double radius_max;
+  if (Tcl_GetDoubleFromObj(interp, objv[1], &radius_max) != TCL_OK) {
+    return TCL_ERROR;
+  }
+    
+  plugin->p1_pupil_radius_max_ = radius_max;
+  plugin->settings_.p1_pupil_radius_max = radius_max;
+    
+  // Fire event
+  plugin->fireSettingChanged("p1_pupil_radius_max",
+			     std::to_string(radius_max));
+  
+  Tcl_SetObjResult(interp, Tcl_NewDoubleObj(radius_max));
+  return TCL_OK;
+}
+  
 static int setP1MinIntensityCmd(ClientData clientData, Tcl_Interp *interp,
                                  int objc, Tcl_Obj *const objv[]) {
     EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
 
     if (objc == 1) {
-        Tcl_SetObjResult(interp, Tcl_NewIntObj(plugin->settings_.p1_min_intensity));
+        Tcl_SetObjResult(interp,
+			 Tcl_NewIntObj(plugin->settings_.p1_min_intensity));
         return TCL_OK;
     }
     
@@ -2362,6 +2701,10 @@ static int getSettingsCmd(ClientData clientData, Tcl_Interp *interp,
                    Tcl_NewIntObj(plugin->settings_.p1_min_intensity));
     
     Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("p1_pupil_radius_max", -1),
+                   Tcl_NewIntObj(plugin->settings_.p1_pupil_radius_max));
+    
+    Tcl_DictObjPut(interp, settingsDict,
                    Tcl_NewStringObj("p4_max_jump", -1),
                    Tcl_NewDoubleObj(plugin->settings_.p4_max_jump));
     
@@ -2422,12 +2765,15 @@ public:
           roi_enabled_(false),
           pupil_threshold_(45),
           p1_validator_(15.0f, 3),
+	  p1_pupil_radius_max_(1.5),
           p1_min_intensity_(140),
+	  p1_min_area_(50.0f),
+	  p1_max_area_(600.0f),
           p1_max_distance_ratio_(1.5f),
           p1_centroid_roi_size_(cv::Size(19, 19)),
           p4_validator_(20.0f),
           p4_model_(),
-          p4_search_roi_size_(cv::Size(30, 30)),
+          p4_search_roi_size_(cv::Size(60, 60)),
           p4_max_prediction_error_(13.0f),
           p4_min_intensity_(140),
 	  p4_pending_sample_active_(false),
@@ -2553,10 +2899,16 @@ public:
                             setP4ModelCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::getP4ModelStatus", 
                             getP4ModelStatusCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::setP1PupilRadiusMax", 
+                            setP1PupilRadiusMaxCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP4MaxPredictionError", 
                             setP4MaxPredictionErrorCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP1MinIntensity", 
                             setP1MinIntensityCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::setP1MinArea", 
+                            setP1MinAreaCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::setP1MaxArea", 
+                            setP1MaxAreaCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP4MinIntensity", 
                             setP4MinIntensityCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP1MaxJump", 
