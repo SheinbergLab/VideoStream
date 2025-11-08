@@ -9,6 +9,8 @@ For control, the program opens a TCP/IP communication port, and receives Tcl scr
 ### Linux
 
 A number of readily available packages are required to build the VideoStream app.
+`sudo apt install libopencv-dev python3-opencv ffmpeg`
+`sudo apt install libjansson-dev liblz4-dev`
 
 #### Camera support
 For FLIR camera control, the Spinnaker SDK should be installed.  This does not require the SpinView app to be installed.  For USB Webcam support, any camera that can be found using OpenCV will work.
