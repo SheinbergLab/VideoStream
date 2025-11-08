@@ -717,7 +717,7 @@ proc live_mode { } {
     dict set ::Registry::widgets p4_threshold_slider $s
     
     set s [add_int_slider 20 -140 150 40 \
-	       {P1 Threshold} 1 255 [eyetracking::setP1MinIntensity] eyetracking::setP1MinIntensity]
+	       {P1 Min Intensity} 1 255 [eyetracking::setP1MinIntensity] eyetracking::setP1MinIntensity]
     dict set ::Registry::widgets p1_threshold_slider $s
     
     set s [add_float_slider 20 -185 150 40 \
@@ -768,12 +768,13 @@ load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextens
 
 # Default parameters
 eyetracking::setROI 160 80 430 365
-eyetracking::setP1MaxJump 6
-eyetracking::setP1MinIntensity 210
-eyetracking::setP4MaxJump 6
-eyetracking::setP4MinIntensity 36
+eyetracking::setP1MaxJump 20
+eyetracking::setP1MinIntensity 145
+eyetracking::setP4MaxJump 100
+eyetracking::setP4MinIntensity 28
 eyetracking::setPupilThreshold 45
 eyetracking::setDetectionMode pupil_p1
+eyetracking::setP4MaxPredictionError 40
 eyetracking::resetP4Model
 
 vstream::onlySaveInObs 0
