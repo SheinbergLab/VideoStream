@@ -387,7 +387,7 @@ private:
     float baseline_radius_;
     bool baseline_initialized_;
     static constexpr float BLINK_ENTER_RATIO = 0.6f;
-    static constexpr float BLINK_EXIT_RATIO = 0.8f;
+    static constexpr float BLINK_EXIT_RATIO = 0.85f;
     int baseline_update_frames_;
     int frames_since_update_;
 
@@ -604,7 +604,7 @@ private:
       constexpr float P1_RELOCATION_TIME_MS = 15.0f;
       constexpr float P4_LOSS_TIME_MS = 20.0f;
       constexpr float P4_RECOVERY_TIME_MS = 30.0f;
-      constexpr float BLINK_RECOVERY_TIME_MS = 50.0f;
+      constexpr float BLINK_RECOVERY_TIME_MS = 80.0f;
       constexpr float BASELINE_UPDATE_TIME_MS = 40.0f;
       
       // Convert to frame counts
