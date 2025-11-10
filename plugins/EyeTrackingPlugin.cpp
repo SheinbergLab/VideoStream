@@ -604,7 +604,7 @@ private:
       constexpr float P1_RELOCATION_TIME_MS = 15.0f;
       constexpr float P4_LOSS_TIME_MS = 20.0f;
       constexpr float P4_RECOVERY_TIME_MS = 30.0f;
-      constexpr float BLINK_RECOVERY_TIME_MS = 150.0f;
+      constexpr float BLINK_RECOVERY_TIME_MS = 50.0f;
       constexpr float BASELINE_UPDATE_TIME_MS = 40.0f;
       
       // Convert to frame counts
@@ -1921,9 +1921,17 @@ PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
                     p4_validator_.reset();                
                 }
                 
-                PurkinjeData purkinje = detectPurkinje(frame_data.frame,
-						       pupil,
-						       frame_data.frame_idx);
+                PurkinjeData purkinje;
+
+		if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering()) {
+		  purkinje = detectPurkinje(frame_data.frame,
+					    pupil,
+					    frame_data.frame_idx);
+		} else if (debug_level_ >= DEBUG_NORMAL) {
+		  std::cout << "Frame " << frame_data.frame_idx 
+			    << ": Skipping Purkinje detection (blink/recovery)" 
+			    << std::endl;
+		}		
                 
                 {
                     std::lock_guard<std::mutex> lock(results_mutex_);
@@ -2773,7 +2781,7 @@ public:
           p1_centroid_roi_size_(cv::Size(19, 19)),
           p4_validator_(20.0f),
           p4_model_(),
-          p4_search_roi_size_(cv::Size(60, 60)),
+          p4_search_roi_size_(cv::Size(30, 30)),
           p4_max_prediction_error_(13.0f),
           p4_min_intensity_(140),
 	  p4_pending_sample_active_(false),
