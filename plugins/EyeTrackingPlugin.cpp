@@ -263,6 +263,12 @@ public:
 		   const cv::Point2f& p1_center, 
 		   const cv::Point2f& p4_center) {
     if (frozen_ || !initialized_) return;
+
+    // Don't update model when P4 is below pupil center (rare, but can happen)
+    if (p4_center.y > pupil_center.y) {
+      return;
+    }
+  
     
     cv::Point2f v_pc_p1 = p1_center - pupil_center;
     cv::Point2f v_pc_p4 = p4_center - pupil_center;
@@ -566,7 +572,7 @@ private:
     float p1_pupil_radius_max = 1.5;
     float p1_max_jump = 15.0f;
     int p1_min_intensity = 140;
-    float p1_min_area = 50.0f;
+    float p1_min_area = 40.0f;
     float p1_max_area = 600.0f;
     float p4_max_jump = 25.0f;
     int p4_min_intensity = 140;
@@ -2775,13 +2781,13 @@ public:
           p1_validator_(15.0f, 3),
 	  p1_pupil_radius_max_(1.5),
           p1_min_intensity_(140),
-	  p1_min_area_(50.0f),
+	  p1_min_area_(40.0f),
 	  p1_max_area_(600.0f),
           p1_max_distance_ratio_(1.5f),
           p1_centroid_roi_size_(cv::Size(19, 19)),
           p4_validator_(20.0f),
           p4_model_(),
-          p4_search_roi_size_(cv::Size(30, 30)),
+          p4_search_roi_size_(cv::Size(50, 50)),
           p4_max_prediction_error_(13.0f),
           p4_min_intensity_(140),
 	  p4_pending_sample_active_(false),
