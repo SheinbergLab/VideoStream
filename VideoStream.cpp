@@ -2577,7 +2577,23 @@ int main(int argc, char **argv)
 	  if (processThread.fileIsOpen()) { 	  
 	    process_queue.push_back(curFrame);
 	  }
-	    
+
+#define MONITOR_PROCESS_QUEUE
+#ifdef MONITOR_PROCESS_QUEUE
+	  static int max_queue_depth = 0;
+	  int current_depth = process_queue.size();
+	  if (current_depth > max_queue_depth) {
+	    max_queue_depth = current_depth;
+	    std::cout << "New max queue depth: " << max_queue_depth 
+		      << " (buffer size: " << nFrames << ")" << std::endl;
+	  }
+	  
+	  // Warn if getting too close to buffer size
+	  if (current_depth > nFrames * 0.8) {
+	    std::cerr << "WARNING: Queue depth " << current_depth 
+		      << " approaching buffer size " << nFrames << std::endl;
+	  }	  
+#endif	  
 	  if (curFrame % displayEvery == 0) {
 #if !defined(__APPLE__)
 	    display_queue.push_back(curFrame);
