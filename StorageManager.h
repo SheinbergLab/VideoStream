@@ -82,7 +82,7 @@ private:
     
     // Batch transaction management
     int frames_since_commit_;
-    static constexpr int BATCH_SIZE = 100;
+    static constexpr int BATCH_SIZE = 500;
     
     // Plugin state
     bool plugins_initialized_;

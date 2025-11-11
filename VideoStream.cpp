@@ -128,7 +128,7 @@ const int FRAME_SENTINEL_CLOSE = -2;  // Signal to close file
 const int FRAME_SENTINEL_END = -1;    // Signal end of stream
 
 /* Buffer to hold video frames */
-int nFrames = 250;
+int nFrames = 500;
 FrameBufferManager frameBufferManager(nFrames);
 
 std::atomic<int> displayFrame{0};
