@@ -265,7 +265,7 @@ public:
     if (frozen_ || !initialized_) return;
 
     // Don't update model when P4 is below pupil center (rare, but can happen)
-    if (p4_center.y > pupil_center.y) {
+    if (0 && p4_center.y > pupil_center.y) {
       return;
     }
   
@@ -274,7 +274,12 @@ public:
     cv::Point2f v_pc_p4 = p4_center - pupil_center;
     
     float mag_p1 = cv::norm(v_pc_p1);
-    if (mag_p1 < 1e-6) return;
+    float mag_p4 = cv::norm(v_pc_p4);
+
+    const float min_reliable_distance = 10.0f;
+    if (mag_p1 < min_reliable_distance || mag_p4 < min_reliable_distance) {
+      return;
+    }
     
     float obs_mag_ratio = cv::norm(v_pc_p4) / mag_p1;
     float obs_angle_p1 = std::atan2(v_pc_p1.y, v_pc_p1.x);
@@ -398,7 +403,7 @@ private:
     int frames_since_update_;
 
 public:
-    BlinkDetector(int recovery_frames = 25, int baseline_update_frames = 10) 
+    BlinkDetector(int recovery_frames = 15, int baseline_update_frames = 10) 
         : in_blink_(false), recovery_countdown_(0), recovery_frames_(recovery_frames),
           baseline_radius_(0), baseline_initialized_(false),
           frames_since_update_(0), baseline_update_frames_(baseline_update_frames) {}
@@ -576,6 +581,8 @@ private:
     float p1_max_area = 600.0f;
     float p4_max_jump = 25.0f;
     int p4_min_intensity = 140;
+    int p4_search_width = 50;
+    int p4_search_height = 50;    
     float p4_max_prediction_error = 18.0f;
     std::string detection_mode = "pupil_p1";
   } settings_;
@@ -597,7 +604,7 @@ private:
         p1_relocation_frames(3),
 	p4_loss_threshold(5),     
         p4_recovery_frames(8),
-	blink_recovery_frames(25),
+	blink_recovery_frames(15),
         baseline_update_frames(10) {}
     
     // Calculate frame counts from time constants and frame rate
@@ -610,8 +617,8 @@ private:
       constexpr float P1_RELOCATION_TIME_MS = 15.0f;
       constexpr float P4_LOSS_TIME_MS = 20.0f;
       constexpr float P4_RECOVERY_TIME_MS = 30.0f;
-      constexpr float BLINK_RECOVERY_TIME_MS = 80.0f;
-      constexpr float BASELINE_UPDATE_TIME_MS = 40.0f;
+      constexpr float BLINK_RECOVERY_TIME_MS = 30.0f;
+      constexpr float BASELINE_UPDATE_TIME_MS = 30.0f;
       
       // Convert to frame counts
       p1_loss_threshold = static_cast<int>(std::ceil(P1_LOSS_TIME_MS / frame_time_ms));
@@ -2404,6 +2411,58 @@ static int setP1MaxAreaCmd(ClientData clientData, Tcl_Interp *interp,
   Tcl_SetObjResult(interp, Tcl_NewDoubleObj(area));
   return TCL_OK;
 }  
+
+
+static int setP4SearchSizeCmd(ClientData clientData, Tcl_Interp *interp,
+                              int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    
+    if (objc > 3) {
+        Tcl_WrongNumArgs(interp, 1, objv, "?width? ?height?");
+        return TCL_ERROR;
+    }
+    
+    // Return current value
+    if (objc == 1) {
+        Tcl_Obj* result = Tcl_NewListObj(0, NULL);
+        Tcl_ListObjAppendElement(interp, result, 
+            Tcl_NewIntObj(plugin->p4_search_roi_size_.width));
+        Tcl_ListObjAppendElement(interp, result, 
+            Tcl_NewIntObj(plugin->p4_search_roi_size_.height));
+        Tcl_SetObjResult(interp, result);
+        return TCL_OK;
+    }
+    
+    // Set new value
+    int width, height;
+    if (Tcl_GetIntFromObj(interp, objv[1], &width) != TCL_OK) {
+        return TCL_ERROR;
+    }
+    if (objc == 3) {
+        if (Tcl_GetIntFromObj(interp, objv[2], &height) != TCL_OK) {
+            return TCL_ERROR;
+        }
+    } else {
+        height = width;  // Square if only one dimension given
+    }
+    
+    // Validate reasonable bounds
+    if (width < 10 || width > 200 || height < 10 || height > 200) {
+        Tcl_SetResult(interp, "Search size must be between 10 and 200 pixels", TCL_STATIC);
+        return TCL_ERROR;
+    }
+    
+    plugin->p4_search_roi_size_ = cv::Size(width, height);
+    plugin->settings_.p4_search_width = width;
+    plugin->settings_.p4_search_height = height;
+    
+    // Fire event for UI updates
+    std::string value = std::to_string(width) + "x" + std::to_string(height);
+    plugin->fireSettingChanged("p4_search_size", value);
+    
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(width));
+    return TCL_OK;
+}
   
 static int setP4MaxPredictionErrorCmd(ClientData clientData, Tcl_Interp *interp,
                                        int objc, Tcl_Obj *const objv[]) {
