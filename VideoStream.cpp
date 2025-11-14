@@ -1376,7 +1376,10 @@ if (g_frameSource) {
 
 	  if (frameBufferManager.copyFrame(processFrame, frame_copy, frame_metadata, frame_in_obs)) {
 	    if (!only_save_in_obs || (only_save_in_obs && frame_in_obs)) {
-	      
+
+	      // Set the recording frame number
+	      frame_metadata.recording_frame_number = frame_count;
+ 
 	      // Write video frame (unless metadata-only mode)
 	      if (!metadata_only_) {
 		if (annotate) annotate_process_frame(frame_copy, frame_in_obs);

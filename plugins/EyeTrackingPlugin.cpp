@@ -3861,7 +3861,9 @@ button.secondary:hover {
     //  p1_x, p1_y, p4_x, p4_y, blink, p1_detected, p4_detected]
     float batch[12];
 
-    batch[0] = static_cast<float>(metadata.frameID);
+    // Send a frame count reference corresponding to open file frame id
+    //    batch[0] = static_cast<float>(metadata.frameID);
+    batch[0] = static_cast<float>(metadata.recording_frame_number);    
 
     // relative to first frame
     batch[1] = (metadata.timestamp - first_timestamp) / 1e9f;  // nanoseconds to seconds
