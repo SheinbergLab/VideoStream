@@ -451,7 +451,12 @@ public:
             recovery_countdown_--;
         }
     }
-    
+
+  void reset() {
+    in_blink_ = false;
+    recovery_countdown_ = 0;
+  }
+  
     bool isInBlink() const { return in_blink_; }
     bool isRecovering() const { return recovery_countdown_ > 0; }
     
@@ -828,7 +833,7 @@ private:
   cv::Point2f detectP1(const cv::Mat& gray_roi, 
 		       const cv::Point2f& pupil_center_local,
 		       float pupil_radius,
-		       bool in_desperation = false) {  // NEW PARAMETER
+		       bool in_desperation = false) {  
     
     float search_radius = pupil_radius * p1_pupil_radius_max_;
     
