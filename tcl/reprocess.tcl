@@ -386,6 +386,12 @@ proc show_frame_info { code } {
     puts "═══════════════════════════════════════════\n"
 }
 
+proc reset_tracking { code } {
+    eyetracking::resetP4Model
+    eyetracking::setDetectionMode pupil_only
+    eyetracking::setDetectionMode pupil_p1
+}
+
 proc accept_p4_sample { code } {
     if {[catch {eyetracking::acceptP4Sample} result]} {
         puts "❌ $result"
@@ -394,12 +400,12 @@ proc accept_p4_sample { code } {
     }
 }
 
-proc reset_p4_model {} {
+proc reset_p4_model { args } {
     eyetracking::resetP4Model
     eyetracking::setDetectionMode pupil_p1
 }
 
-proc calibrate_p4_model {} {
+proc calibrate_p4_model { args } {
     set status [eyetracking::getP4ModelStatus]
     set count [dict get $status samples]
     set initialized [dict get $status initialized]
@@ -751,7 +757,8 @@ proc playback_mode { { filename {} } } {
     
     # Key bindings
     bind_key "s" toggle_recording
-    bind_key "r" rewind_playback
+    bind_key "r" reset_tracking
+    bind_key "m" calibrate_p4_model
     bind_key " " toggle_pause              ;# SPACE to pause/resume
     bind_key $::keys::RIGHT step_forward   ;# Arrow to step when paused
     bind_key $::keys::LEFT step_backward   ;# Arrow to step when paused
