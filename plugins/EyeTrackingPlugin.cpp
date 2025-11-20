@@ -621,12 +621,12 @@ private:
       
       // Time constants in milliseconds
       constexpr float P1_LOSS_TIME_MS = 20.0f;
-      constexpr float P1_RECOVERY_TIME_MS = 20.0f;
+      constexpr float P1_RECOVERY_TIME_MS = 15.0f;
       constexpr float P1_RELOCATION_TIME_MS = 15.0f;
-      constexpr float P4_LOSS_TIME_MS = 20.0f;
-      constexpr float P4_RECOVERY_TIME_MS = 30.0f;
-      constexpr float BLINK_RECOVERY_TIME_MS = 30.0f;
-      constexpr float BASELINE_UPDATE_TIME_MS = 30.0f;
+      constexpr float P4_LOSS_TIME_MS = 15.0f;
+      constexpr float P4_RECOVERY_TIME_MS = 15.0f;
+      constexpr float BLINK_RECOVERY_TIME_MS = 20.0f;
+      constexpr float BASELINE_UPDATE_TIME_MS = 20.0f;
       
       // Convert to frame counts
       p1_loss_threshold = static_cast<int>(std::ceil(P1_LOSS_TIME_MS / frame_time_ms));
@@ -1697,7 +1697,7 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 	// Gradually reduce loss counter when in desperation mode
 	// (don't snap to 0 immediately or we'll exit desperation too soon)
 	if (in_desperation) {
-	  p1_loss_counter = std::max(0, p1_loss_counter - 2);
+	  p1_loss_counter = std::max(0, p1_loss_counter - 10);
 	  if (debug_level_ >= DEBUG_CRITICAL) {
 	    std::cout << "✓ P1 accepted in desperation mode (loss_counter now " 
 		      << p1_loss_counter << ")" << std::endl;
@@ -4108,7 +4108,10 @@ bool drawOverlay(cv::Mat& frame, int frame_idx) override {
 		  cv::FONT_HERSHEY_SIMPLEX, 0.4, 
 		  cv::Scalar(255, 165, 0), 1);
     } else if (p4_model_.isInitialized() && latest_results_.pupil.detected && 
-	       latest_results_.purkinje.p1_detected) {
+	       latest_results_.purkinje.p1_detected &&
+	       latest_results_.purkinje.p4_detected &&
+	       !blink_detector_.isRecovering() &&
+	       !blink_detector_.isInBlink()) {
       // MODEL ACTIVE: Show prediction ROI only (no center circle)
       cv::Point2f predicted_p4 = p4_model_.predict(
 						   latest_results_.pupil.center, 
