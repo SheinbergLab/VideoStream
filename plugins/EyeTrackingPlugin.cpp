@@ -829,7 +829,7 @@ private:
     // ========================================================================
     // P1 MAIN DETECTION
     // ========================================================================
-    
+  
   cv::Point2f detectP1(const cv::Mat& gray_roi, 
 		       const cv::Point2f& pupil_center_local,
 		       float pupil_radius,
@@ -1535,40 +1535,40 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     return p4_candidate;
 }
   
-    // ========================================================================
-    // MAIN PURKINJE COORDINATOR
-    // ========================================================================
+  // ========================================================================
+  // MAIN PURKINJE COORDINATOR
+  // ========================================================================
 
-PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
+  PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
 			      int frame_idx) {
-        PurkinjeData result = {{-1, -1}, {-1, -1}, false, false};
+    PurkinjeData result = {{-1, -1}, {-1, -1}, false, false};
         
-        if (!pupil.detected || pupil.radius <= 0) {
-            return result;
-        }
+    if (!pupil.detected || pupil.radius <= 0) {
+      return result;
+    }
 
-	// Early return if we're in pupil-only mode
-	if (detection_mode_ == MODE_PUPIL_ONLY) {
-	  return result;
-	}	
+    // Early return if we're in pupil-only mode
+    if (detection_mode_ == MODE_PUPIL_ONLY) {
+      return result;
+    }	
 
- // Thread-safe copy of ROI settings
+    // Thread-safe copy of ROI settings
     cv::Rect roi;
     bool use_roi;
     {
-        std::lock_guard<std::mutex> lock(roi_mutex_);
-        roi = current_roi_;
-        use_roi = roi_enabled_;
+      std::lock_guard<std::mutex> lock(roi_mutex_);
+      roi = current_roi_;
+      use_roi = roi_enabled_;
     }
     
     // Validate ROI against current frame
     if (use_roi) {
-        if (roi.x < 0 || roi.y < 0 || 
-            roi.x + roi.width > frame.cols || 
-            roi.y + roi.height > frame.rows ||
-            roi.width <= 0 || roi.height <= 0) {
-            use_roi = false;
-        }
+      if (roi.x < 0 || roi.y < 0 || 
+	  roi.x + roi.width > frame.cols || 
+	  roi.y + roi.height > frame.rows ||
+	  roi.width <= 0 || roi.height <= 0) {
+	use_roi = false;
+      }
     }
     
     // Get working region from input frame
@@ -1576,14 +1576,14 @@ PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
     
     // Allocate working buffer to match roi_frame size
     if (gray_buffer_.size() != roi_frame.size()) {
-        gray_buffer_ = cv::Mat(roi_frame.size(), CV_8UC1);
+      gray_buffer_ = cv::Mat(roi_frame.size(), CV_8UC1);
     }
     
     // Convert to grayscale
     if (roi_frame.channels() > 1) {
-        cv::cvtColor(roi_frame, gray_buffer_, cv::COLOR_BGR2GRAY);
+      cv::cvtColor(roi_frame, gray_buffer_, cv::COLOR_BGR2GRAY);
     } else {
-        roi_frame.copyTo(gray_buffer_);
+      roi_frame.copyTo(gray_buffer_);
     }
     	
     cv::GaussianBlur(gray_buffer_, gray_buffer_, cv::Size(3, 3), 0.5);
@@ -1591,8 +1591,8 @@ PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
     // Adjust pupil center to local coordinates if using ROI
     cv::Point2f pupil_center_local = pupil.center;
     if (use_roi) {
-        pupil_center_local.x -= roi.x;
-        pupil_center_local.y -= roi.y;
+      pupil_center_local.x -= roi.x;
+      pupil_center_local.y -= roi.y;
     }
         
     // P1 DETECTION (only if mode >= MODE_PUPIL_P1)
@@ -1601,18 +1601,16 @@ PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
     static int p1_loss_counter = 0;
     static int p1_recovery_countdown = 0;
     static bool p1_was_lost = false;
-    static int p1_desperation_countdown = 0;
     
     // Use dynamic thresholds from timing_ struct
     const int P1_LOSS_THRESHOLD = timing_.p1_loss_threshold;
     const int P1_RECOVERY_FRAMES = timing_.p1_recovery_frames;
-    const int P1_DESPERATION_FRAMES = 10;  // Stay in desperation mode for multiple frames
     
-    // NOW check if we should be in desperation mode
+    // check if we should be in desperation mode
     bool in_desperation = (p1_loss_counter > P1_LOSS_THRESHOLD * 5);
     
     cv::Point2f p1_local = detectP1(gray_buffer_, pupil_center_local, pupil.radius, 
-                                     in_desperation);
+				    in_desperation);
     
     if (debug_level_ >= DEBUG_VERBOSE && 
 	(p1_local.x < 0 || blink_detector_.isInBlink())) {
@@ -1652,16 +1650,6 @@ PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
 	  std::cout << "⚠️ P1 lost - resetting validator" << std::endl;
 	}
       }
-      
-      // Check if we should enter desperation mode
-      if (p1_loss_counter > P1_LOSS_THRESHOLD * 5 && p1_desperation_countdown == 0) {
-	p1_desperation_countdown = P1_DESPERATION_FRAMES;
-	if (debug_level_ >= DEBUG_CRITICAL) {
-	  std::cout << "🆘 Entering P1 desperation mode (loss_counter=" 
-		    << p1_loss_counter << ")" << std::endl;
-	}
-      }
-      
     } else {
       // P1 candidate detected - convert to full-frame coordinates
       cv::Point2f p1_full = p1_local;
@@ -1675,7 +1663,7 @@ PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
 	std::cout << "P1 validation check: "
 		  << "loss_counter=" << p1_loss_counter
 		  << " recovery_countdown=" << p1_recovery_countdown
-		  << " desperation_countdown=" << p1_desperation_countdown
+		  << " in_desperation=" << in_desperation	  
 		  << " blink_recovering=" << blink_detector_.isRecovering()
 		  << " validator_initialized=" << p1_validator_.isInitialized()
 		  << " candidate_count=" << p1_validator_.getCandidateCount();
@@ -1685,13 +1673,12 @@ PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
 	}
 	std::cout << std::endl;
       }
-      
+
       // Determine validation mode
       bool in_recovery = (p1_recovery_countdown > 0) || blink_detector_.isRecovering();
-      bool in_desperation = (p1_desperation_countdown > 0);
       
       // Validate the candidate
-      bool is_valid = in_desperation || in_recovery || p1_validator_.isValid(p1_full);
+      bool is_valid = in_desperation || in_recovery || p1_validator_.isValid(p1_full);      
       
       if (is_valid) {
 	// Success!
@@ -1726,16 +1713,7 @@ PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
 	// Decrement recovery countdown on successful detection
 	if (p1_recovery_countdown > 0) {
 	  p1_recovery_countdown--;
-	}
-	
-	// Decrement desperation countdown
-	if (p1_desperation_countdown > 0) {
-	  p1_desperation_countdown--;
-	  if (p1_desperation_countdown == 0 && debug_level_ >= DEBUG_CRITICAL) {
-	    std::cout << "✓ Exiting P1 desperation mode" << std::endl;
-	  }
-	}
-	
+	}	
       } else {
 	// Rejected by validator - treat as a loss
 	p1_loss_counter++;
@@ -1756,15 +1734,6 @@ PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
 	  }
 	  
 	  std::cout << std::endl;
-	}
-	
-	// Check if we should enter desperation mode
-	if (p1_loss_counter > P1_LOSS_THRESHOLD * 5 && p1_desperation_countdown == 0) {
-	  p1_desperation_countdown = P1_DESPERATION_FRAMES;
-	  if (debug_level_ >= DEBUG_CRITICAL) {
-	    std::cout << "🆘 Entering P1 desperation mode (loss_counter=" 
-		      << p1_loss_counter << ")" << std::endl;
-	  }
 	}
       }
     }
@@ -1835,34 +1804,34 @@ PurkinjeData detectPurkinje(const cv::Mat& frame, const PupilData& pupil,
 	  p4_recovery_countdown > 0 ||
 	  p4_validator_.isValid(p4_full, pupil.center, pupil.radius);
 	
-                if (!is_valid && debug_level_ >= DEBUG_NORMAL) {
-                    std::cout << "⚠️ P4 rejected by validator" << std::endl;
-                }
+	if (!is_valid && debug_level_ >= DEBUG_NORMAL) {
+	  std::cout << "⚠️ P4 rejected by validator" << std::endl;
+	}
                 
-                if (is_valid) {
-                    result.p4_detected = true;
-                    result.p4_center = p4_full;
+	if (is_valid) {
+	  result.p4_detected = true;
+	  result.p4_center = p4_full;
                     
-                    if (debug_level_ >= DEBUG_VERBOSE) {
-                        std::cout << "✓ P4 accepted (full-frame): (" << p4_full.x << "," << p4_full.y 
-                                  << ") local: (" << p4_local.x << "," << p4_local.y << ")" << std::endl;
-                    }
-		    if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() &&
-			p4_recovery_countdown == 0) {  // ADD THIS CHECK
-		      p4_validator_.update(p4_full, pupil.center);
-		    }
+	  if (debug_level_ >= DEBUG_VERBOSE) {
+	    std::cout << "✓ P4 accepted (full-frame): (" << p4_full.x << "," << p4_full.y 
+		      << ") local: (" << p4_local.x << "," << p4_local.y << ")" << std::endl;
+	  }
+	  if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() &&
+	      p4_recovery_countdown == 0) {  // ADD THIS CHECK
+	    p4_validator_.update(p4_full, pupil.center);
+	  }
 	
-		    // But only update MODEL after recovery
-		    if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() &&
-			p4_model_.isInitialized() && !p4_model_.isFrozen()) {
-		      p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
-		    }		    
-                }
-            }
-        }
-        
-        return result;
+	  // But only update MODEL after recovery
+	  if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() &&
+	      p4_model_.isInitialized() && !p4_model_.isFrozen()) {
+	    p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
+	  }		    
+	}
+      }
     }
+        
+    return result;
+  }
   
     // ========================================================================
     // ANALYSIS THREAD
