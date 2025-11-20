@@ -55,13 +55,19 @@ FrameBufferManager::FrameAccess FrameBufferManager::accessFrame(int index) const
         access.frame = &frames_[index];
         access.in_obs = frame_in_obs_[index];
         access.linestatus = frame_linestatus_[index];
+        access.frameID = frame_ids_[index];          // Add these
+        access.timestamp = frame_timestamps_[index];  // Add these
+        access.systemTime = system_timestamps_[index]; // Add these
     } else {
         access.frame = nullptr;
         access.in_obs = false;
         access.linestatus = false;
+        access.frameID = 0;
+        access.timestamp = 0;
+        access.systemTime = std::chrono::high_resolution_clock::time_point();
     }
     
-    return access;  // Lock moves with the return value
+    return access;
 }
 
 bool FrameBufferManager::hasFrame(int index) const

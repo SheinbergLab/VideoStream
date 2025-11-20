@@ -31,12 +31,15 @@ public:
     // Thread-safe read without copy (for display - returns locked reference)
     // Caller must use the returned lock to keep the frame valid
     struct FrameAccess {
-        const cv::Mat* frame;
-        bool in_obs;
-        bool linestatus;
-        std::unique_lock<std::mutex> lock;
-        
-        bool isValid() const { return frame && !frame->empty(); }
+      const cv::Mat* frame;
+      bool in_obs;
+      bool linestatus;
+      int64_t frameID;
+      int64_t timestamp;
+      std::chrono::high_resolution_clock::time_point systemTime;      
+      std::unique_lock<std::mutex> lock;
+      
+      bool isValid() const { return frame && !frame->empty(); }
     };
 
     
