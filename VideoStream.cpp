@@ -2571,7 +2571,16 @@ int main(int argc, char **argv)
 	  if (g_pluginRegistry.hasPlugins()) {
 	    auto access = frameBufferManager.accessFrame(curFrame);
 	    if (access.isValid()) {
-	      g_pluginRegistry.processFrame(const_cast<cv::Mat&>(*access.frame), curFrame, metadata);
+	      // ensure plugin gets accurate metadata for this frame
+	      FrameMetadata plugin_metadata;
+	      plugin_metadata.frameID = access.frameID;
+	      plugin_metadata.timestamp = access.timestamp;
+	      plugin_metadata.systemTime = access.systemTime;
+	      plugin_metadata.lineStatus = access.linestatus;
+	      
+	      g_pluginRegistry.processFrame(const_cast<cv::Mat&>(*access.frame), 
+					    curFrame, 
+					    plugin_metadata);	      
 	    }	    
 	  }
 
