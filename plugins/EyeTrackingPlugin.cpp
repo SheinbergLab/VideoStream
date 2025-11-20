@@ -567,6 +567,9 @@ private:
   // Statistics
   int frame_count_;
   
+  int64_t first_frameID_ = -1;
+  int64_t first_timestamp_ = -1;
+  
   // Debug control
   int debug_level_;
   int profile_flags_;
@@ -2896,7 +2899,17 @@ public:
             analysis_thread_.join();
         }
     }
-    
+
+  void reset() override {
+    first_frameID_ = -1;
+    first_timestamp_ = -1;
+  }
+
+
+  void fileOpen(const std::string& filename) override {
+    reset();
+  }
+  
     void analyzeFrame(const cv::Mat& frame, int frameIdx, 
                      const FrameMetadata& metadata) override {
         FrameData frame_data;
@@ -3825,10 +3838,17 @@ button.secondary:hover {
 
   void forwardResults(int frame_idx, const FrameMetadata& metadata,
 		      const PupilData& pupil, const PurkinjeData& purkinje) {
-    static int64_t first_timestamp = -1;
-    if (first_timestamp < 0) {
-        first_timestamp = metadata.timestamp;
+    if (first_frameID_ < 0) {
+        first_frameID_ = metadata.frameID;
+        first_timestamp_ = metadata.timestamp;
+
+        // Forward reference values after a reset
+        int64_t ref_data[2] = {first_frameID_, first_timestamp_};
+        ds_forward_queue.push_back(DataPoint("eyetracking/file_reference",
+                                             DataserverForwarder::INT64,
+                                             ref_data, sizeof(ref_data)));
     }
+        
 
     // Extended format with frame metadata
     // [frame_id, frame_timestamp_us, pupil_x, pupil_y, pupil_r, 
@@ -3836,10 +3856,10 @@ button.secondary:hover {
     float batch[12];
 
     // Send a frame count reference corresponding to open file frame id
-    batch[0] = static_cast<float>(metadata.frameID);
+    batch[0] = static_cast<float>(metadata.frameID - first_frameID_);
 
     // relative to first frame
-    batch[1] = (metadata.timestamp - first_timestamp) / 1e9f;  // nanoseconds to seconds
+    batch[1] = (metadata.timestamp - first_timestamp_) / 1e9f;  // nanoseconds to seconds
     
     
     // Pupil data (use -1 for not detected)

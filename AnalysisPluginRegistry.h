@@ -19,7 +19,7 @@ private:
 public:
     AnalysisPluginRegistry() = default;
     ~AnalysisPluginRegistry();
-    
+  
     // Plugins call this during their XX_Init() function
     void registerPlugin(IAnalysisPlugin* plugin);
     
@@ -29,7 +29,7 @@ public:
     // Process frame through all registered plugins
     void processFrame(const cv::Mat& frame, int frameIdx, 
                      const FrameMetadata& metadata);
-    
+
     // Query functions
     bool hasPlugins() const;
     bool isPluginRegistered(const std::string& plugin_name) const;
@@ -38,6 +38,12 @@ public:
     
     // Shutdown all plugins
     void shutdownAll();
+
+    // File open callbacks
+    void fileOpenAll(const std::string &filename);
+  
+    // Reset all (called when new datafile is opened)
+    void resetAll();
 };
 
 #endif // ANALYSIS_PLUGIN_REGISTRY_H

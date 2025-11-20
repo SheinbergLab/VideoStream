@@ -23,7 +23,13 @@ public:
     // Frame processing
     virtual void analyzeFrame(const cv::Mat& frame, int frameIdx, 
                              const FrameMetadata& metadata) = 0;
-    
+
+    // Reset
+    virtual void reset() = 0;
+
+    // FileOpen
+    virtual void fileOpen(const std::string &filename) = 0;
+  
     // Visualization
     virtual bool drawOverlay(cv::Mat& frame, int frame_idx) { return false; }
     

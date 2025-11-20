@@ -1321,6 +1321,10 @@ if (g_frameSource) {
 	    on_frameTimestamp = init_metadata.timestamp;
 	    on_systemTimestamp = init_metadata.systemTime;
 	  }
+
+	  if (g_pluginRegistry.hasPlugins()) {
+	    g_pluginRegistry.fileOpenAll(output_file);
+	  }	  
 	}
 	
 	// Domain socket push (for external access to frames)

@@ -50,20 +50,36 @@ private:
     static constexpr int RECONNECT_DELAY_MS = 5000;
     
 public:
-    enum DataType {
-        BYTE = 0, STRING, FLOAT, DOUBLE, SHORT, INT,
-        DG, SCRIPT, TRIGGER_SCRIPT, EVT, NONE, UNKNOWN
-    };
-    
-    DataserverForwarder(const std::string& addr, int port = 4620) 
-        : sockfd(-1), server_address(addr), server_port(port), 
-          connected(false), should_run(false), drain_only(false) {}
-    
-    ~DataserverForwarder() {
-        stop();
-        disconnect();
-    }
-
+  enum DataType {
+    BYTE = 0,
+    STRING = 1,
+    FLOAT = 2,
+    DOUBLE = 3,
+    SHORT = 4,
+    INT = 5,
+    DG = 6,
+    SCRIPT = 7,
+    TRIGGER_SCRIPT = 8,
+    EVT = 9,
+    NONE = 10,
+    JSON = 11,
+    ARROW = 12,
+    MSGPACK = 13,
+    JPEG = 14,
+    PPM = 15,
+    INT64 = 16,
+    UNKNOWN,
+  };
+  
+  DataserverForwarder(const std::string& addr, int port = 4620) 
+    : sockfd(-1), server_address(addr), server_port(port), 
+      connected(false), should_run(false), drain_only(false) {}
+  
+  ~DataserverForwarder() {
+    stop();
+    disconnect();
+  }
+  
   bool connect() {
     if (connected.load()) return true;
     

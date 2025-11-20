@@ -112,3 +112,32 @@ void AnalysisPluginRegistry::shutdownAll() {
     
     plugins_.clear();
 }
+
+void AnalysisPluginRegistry::resetAll() {
+    std::lock_guard<std::mutex> lock(plugins_mutex_);
+    
+    for (auto& pair : plugins_) {
+        try {
+            pair.second->reset();
+        } catch (const std::exception& e) {
+            std::cerr << "Plugin " << pair.first 
+                      << " reset threw exception: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "Plugin " << pair.first 
+                      << " reset threw unknown exception" << std::endl;
+        }
+    }
+}
+
+void AnalysisPluginRegistry::fileOpenAll(const std::string& filename) {
+    std::lock_guard<std::mutex> lock(plugins_mutex_);
+    
+    for (auto& pair : plugins_) {
+        try {
+            pair.second->fileOpen(filename);
+        } catch (const std::exception& e) {
+            std::cerr << "Plugin " << pair.first 
+                      << " fileOpen threw exception: " << e.what() << std::endl;
+        }
+    }
+}
