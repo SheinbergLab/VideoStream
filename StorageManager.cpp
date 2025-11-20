@@ -128,7 +128,7 @@ bool StorageManager::prepareStatements() {
     const char* sql_frame = 
         "INSERT INTO frames (frame_number, obs_id, frame_id, relative_frame_id, "
         "timestamp_us, system_time_us, line_status) "
-        "VALUES (?, ?, ?, ?, ?, ?)";
+        "VALUES (?, ?, ?, ?, ?, ?, ?)";
     
     if (sqlite3_prepare_v2(db_, sql_frame, -1, &stmt_insert_frame_, nullptr) != SQLITE_OK) {
         std::cerr << "Failed to prepare frame insert statement: " 
