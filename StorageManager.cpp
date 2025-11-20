@@ -102,6 +102,7 @@ bool StorageManager::createTables() {
         CREATE TABLE IF NOT EXISTS frames (
             frame_number INTEGER PRIMARY KEY,
             obs_id INTEGER,
+            frame_id INTEGER,
             relative_frame_id INTEGER,
             timestamp_us INTEGER,
             system_time_us INTEGER,
@@ -125,7 +126,7 @@ bool StorageManager::createTables() {
 bool StorageManager::prepareStatements() {
     // Frame insert statement
     const char* sql_frame = 
-        "INSERT INTO frames (frame_number, obs_id, relative_frame_id, "
+        "INSERT INTO frames (frame_number, obs_id, frame_id, relative_frame_id, "
         "timestamp_us, system_time_us, line_status) "
         "VALUES (?, ?, ?, ?, ?, ?)";
     
@@ -352,10 +353,11 @@ bool StorageManager::storeFrame(const FrameData& frame) {
         sqlite3_bind_null(stmt_insert_frame_, 2);
     }
     
-    sqlite3_bind_int(stmt_insert_frame_, 3, frame.relative_frame_id);
-    sqlite3_bind_int64(stmt_insert_frame_, 4, frame.timestamp_us);
-    sqlite3_bind_int64(stmt_insert_frame_, 5, frame.system_time_us);
-    sqlite3_bind_int(stmt_insert_frame_, 6, frame.line_status);
+    sqlite3_bind_int(stmt_insert_frame_, 3, frame.frame_id);
+    sqlite3_bind_int(stmt_insert_frame_, 4, frame.relative_frame_id);
+    sqlite3_bind_int64(stmt_insert_frame_, 5, frame.timestamp_us);
+    sqlite3_bind_int64(stmt_insert_frame_, 6, frame.system_time_us);
+    sqlite3_bind_int(stmt_insert_frame_, 7, frame.line_status);
     
     int rc = sqlite3_step(stmt_insert_frame_);
     if (rc != SQLITE_DONE) {

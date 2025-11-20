@@ -9,7 +9,6 @@ struct FrameMetadata {
   int64_t timestamp;
   bool lineStatus;
   std::chrono::high_resolution_clock::time_point systemTime;
-  int64_t recording_frame_number{-1};  
 };
 
 class IFrameSource {

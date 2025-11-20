@@ -1377,9 +1377,6 @@ if (g_frameSource) {
 	  if (frameBufferManager.copyFrame(processFrame, frame_copy, frame_metadata, frame_in_obs)) {
 	    if (!only_save_in_obs || (only_save_in_obs && frame_in_obs)) {
 
-	      // Set the recording frame number
-	      frame_metadata.recording_frame_number = frame_count;
- 
 	      // Write video frame (unless metadata-only mode)
 	      if (!metadata_only_) {
 		if (annotate) annotate_process_frame(frame_copy, frame_in_obs);
@@ -1392,7 +1389,8 @@ if (g_frameSource) {
 
 		FrameData fdata;
 		fdata.frame_number = frame_count;
-		fdata.obs_id = storage_manager_.getCurrentObsId(); 
+		fdata.obs_id = storage_manager_.getCurrentObsId();
+		fdata.frame_id = frame_metadata.frameID;
 		fdata.relative_frame_id = (int)(frame_metadata.frameID - on_frameID);
 		fdata.timestamp_us = (frame_metadata.timestamp - on_frameTimestamp) / 1000;
 		fdata.system_time_us =

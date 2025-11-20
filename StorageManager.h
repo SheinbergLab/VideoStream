@@ -26,12 +26,13 @@ struct RecordingMetadata {
 };
 
 struct FrameData {
-    int frame_number;
-    int obs_id;  
-    int relative_frame_id;   // Offset from recording start frame ID
-    int64_t timestamp_us;    // Microseconds from start
-    int64_t system_time_us;  // System time microseconds from start
-    uint8_t line_status;
+  int frame_number;
+  int obs_id;
+  int frame_id;
+  int relative_frame_id;   // Offset from recording start frame ID
+  int64_t timestamp_us;    // Microseconds from start
+  int64_t system_time_us;  // System time microseconds from start
+  uint8_t line_status;
 };
 
 struct CameraSettings {
