@@ -602,6 +602,7 @@ private:
     int p1_relocation_frames;     // Frames needed to confirm P1 relocation
     int p4_loss_threshold;        // Frames without P4 before reset
     int p4_recovery_frames;       // Frames to skip validation after P4 loss
+    int p4_retry_interval;        // Frames between periodic P4 recovery retries
     int blink_recovery_frames;    // Frames to recover after blink
     int baseline_update_frames;   // Frames between baseline updates
     
@@ -610,8 +611,9 @@ private:
       : p1_loss_threshold(5),
         p1_recovery_frames(5),
         p1_relocation_frames(3),
-	p4_loss_threshold(5),     
+	p4_loss_threshold(5),
         p4_recovery_frames(8),
+	p4_retry_interval(50),
 	blink_recovery_frames(15),
         baseline_update_frames(10) {}
     
@@ -625,6 +627,7 @@ private:
       constexpr float P1_RELOCATION_TIME_MS = 15.0f;
       constexpr float P4_LOSS_TIME_MS = 15.0f;
       constexpr float P4_RECOVERY_TIME_MS = 15.0f;
+      constexpr float P4_RETRY_TIME_MS = 200.0f;
       constexpr float BLINK_RECOVERY_TIME_MS = 20.0f;
       constexpr float BASELINE_UPDATE_TIME_MS = 20.0f;
       
@@ -634,6 +637,7 @@ private:
       p1_relocation_frames = static_cast<int>(std::ceil(P1_RELOCATION_TIME_MS / frame_time_ms));
       p4_loss_threshold = static_cast<int>(std::ceil(P4_LOSS_TIME_MS / frame_time_ms));
       p4_recovery_frames = static_cast<int>(std::ceil(P4_RECOVERY_TIME_MS / frame_time_ms));
+      p4_retry_interval = static_cast<int>(std::ceil(P4_RETRY_TIME_MS / frame_time_ms));
 
       blink_recovery_frames = static_cast<int>(std::ceil(BLINK_RECOVERY_TIME_MS / frame_time_ms));
       baseline_update_frames = static_cast<int>(std::ceil(BASELINE_UPDATE_TIME_MS / frame_time_ms));
@@ -1477,9 +1481,24 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     }
     
     if (p4_candidate.x < 0) {
+        if (in_recovery && debug_level_ >= DEBUG_NORMAL) {
+            std::cout << "  P4 recovery: no candidate found in search region" << std::endl;
+        }
         return cv::Point2f(-1, -1);
     }
-    
+
+    // Log candidate details during recovery for diagnostics
+    if (in_recovery && debug_level_ >= DEBUG_NORMAL) {
+        int intensity = gray_roi.at<uchar>(
+            cv::saturate_cast<int>(p4_candidate.y),
+            cv::saturate_cast<int>(p4_candidate.x));
+        float pred_error = (predicted_p4_local.x > 0) ?
+            cv::norm(p4_candidate - predicted_p4_local) : -1.0f;
+        std::cout << "  P4 recovery candidate: (" << p4_candidate.x << ","
+                  << p4_candidate.y << ") intensity=" << intensity
+                  << " pred_error=" << pred_error << std::endl;
+    }
+
     // Validate that P4 is within ROI bounds
     if (p4_candidate.x < 0 || p4_candidate.x >= gray_roi.cols ||
         p4_candidate.y < 0 || p4_candidate.y >= gray_roi.rows) {
@@ -1745,6 +1764,7 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     static bool p4_was_lost = false;
     const int P4_LOSS_THRESHOLD = timing_.p4_loss_threshold;
     const int P4_RECOVERY_FRAMES = timing_.p4_recovery_frames;
+    const int P4_RETRY_INTERVAL = timing_.p4_retry_interval;
 
     // Track P1 absence to trigger P4 recovery when P1 returns
     static int frames_without_p1_for_p4 = 0;
@@ -1784,16 +1804,27 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 				      use_roi, roi, p4_in_recovery);
       if (p4_local.x < 0) {
         p4_loss_counter++;
-        if (p4_loss_counter == P4_LOSS_THRESHOLD) {
+
+        // Trigger recovery: initially after P4_LOSS_THRESHOLD,
+        // then retry every P4_RETRY_INTERVAL frames using existing model
+        bool initial_loss = (p4_loss_counter == P4_LOSS_THRESHOLD);
+        bool periodic_retry = (p4_loss_counter > P4_LOSS_THRESHOLD &&
+                               (p4_loss_counter % P4_RETRY_INTERVAL == 0));
+
+        if (initial_loss || periodic_retry) {
 	  p4_validator_.reset();
 	  p4_recovery_countdown = P4_RECOVERY_FRAMES;
 
-	  fireEvent(VstreamEvent("eyetracking/p4_lost",
-				 "frame " + std::to_string(frame_idx)));
-	  p4_was_lost = true;
+	  if (initial_loss) {
+	    fireEvent(VstreamEvent("eyetracking/p4_lost",
+				   "frame " + std::to_string(frame_idx)));
+	    p4_was_lost = true;
+	  }
 
 	  if (debug_level_ >= DEBUG_CRITICAL) {
-	    std::cout << "⚠️ P4 lost - resetting validator" << std::endl;
+	    std::cout << "⚠️ P4 " << (initial_loss ? "lost" : "retry")
+		      << " - resetting validator (lost " << p4_loss_counter
+		      << " frames)" << std::endl;
 	  }
         }
       } else {
