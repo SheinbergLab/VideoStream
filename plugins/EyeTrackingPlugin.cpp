@@ -947,7 +947,7 @@ private:
 	float vertical_bias = (spot_global.y > pupil_center_local.y) ? 1.2f : 1.0f;
 
 	float size_score = 1.0f;
-	if (last_p1_area_ < 0 || blink_detector_.isRecovering() || in_desperation) {
+	if (last_p1_area_ < 0 || in_desperation) {
 	  // Acquisition mode: STRONGLY prefer larger P1
 	  if (area >= 100) {
 	    size_score = 1.5f;  // Big bonus for large spots
@@ -1167,37 +1167,31 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
         return cv::Point2f(-1, -1);
     }
     
-    // Relax threshold during blink recovery
-    float effective_threshold = p4_min_intensity_;
-    if (blink_detector_.isRecovering()) {
-        effective_threshold *= 0.8f;  // 20% lower during recovery
-    }
-    
     int center_x = cvRound(predicted_center_local.x);
     int center_y = cvRound(predicted_center_local.y);
-    
+
     // Validate center is in bounds
     if (center_x < 0 || center_x >= search_region.cols ||
         center_y < 0 || center_y >= search_region.rows) {
         // Fallback to global search
         return findP4ByBrightestSpot(search_region, search_mask);
     }
-    
+
     cv::Point best_loc(-1, -1);
     double best_score = -1e9;
     double best_intensity = 0;
     float best_distance = 0;
-    
+
     // Raster scan through entire search region
     for (int y = 0; y < search_region.rows; y++) {
         for (int x = 0; x < search_region.cols; x++) {
             // Skip masked pixels
             if (search_mask.at<uchar>(y, x) == 0) continue;
-            
+
             double intensity = search_region.at<uchar>(y, x);
-            
+
             // Skip pixels below threshold
-            if (intensity < effective_threshold) continue;
+            if (intensity < p4_min_intensity_) continue;
             
             // Calculate distance from predicted center
             float dx = x - center_x;
@@ -1218,9 +1212,9 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     }
     
     if (debug_level_ >= DEBUG_VERBOSE) {
-        std::cout << "P4 proximity search: best at distance=" << best_distance 
-                  << " intensity=" << best_intensity 
-                  << " threshold=" << effective_threshold 
+        std::cout << "P4 proximity search: best at distance=" << best_distance
+                  << " intensity=" << best_intensity
+                  << " threshold=" << p4_min_intensity_
                   << " score=" << best_score << std::endl;
     }
     
@@ -1237,13 +1231,9 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     if (search_region.empty()) {
         return cv::Point2f(-1, -1);
     }
-    
-    // Relax threshold during blink recovery
+
     float effective_threshold = p4_min_intensity_;
-    if (blink_detector_.isRecovering()) {
-        effective_threshold *= 0.8f;  // 20% lower during recovery
-    }
-    
+
     // Start at predicted center and spiral outward
     int center_x = cvRound(predicted_center_local.x);
     int center_y = cvRound(predicted_center_local.y);
@@ -1370,18 +1360,12 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     cv::Point min_loc, max_loc;
     cv::minMaxLoc(search_region, &min_val, &max_val, &min_loc, &max_loc, search_mask);
     
-    // Relax threshold during blink recovery
-    float effective_threshold = p4_min_intensity_;
-    if (blink_detector_.isRecovering()) {
-        effective_threshold *= 0.8f;  // 20% lower during recovery
-    }
-    
     if (debug_level_ >= DEBUG_VERBOSE) {
-        std::cout << "P4 bright spot: intensity=" << max_val 
-                  << " threshold=" << effective_threshold << std::endl;
+        std::cout << "P4 bright spot: intensity=" << max_val
+                  << " threshold=" << p4_min_intensity_ << std::endl;
     }
-    
-    if (max_val < effective_threshold) {
+
+    if (max_val < p4_min_intensity_) {
         return cv::Point2f(-1, -1);
     }
     
@@ -1397,7 +1381,8 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 		       const cv::Point2f& p1_local,
 		       float pupil_radius,
 		       bool use_roi,
-		       const cv::Rect& roi) {
+		       const cv::Rect& roi,
+		       bool in_recovery = false) {
     
     cv::Mat search_mask = cv::Mat::zeros(gray_roi.size(), CV_8UC1);
     cv::Point2f predicted_p4_local(-1, -1);
@@ -1436,11 +1421,18 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
       }
       
       if (predicted_p4_local.x > 0) {
+        // Expand search ROI during recovery to accommodate gaze shifts
+        cv::Size effective_search_size = p4_search_roi_size_;
+        if (in_recovery) {
+	  effective_search_size.width = static_cast<int>(effective_search_size.width * 1.5);
+	  effective_search_size.height = static_cast<int>(effective_search_size.height * 1.5);
+        }
+
         cv::Rect predictive_roi(
-				predicted_p4_local.x - p4_search_roi_size_.width / 2,
-				predicted_p4_local.y - p4_search_roi_size_.height / 2,
-				p4_search_roi_size_.width,
-				p4_search_roi_size_.height
+				predicted_p4_local.x - effective_search_size.width / 2,
+				predicted_p4_local.y - effective_search_size.height / 2,
+				effective_search_size.width,
+				effective_search_size.height
 				);
         
         predictive_roi &= cv::Rect(0, 0, gray_roi.cols, gray_roi.rows);
@@ -1525,10 +1517,17 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
             std::cout << "    error (norm): " << prediction_error << " pixels" << std::endl;
         }
         
-        if (prediction_error > p4_max_prediction_error_) {
+        // Relax prediction error threshold during recovery
+        float effective_max_error = p4_max_prediction_error_;
+        if (in_recovery) {
+            effective_max_error *= 1.5f;
+        }
+
+        if (prediction_error > effective_max_error) {
             if (debug_level_ >= DEBUG_NORMAL) {
-                std::cout << "⚠️ P4 prediction error too large: " << prediction_error 
-                         << " > " << p4_max_prediction_error_ 
+                std::cout << "⚠️ P4 prediction error too large: " << prediction_error
+                         << " > " << effective_max_error
+                         << (in_recovery ? " (recovery)" : "")
                          << " (both in local ROI coordinates)" << std::endl;
             }
             return cv::Point2f(-1, -1);
@@ -1615,11 +1614,8 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     cv::Point2f p1_local = detectP1(gray_buffer_, pupil_center_local, pupil.radius, 
 				    in_desperation);
     
-    if (debug_level_ >= DEBUG_VERBOSE && 
-	(p1_local.x < 0 || blink_detector_.isInBlink())) {
-      std::cout << "P1: detected=" << (p1_local.x >= 0)
-		<< " blink=" << blink_detector_.isInBlink()
-		<< " recovery=" << blink_detector_.isRecovering() << std::endl;
+    if (debug_level_ >= DEBUG_VERBOSE && p1_local.x < 0) {
+      std::cout << "P1: not detected" << std::endl;
     }
     
     // Signal blink events
@@ -1667,7 +1663,7 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 		  << "loss_counter=" << p1_loss_counter
 		  << " recovery_countdown=" << p1_recovery_countdown
 		  << " in_desperation=" << in_desperation	  
-		  << " blink_recovering=" << blink_detector_.isRecovering()
+		  << " p1_recovery=" << p1_recovery_countdown
 		  << " validator_initialized=" << p1_validator_.isInitialized()
 		  << " candidate_count=" << p1_validator_.getCandidateCount();
 	if (p1_validator_.isInitialized()) {
@@ -1678,8 +1674,11 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
       }
 
       // Determine validation mode
-      bool in_recovery = (p1_recovery_countdown > 0) || blink_detector_.isRecovering();
-      
+      // Note: blink recovery is handled by the outer gate in analysisThreadFunc —
+      // detectPurkinje is only called when NOT in blink and NOT in blink recovery.
+      // Recovery here refers to P1 loss/reacquisition recovery only.
+      bool in_recovery = (p1_recovery_countdown > 0);
+
       // Validate the candidate
       bool is_valid = in_desperation || in_recovery || p1_validator_.isValid(p1_full);      
       
@@ -1707,11 +1706,8 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 	  p1_loss_counter = 0;
 	}
 	
-	// Update validator whenever we have valid P1 (even during recovery/desperation)
-	// This allows it to adapt to the new position
-	if (!blink_detector_.isInBlink()) {
-	  p1_validator_.update(p1_full);
-	}
+	// Update validator to adapt to the new position
+	p1_validator_.update(p1_full);
 	
 	// Decrement recovery countdown on successful detection
 	if (p1_recovery_countdown > 0) {
@@ -1742,44 +1738,62 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     }
         
     // P4 DETECTION
-    if (detection_mode_ == MODE_FULL && result.p1_detected) {
 
-      // Track P4 loss and recovery
-      static int p4_loss_counter = 0;
-      static int p4_recovery_countdown = 0;
-      static bool p4_was_lost = false;
-      const int P4_LOSS_THRESHOLD = timing_.p4_loss_threshold;  // Add to timing_ struct
-      const int P4_RECOVERY_FRAMES = timing_.p4_recovery_frames;  // Add to timing_ struct
-      
-      // Also track extended P1 loss - reset P4 if P1 was gone for a while
-      static int frames_without_p1 = 0;
+    // Track P4 loss/recovery state (static across calls)
+    static int p4_loss_counter = 0;
+    static int p4_recovery_countdown = 0;
+    static bool p4_was_lost = false;
+    const int P4_LOSS_THRESHOLD = timing_.p4_loss_threshold;
+    const int P4_RECOVERY_FRAMES = timing_.p4_recovery_frames;
+
+    // Track P1 absence to trigger P4 recovery when P1 returns
+    static int frames_without_p1_for_p4 = 0;
+    static bool p1_was_absent_extended = false;
+
+    if (detection_mode_ == MODE_FULL) {
       if (!result.p1_detected) {
-        frames_without_p1++;
-        if (frames_without_p1 == 15) {  // ~0.3 seconds at 50fps
-	  p4_validator_.reset();
-	  if (debug_level_ >= DEBUG_CRITICAL) {
-	    std::cout << "⚠️ Extended P1 loss - resetting P4 tracking" << std::endl;
-	  }
+        frames_without_p1_for_p4++;
+        if (frames_without_p1_for_p4 >= timing_.p1_loss_threshold * 3) {
+	  p1_was_absent_extended = true;
         }
       } else {
-        frames_without_p1 = 0;
+        // P1 just returned after extended absence — reset P4 for clean reacquisition
+        if (p1_was_absent_extended) {
+	  p4_validator_.reset();
+	  p4_loss_counter = 0;
+	  p4_recovery_countdown = P4_RECOVERY_FRAMES;
+
+	  if (debug_level_ >= DEBUG_CRITICAL) {
+	    std::cout << "🔄 P1 returned after extended absence"
+		      << " — resetting P4 for reacquisition"
+		      << " (absent " << frames_without_p1_for_p4 << " frames)"
+		      << std::endl;
+	  }
+        }
+        frames_without_p1_for_p4 = 0;
+        p1_was_absent_extended = false;
       }
-      
+    }
+
+    if (detection_mode_ == MODE_FULL && result.p1_detected) {
+
+      bool p4_in_recovery = (p4_recovery_countdown > 0);
+
       cv::Point2f p4_local = detectP4(gray_buffer_, pupil_center_local,
 				      p1_local, pupil.radius,
-				      use_roi, roi);
+				      use_roi, roi, p4_in_recovery);
       if (p4_local.x < 0) {
         p4_loss_counter++;
         if (p4_loss_counter == P4_LOSS_THRESHOLD) {
 	  p4_validator_.reset();
 	  p4_recovery_countdown = P4_RECOVERY_FRAMES;
-	  
+
 	  fireEvent(VstreamEvent("eyetracking/p4_lost",
 				 "frame " + std::to_string(frame_idx)));
 	  p4_was_lost = true;
-	  
+
 	  if (debug_level_ >= DEBUG_CRITICAL) {
-	    std::cout << "⚠️ P4 lost - resetting validator and model" << std::endl;
+	    std::cout << "⚠️ P4 lost - resetting validator" << std::endl;
 	  }
         }
       } else {
@@ -1788,47 +1802,45 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 				 "frame " + std::to_string(frame_idx)));
 	  p4_was_lost = false;
         }
-        
+
         p4_loss_counter = 0;
         if (p4_recovery_countdown > 0) {
 	  p4_recovery_countdown--;
         }
       }
-      
+
       if (p4_local.x > 0) {
 	cv::Point2f p4_full = p4_local;
 	if (use_roi) {
 	  p4_full.x += roi.x;
 	  p4_full.y += roi.y;
 	}
-	
+
 	bool is_valid =
-	  blink_detector_.isRecovering() ||
-	  p4_recovery_countdown > 0 ||
+	  p4_in_recovery ||
 	  p4_validator_.isValid(p4_full, pupil.center, pupil.radius);
-	
+
 	if (!is_valid && debug_level_ >= DEBUG_NORMAL) {
 	  std::cout << "⚠️ P4 rejected by validator" << std::endl;
 	}
-                
+
 	if (is_valid) {
 	  result.p4_detected = true;
 	  result.p4_center = p4_full;
-                    
+
 	  if (debug_level_ >= DEBUG_VERBOSE) {
-	    std::cout << "✓ P4 accepted (full-frame): (" << p4_full.x << "," << p4_full.y 
+	    std::cout << "✓ P4 accepted (full-frame): (" << p4_full.x << "," << p4_full.y
 		      << ") local: (" << p4_local.x << "," << p4_local.y << ")" << std::endl;
 	  }
-	  if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() &&
-	      p4_recovery_countdown == 0) {  // ADD THIS CHECK
+	  if (!p4_in_recovery) {
 	    p4_validator_.update(p4_full, pupil.center);
 	  }
-	
-	  // But only update MODEL after recovery
-	  if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering() &&
+
+	  // Only update model after recovery settles
+	  if (!p4_in_recovery &&
 	      p4_model_.isInitialized() && !p4_model_.isFrozen()) {
 	    p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
-	  }		    
+	  }
 	}
       }
     }
