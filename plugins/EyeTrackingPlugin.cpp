@@ -562,7 +562,14 @@ private:
   
   cv::Point2f p4_last_known_position_;
   bool p4_pending_sample_active_;
-  cv::Point2f p4_pending_sample_position_;  
+  cv::Point2f p4_pending_sample_position_;
+
+  // P4 loss/recovery tracking (must be member vars so reset can clear them)
+  int p4_loss_counter_ = 0;
+  int p4_recovery_countdown_ = 0;
+  bool p4_was_lost_ = false;
+  int frames_without_p1_for_p4_ = 0;
+  bool p1_was_absent_extended_ = false;
 
   // Statistics
   int frame_count_;
@@ -1758,85 +1765,78 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
         
     // P4 DETECTION
 
-    // Track P4 loss/recovery state (static across calls)
-    static int p4_loss_counter = 0;
-    static int p4_recovery_countdown = 0;
-    static bool p4_was_lost = false;
+    // P4 loss/recovery tracking uses member variables so reset can clear them
     const int P4_LOSS_THRESHOLD = timing_.p4_loss_threshold;
     const int P4_RECOVERY_FRAMES = timing_.p4_recovery_frames;
     const int P4_RETRY_INTERVAL = timing_.p4_retry_interval;
 
-    // Track P1 absence to trigger P4 recovery when P1 returns
-    static int frames_without_p1_for_p4 = 0;
-    static bool p1_was_absent_extended = false;
-
     if (detection_mode_ == MODE_FULL) {
       if (!result.p1_detected) {
-        frames_without_p1_for_p4++;
-        if (frames_without_p1_for_p4 >= timing_.p1_loss_threshold * 3) {
-	  p1_was_absent_extended = true;
+        frames_without_p1_for_p4_++;
+        if (frames_without_p1_for_p4_ >= timing_.p1_loss_threshold * 3) {
+	  p1_was_absent_extended_ = true;
         }
       } else {
         // P1 just returned after extended absence — reset P4 for clean reacquisition
-        if (p1_was_absent_extended) {
+        if (p1_was_absent_extended_) {
 	  p4_validator_.reset();
-	  p4_loss_counter = 0;
-	  p4_recovery_countdown = P4_RECOVERY_FRAMES;
+	  p4_loss_counter_ = 0;
+	  p4_recovery_countdown_ = P4_RECOVERY_FRAMES;
 
 	  if (debug_level_ >= DEBUG_CRITICAL) {
 	    std::cout << "🔄 P1 returned after extended absence"
 		      << " — resetting P4 for reacquisition"
-		      << " (absent " << frames_without_p1_for_p4 << " frames)"
+		      << " (absent " << frames_without_p1_for_p4_ << " frames)"
 		      << std::endl;
 	  }
         }
-        frames_without_p1_for_p4 = 0;
-        p1_was_absent_extended = false;
+        frames_without_p1_for_p4_ = 0;
+        p1_was_absent_extended_ = false;
       }
     }
 
     if (detection_mode_ == MODE_FULL && result.p1_detected) {
 
-      bool p4_in_recovery = (p4_recovery_countdown > 0);
+      bool p4_in_recovery = (p4_recovery_countdown_ > 0);
 
       cv::Point2f p4_local = detectP4(gray_buffer_, pupil_center_local,
 				      p1_local, pupil.radius,
 				      use_roi, roi, p4_in_recovery);
       if (p4_local.x < 0) {
-        p4_loss_counter++;
+        p4_loss_counter_++;
 
         // Trigger recovery: initially after P4_LOSS_THRESHOLD,
         // then retry every P4_RETRY_INTERVAL frames using existing model
-        bool initial_loss = (p4_loss_counter == P4_LOSS_THRESHOLD);
-        bool periodic_retry = (p4_loss_counter > P4_LOSS_THRESHOLD &&
-                               (p4_loss_counter % P4_RETRY_INTERVAL == 0));
+        bool initial_loss = (p4_loss_counter_ == P4_LOSS_THRESHOLD);
+        bool periodic_retry = (p4_loss_counter_ > P4_LOSS_THRESHOLD &&
+                               (p4_loss_counter_ % P4_RETRY_INTERVAL == 0));
 
         if (initial_loss || periodic_retry) {
 	  p4_validator_.reset();
-	  p4_recovery_countdown = P4_RECOVERY_FRAMES;
+	  p4_recovery_countdown_ = P4_RECOVERY_FRAMES;
 
 	  if (initial_loss) {
 	    fireEvent(VstreamEvent("eyetracking/p4_lost",
 				   "frame " + std::to_string(frame_idx)));
-	    p4_was_lost = true;
+	    p4_was_lost_ = true;
 	  }
 
 	  if (debug_level_ >= DEBUG_CRITICAL) {
 	    std::cout << "⚠️ P4 " << (initial_loss ? "lost" : "retry")
-		      << " - resetting validator (lost " << p4_loss_counter
+		      << " - resetting validator (lost " << p4_loss_counter_
 		      << " frames)" << std::endl;
 	  }
         }
       } else {
-        if (p4_was_lost) {
+        if (p4_was_lost_) {
 	  fireEvent(VstreamEvent("eyetracking/p4_recovered",
 				 "frame " + std::to_string(frame_idx)));
-	  p4_was_lost = false;
+	  p4_was_lost_ = false;
         }
 
-        p4_loss_counter = 0;
-        if (p4_recovery_countdown > 0) {
-	  p4_recovery_countdown--;
+        p4_loss_counter_ = 0;
+        if (p4_recovery_countdown_ > 0) {
+	  p4_recovery_countdown_--;
         }
       }
 
@@ -2061,6 +2061,11 @@ static int setDetectionModeCmd(ClientData clientData, Tcl_Interp *interp,
             plugin->p4_validator_.reset();
             plugin->p4_model_.reset();
             plugin->p4_pending_sample_active_ = false;
+            plugin->p4_loss_counter_ = 0;
+            plugin->p4_recovery_countdown_ = 0;
+            plugin->p4_was_lost_ = false;
+            plugin->frames_without_p1_for_p4_ = 0;
+            plugin->p1_was_absent_extended_ = false;
         }
         if (plugin->detection_mode_ < MODE_PUPIL_P1) {
             plugin->p1_validator_.reset();
@@ -2261,17 +2266,12 @@ static int acceptP4SampleCmd(ClientData clientData, Tcl_Interp *interp,
     EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
 
     plugin->updateTimingThresholds();
-    
-    // Check if already calibrated
+
+    // If model already initialized, reset it so we can recalibrate
     if (plugin->p4_model_.isInitialized()) {
-      int sample_count = plugin->p4_model_.getCalibrationSampleCount();
-      char msg[256];
-      snprintf(msg, sizeof(msg), "Model already calibrated (used %d samples)", 
-	       sample_count);
-      Tcl_SetObjResult(interp, Tcl_NewStringObj(msg, -1));
-      return TCL_OK;
+      plugin->p4_model_.reset();
     }
-    
+
     // Check if we have samples
     int sample_count = plugin->p4_model_.getCalibrationSampleCount();
     if (sample_count < 1) {
@@ -2287,7 +2287,13 @@ static int acceptP4SampleCmd(ClientData clientData, Tcl_Interp *interp,
 	   << " magnitude " << plugin->p4_model_.getMagnitudeRatio()
 	   << " angle " << (plugin->p4_model_.getAngleOffset() * 180.0 / M_PI);
       
-      fireEvent(VstreamEvent("eyetracking/p4_calibrated", data.str()));      
+      // Clear loss/recovery tracking so fresh model starts clean
+      plugin->p4_loss_counter_ = 0;
+      plugin->p4_recovery_countdown_ = 0;
+      plugin->p4_was_lost_ = false;
+      plugin->p4_validator_.reset();
+
+      fireEvent(VstreamEvent("eyetracking/p4_calibrated", data.str()));
       return TCL_OK;
     }
     else {
@@ -2302,8 +2308,15 @@ static int acceptP4SampleCmd(ClientData clientData, Tcl_Interp *interp,
     EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
     plugin->p4_model_.reset();
     plugin->p4_validator_.reset();
-    plugin->p4_pending_sample_active_ = false;  // Clear any pending sample
-    
+    plugin->p4_pending_sample_active_ = false;
+
+    // Clear loss/recovery tracking so we start fresh
+    plugin->p4_loss_counter_ = 0;
+    plugin->p4_recovery_countdown_ = 0;
+    plugin->p4_was_lost_ = false;
+    plugin->frames_without_p1_for_p4_ = 0;
+    plugin->p1_was_absent_extended_ = false;
+
     Tcl_SetObjResult(interp, Tcl_NewStringObj("P4 model and validator reset", -1));
     return TCL_OK;
   }
