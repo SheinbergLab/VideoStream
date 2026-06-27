@@ -616,7 +616,13 @@ private:
   int p4_min_intensity_;
 
   float proximity_weight_ = 1.5f;  // bonus for being close to center
-  
+
+  // P4 is only ever visible INSIDE the pupil. The predictive search ROI is a
+  // fixed size, so when the pupil constricts the ROI spills onto the bright
+  // iris/sclera and the search can pick an out-of-pupil bright spot over the
+  // real (dim) P4. Constrain the search to this fraction of the pupil radius.
+  float p4_pupil_search_margin_ = 0.95f;
+
   cv::Point2f p4_last_known_position_;
   bool p4_pending_sample_active_;
   cv::Point2f p4_pending_sample_position_;
@@ -1205,11 +1211,13 @@ cv::Point2f refineP4SubPixelWeighted(const cv::Mat& search_region,
 
 cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
                                              const cv::Mat& search_mask,
-                                             const cv::Point2f& predicted_center_local) {
+                                             const cv::Point2f& predicted_center_local,
+                                             const cv::Point2f& pupil_center_local,
+                                             float pupil_max_dist) {
     if (search_region.empty()) {
         return cv::Point2f(-1, -1);
     }
-    
+
     int center_x = cvRound(predicted_center_local.x);
     int center_y = cvRound(predicted_center_local.y);
 
@@ -1219,6 +1227,10 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
         // Fallback to global search
         return findP4ByBrightestSpot(search_region, search_mask);
     }
+
+    // P4 is only ever inside the pupil; reject candidates beyond this distance
+    // from the pupil center so out-of-pupil iris spots are never preferred.
+    float max_d2 = (pupil_max_dist > 0) ? pupil_max_dist * pupil_max_dist : -1.0f;
 
     cv::Point best_loc(-1, -1);
     double best_score = -1e9;
@@ -1230,6 +1242,13 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
         for (int x = 0; x < search_region.cols; x++) {
             // Skip masked pixels
             if (search_mask.at<uchar>(y, x) == 0) continue;
+
+            // Skip pixels outside the pupil disk
+            if (max_d2 > 0) {
+                float ddx = x - pupil_center_local.x;
+                float ddy = y - pupil_center_local.y;
+                if (ddx*ddx + ddy*ddy > max_d2) continue;
+            }
 
             double intensity = search_region.at<uchar>(y, x);
 
@@ -1383,7 +1402,11 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
         float search_radius = pupil_radius * 0.85f;
         cv::circle(search_mask, pupil_center_local, search_radius, 255, -1);
     }
-    
+
+    // (The "P4 only inside the pupil" constraint is applied as a scalar
+    // distance check inside findP4ByProximityWeightedSearch — no per-frame
+    // mask allocation — so out-of-pupil iris spots are never candidates.)
+
     // Exclude P1 region from search
     float p1_exclusion_radius = pupil_radius * 0.3f;
     cv::circle(search_mask, p1_local, p1_exclusion_radius, 0, -1);
@@ -1392,7 +1415,9 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     // otherwise fall back to the global brightest spot.
     cv::Point2f p4_candidate;
     if (p4_model_.isInitialized() && predicted_p4_local.x > 0) {
-      p4_candidate = findP4ByProximityWeightedSearch(gray_roi, search_mask, predicted_p4_local);
+      p4_candidate = findP4ByProximityWeightedSearch(
+          gray_roi, search_mask, predicted_p4_local,
+          pupil_center_local, pupil_radius * p4_pupil_search_margin_);
     } else {
         p4_candidate = findP4ByBrightestSpot(gray_roi, search_mask);
     }
@@ -2517,6 +2542,20 @@ static int setP4MaxPredictionErrorCmd(ClientData clientData, Tcl_Interp *interp,
     return TCL_OK;
 }
 
+// Fraction of the pupil radius the P4 search is confined to (P4 must be inside
+// the pupil). eyetracking::setP4PupilMargin ?frac?  -> returns current.
+static int setP4PupilMarginCmd(ClientData clientData, Tcl_Interp *interp,
+                               int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    if (objc >= 2) {
+        double m;
+        if (Tcl_GetDoubleFromObj(interp, objv[1], &m) != TCL_OK) return TCL_ERROR;
+        plugin->p4_pupil_search_margin_ = (float)m;
+    }
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(plugin->p4_pupil_search_margin_));
+    return TCL_OK;
+}
+
 static int setP1PupilRadiusMaxCmd(ClientData clientData, Tcl_Interp *interp,
 				  int objc, Tcl_Obj *const objv[]) {
   EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
@@ -3046,8 +3085,10 @@ public:
                             getP4ModelStatusCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP1PupilRadiusMax", 
                             setP1PupilRadiusMaxCmd, this, NULL);
-        Tcl_CreateObjCommand(interp, "::eyetracking::setP4MaxPredictionError", 
+        Tcl_CreateObjCommand(interp, "::eyetracking::setP4MaxPredictionError",
                             setP4MaxPredictionErrorCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::setP4PupilMargin",
+                            setP4PupilMarginCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP1MinIntensity", 
                             setP1MinIntensityCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setP1MinArea", 

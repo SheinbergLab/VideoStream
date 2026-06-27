@@ -9,7 +9,7 @@ public:
   SharedQueue();
   ~SharedQueue();
   
-  T& front();
+  T front();
   void pop_front();
 
   void push_front(const T& item);
@@ -34,14 +34,17 @@ template <typename T>
 SharedQueue<T>::~SharedQueue(){}
 
 template <typename T>
-T& SharedQueue<T>::front()
+T SharedQueue<T>::front()
 {
   std::unique_lock<std::mutex> mlock(mutex_);
   while (queue_.empty())
     {
       cond_.wait(mlock);
     }
-  mlock.unlock();     // unlock before notificiation to minimize mutex con
+  // Return a COPY made while the lock is held. Returning a reference into the
+  // deque after unlocking is a data race: a concurrent push_back can reallocate
+  // the deque and invalidate the reference (ASan: container-overflow, seen as a
+  // SIGABRT during fast reprocess on ds_forward_queue).
   return queue_.front();
 }
 
@@ -53,7 +56,9 @@ void SharedQueue<T>::pop_front()
     {
       cond_.wait(mlock);
     }
-  mlock.unlock();     // unlock before notificiation to minimize mutex con
+  // Must hold the lock while modifying the deque. Unlocking first (the old
+  // "reduce contention" trick) races a concurrent push_back -> deque corruption
+  // / double-free (ASan).
   queue_.pop_front();
 }     
 
