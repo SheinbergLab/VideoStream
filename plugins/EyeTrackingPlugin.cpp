@@ -264,12 +264,6 @@ public:
 		   const cv::Point2f& p4_center) {
     if (frozen_ || !initialized_) return;
 
-    // Don't update model when P4 is below pupil center (rare, but can happen)
-    if (0 && p4_center.y > pupil_center.y) {
-      return;
-    }
-  
-    
     cv::Point2f v_pc_p1 = p1_center - pupil_center;
     cv::Point2f v_pc_p4 = p4_center - pupil_center;
     
@@ -1208,52 +1202,6 @@ cv::Point2f refineP4SubPixelWeighted(const cv::Mat& search_region,
     
     return cv::Point2f(max_loc);
 }
-  
-cv::Point2f refineP4SubPixelGaussian(const cv::Mat& search_region,
-                                     cv::Point max_loc) {
-    int x = max_loc.x;
-    int y = max_loc.y;
-    
-    if (x < 1 || x >= search_region.cols - 1 ||
-        y < 1 || y >= search_region.rows - 1) {
-        return cv::Point2f(max_loc);
-    }
-    
-    float c = search_region.at<uchar>(y, x);
-    float l = search_region.at<uchar>(y, x-1);
-    float r = search_region.at<uchar>(y, x+1);
-    float t = search_region.at<uchar>(y-1, x);
-    float b = search_region.at<uchar>(y+1, x);
-    
-    // ADD THIS DEBUG OUTPUT:
-    if (debug_level_ >= DEBUG_VERBOSE) {
-        std::cout << "P4 refinement: center=" << (int)c 
-                  << " l=" << (int)l << " r=" << (int)r
-                  << " t=" << (int)t << " b=" << (int)b << std::endl;
-    }
-    
-    float dx = 0.0f;
-    float dy = 0.0f;
-    
-    float denom_x = 2.0f * (l - 2.0f * c + r);
-    if (std::abs(denom_x) > 0.01f) {
-        dx = (r - l) / denom_x;
-        dx = std::max(-0.5f, std::min(0.5f, dx));
-    }
-    
-    float denom_y = 2.0f * (t - 2.0f * c + b);
-    if (std::abs(denom_y) > 0.01f) {
-        dy = (b - t) / denom_y;
-        dy = std::max(-0.5f, std::min(0.5f, dy));
-    }
-    
-    // ADD THIS TOO:
-    if (debug_level_ >= DEBUG_VERBOSE) {
-        std::cout << "  → dx=" << dx << " dy=" << dy << std::endl;
-    }
-    
-    return cv::Point2f(x + dx, y + dy);
-}
 
 cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
                                              const cv::Mat& search_mask,
@@ -1320,130 +1268,6 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     return refineP4SubPixelWeighted(search_region, best_loc);
 }
   
- cv::Point2f findP4BySpiralSearch(const cv::Mat& search_region,
-                                   const cv::Mat& search_mask,
-                                   const cv::Point2f& predicted_center_local) {
-    if (search_region.empty()) {
-        return cv::Point2f(-1, -1);
-    }
-
-    float effective_threshold = p4_min_intensity_;
-
-    // Start at predicted center and spiral outward
-    int center_x = cvRound(predicted_center_local.x);
-    int center_y = cvRound(predicted_center_local.y);
-    
-    // Check if center is within bounds and masked
-    if (center_x < 0 || center_x >= search_region.cols ||
-        center_y < 0 || center_y >= search_region.rows) {
-        // Fallback to global search
-        return findP4ByBrightestSpot(search_region, search_mask);
-    }
-    
-    // Best candidate found so far
-    cv::Point best_loc(-1, -1);
-    double best_intensity = effective_threshold;
-    int best_distance = INT_MAX;
-    
-    // Spiral search parameters
-    const int max_radius = 15;  // Search up to 15 pixels from center
-    
-    // Check center first
-    if (search_mask.at<uchar>(center_y, center_x) > 0) {
-        double intensity = search_region.at<uchar>(center_y, center_x);
-        if (intensity >= effective_threshold) {
-            best_loc = cv::Point(center_x, center_y);
-            best_intensity = intensity;
-            best_distance = 0;
-        }
-    }
-    
-    // Spiral outward in square rings
-    for (int radius = 1; radius <= max_radius; radius++) {
-        // Top edge: left to right
-        for (int x = center_x - radius; x <= center_x + radius; x++) {
-            int y = center_y - radius;
-            if (x >= 0 && x < search_region.cols && y >= 0 && y < search_region.rows &&
-                search_mask.at<uchar>(y, x) > 0) {
-                double intensity = search_region.at<uchar>(y, x);
-                
-                // Prefer closer locations if intensity is similar (within 10%)
-                int dist = radius;
-                if (intensity > best_intensity * 1.1 ||  // Significantly brighter
-                    (intensity >= best_intensity * 0.9 && dist < best_distance)) {  // Similar but closer
-                    best_loc = cv::Point(x, y);
-                    best_intensity = intensity;
-                    best_distance = dist;
-                }
-            }
-        }
-        
-        // Bottom edge: left to right
-        for (int x = center_x - radius; x <= center_x + radius; x++) {
-            int y = center_y + radius;
-            if (x >= 0 && x < search_region.cols && y >= 0 && y < search_region.rows &&
-                search_mask.at<uchar>(y, x) > 0) {
-                double intensity = search_region.at<uchar>(y, x);
-                int dist = radius;
-                if (intensity > best_intensity * 1.1 ||
-                    (intensity >= best_intensity * 0.9 && dist < best_distance)) {
-                    best_loc = cv::Point(x, y);
-                    best_intensity = intensity;
-                    best_distance = dist;
-                }
-            }
-        }
-        
-        // Left edge: top to bottom (excluding corners already done)
-        for (int y = center_y - radius + 1; y < center_y + radius; y++) {
-            int x = center_x - radius;
-            if (x >= 0 && x < search_region.cols && y >= 0 && y < search_region.rows &&
-                search_mask.at<uchar>(y, x) > 0) {
-                double intensity = search_region.at<uchar>(y, x);
-                int dist = radius;
-                if (intensity > best_intensity * 1.1 ||
-                    (intensity >= best_intensity * 0.9 && dist < best_distance)) {
-                    best_loc = cv::Point(x, y);
-                    best_intensity = intensity;
-                    best_distance = dist;
-                }
-            }
-        }
-        
-        // Right edge: top to bottom (excluding corners already done)
-        for (int y = center_y - radius + 1; y < center_y + radius; y++) {
-            int x = center_x + radius;
-            if (x >= 0 && x < search_region.cols && y >= 0 && y < search_region.rows &&
-                search_mask.at<uchar>(y, x) > 0) {
-                double intensity = search_region.at<uchar>(y, x);
-                int dist = radius;
-                if (intensity > best_intensity * 1.1 ||
-                    (intensity >= best_intensity * 0.9 && dist < best_distance)) {
-                    best_loc = cv::Point(x, y);
-                    best_intensity = intensity;
-                    best_distance = dist;
-                }
-            }
-        }
-        
-        // Early exit if we found something good and close
-        if (best_distance <= radius && best_intensity > effective_threshold * 1.2) {
-            break;
-        }
-    }
-    
-    if (debug_level_ >= DEBUG_VERBOSE) {
-        std::cout << "P4 spiral search: best at distance=" << best_distance 
-                  << " intensity=" << best_intensity 
-                  << " threshold=" << effective_threshold << std::endl;
-    }
-    
-    if (best_loc.x < 0) {
-        return cv::Point2f(-1, -1);
-    }
-    
-    return refineP4SubPixelWeighted(search_region, best_loc);
-}
 
  cv::Point2f findP4ByBrightestSpot(const cv::Mat& search_region,
                                    const cv::Mat& search_mask) {
@@ -1564,12 +1388,11 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     float p1_exclusion_radius = pupil_radius * 0.3f;
     cv::circle(search_mask, p1_local, p1_exclusion_radius, 0, -1);
     
-    // Use spiral search if model is initialized (we have a good prediction)
-    // Otherwise fall back to global brightest spot
+    // With a model prediction, search near it (proximity-weighted);
+    // otherwise fall back to the global brightest spot.
     cv::Point2f p4_candidate;
     if (p4_model_.isInitialized() && predicted_p4_local.x > 0) {
-      //              p4_candidate = findP4BySpiralSearch(gray_roi, search_mask, predicted_p4_local);
-      p4_candidate = findP4ByProximityWeightedSearch(gray_roi, search_mask, predicted_p4_local);      
+      p4_candidate = findP4ByProximityWeightedSearch(gray_roi, search_mask, predicted_p4_local);
     } else {
         p4_candidate = findP4ByBrightestSpot(gray_roi, search_mask);
     }
