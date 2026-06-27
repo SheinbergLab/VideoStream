@@ -86,6 +86,7 @@ extern "C" {
 
   int set_inObs(int status);
   int set_onlySaveInObs(int status);
+  int set_reprocessMode(int status);
   int set_fourCC(char *str);
 
   void add_shutdown_command(char *str);
@@ -108,6 +109,7 @@ extern std::atomic<int> frame_width;
 extern std::atomic<int> frame_height;
 extern std::atomic<float> frame_rate;
 extern std::atomic<bool>  is_color;
+extern std::atomic<bool>  g_reprocess_serial;
 
 #endif
 

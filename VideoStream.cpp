@@ -147,6 +147,11 @@ bool ds_in_obs = false;		// dataserver obs status (no line_status)
 bool only_save_in_obs = true;
 int obs_count = -1;
 
+// Deterministic offline reprocess: when true, the capture loop processes one
+// frame fully (analyze inline + store) before capturing the next, so the
+// recorded result for frame N is exactly frame N's analysis. Live = false.
+std::atomic<bool> g_reprocess_serial{false};
+
 #ifdef _WIN32
 bool WSA_initialized = false;   // Windows Socket startup needs to be called once
 bool WSA_shutdown = false;  // Windows Socket cleanup only once
@@ -906,6 +911,10 @@ class ProcessThread
   }
 
 public:
+  // Monotonic count of real frames fully processed+stored (excludes sentinels).
+  // Used by the capture loop's serial-reprocess barrier.
+  std::atomic<long> frames_done_{0};
+
   ProcessThread()
   {
     int j;
@@ -1427,9 +1436,11 @@ if (g_frameSource) {
 	    }
 	  }
 	}
+	// Signal the serial-reprocess barrier that this frame is fully handled.
+	frames_done_.fetch_add(1, std::memory_order_release);
       } while (process_queue.size());
     }
-  }  
+  }
 };
   
 ProcessThread processThread;
@@ -1509,6 +1520,14 @@ int set_onlySaveInObs(int status)
   int old = only_save_in_obs;
   if (status == 0 || status == 1)
     only_save_in_obs = status;
+  return old;
+}
+
+int set_reprocessMode(int status)
+{
+  int old = g_reprocess_serial.load();
+  if (status == 0 || status == 1)
+    g_reprocess_serial.store(status != 0);
   return old;
 }
 
@@ -2588,8 +2607,21 @@ int main(int argc, char **argv)
 	    }	    
 	  }
 
-	  if (processThread.fileIsOpen()) { 	  
+	  if (processThread.fileIsOpen()) {
 	    process_queue.push_back(curFrame);
+
+	    // Serial reprocess barrier: wait until the process thread has fully
+	    // stored this frame before capturing the next. Combined with the
+	    // plugin's synchronous mode this makes the recorded .db deterministic
+	    // and frame-complete. No effect on the live path (flag default false).
+	    if (g_reprocess_serial.load()) {
+	      static long serial_pushed = 0;
+	      ++serial_pushed;
+	      while (processThread.frames_done_.load(std::memory_order_acquire)
+		     < serial_pushed) {
+		std::this_thread::yield();
+	      }
+	    }
 	  }
 
 #define MONITOR_PROCESS_QUEUE

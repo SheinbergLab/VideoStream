@@ -1440,6 +1440,21 @@ static int setOnlySaveInObsCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+static int setReprocessModeCmd(ClientData clientData, Tcl_Interp *interp,
+               int argc, char *argv[])
+{
+  int status = -1;  /* used to get current value w/o setting */
+
+  if (argc > 1) {
+    if (Tcl_GetInt(interp, argv[1], &status) != TCL_OK)
+      return TCL_ERROR;
+  }
+  set_reprocessMode(status);
+  Tcl_SetResult(interp, (char *) (g_reprocess_serial.load() ? "1" : "0"),
+                TCL_STATIC);
+  return TCL_OK;
+}
+
 static int setFourCCCmd(ClientData clientData, Tcl_Interp *interp,
             int argc, char *argv[])
 {
@@ -1906,7 +1921,9 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 
   Tcl_CreateCommand(interp, "vstream::inObs", (Tcl_CmdProc *) setInObsCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
-  Tcl_CreateCommand(interp, "vstream::onlySaveInObs", (Tcl_CmdProc *) setOnlySaveInObsCmd, 
+  Tcl_CreateCommand(interp, "vstream::onlySaveInObs", (Tcl_CmdProc *) setOnlySaveInObsCmd,
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "vstream::setReprocessMode", (Tcl_CmdProc *) setReprocessModeCmd,
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::fourcc", (Tcl_CmdProc *) setFourCCCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);

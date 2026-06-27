@@ -402,13 +402,41 @@ private:
     int baseline_update_frames_;
     int frames_since_update_;
 
+    // Self-heal: how long the "blink" gate may persist with a pupil present
+    // before we assume the situation changed (subject left & returned) and
+    // re-learn the baseline from the live pupil. Far longer than any real blink.
+    int frames_in_blink_;
+    int long_blink_reset_frames_;
+
 public:
-    BlinkDetector(int recovery_frames = 15, int baseline_update_frames = 10) 
+    BlinkDetector(int recovery_frames = 15, int baseline_update_frames = 10)
         : in_blink_(false), recovery_countdown_(0), recovery_frames_(recovery_frames),
           baseline_radius_(0), baseline_initialized_(false),
-          frames_since_update_(0), baseline_update_frames_(baseline_update_frames) {}
+          frames_since_update_(0), baseline_update_frames_(baseline_update_frames),
+          frames_in_blink_(0), long_blink_reset_frames_(375) {}
 
     void update(bool pupil_detected, float pupil_radius) {
+        // Track how long we've been "in blink". A real blink is short; a very
+        // long one with a pupil actually present means the baseline is stale
+        // (e.g. subject went out of frame and came back, or signal was lost).
+        // Re-learn the baseline from the live pupil so the gate releases and
+        // P1/P4 detection resumes — without needing a manual reset/restart.
+        if (in_blink_) {
+            frames_in_blink_++;
+            if (pupil_detected && pupil_radius > 0 &&
+                frames_in_blink_ > long_blink_reset_frames_) {
+                baseline_radius_ = pupil_radius;
+                baseline_initialized_ = true;
+                in_blink_ = false;
+                recovery_countdown_ = recovery_frames_;
+                frames_in_blink_ = 0;
+                frames_since_update_ = 0;
+                return;  // resume normal tracking next frame
+            }
+        } else {
+            frames_in_blink_ = 0;
+        }
+
         if (pupil_detected && !in_blink_ && recovery_countdown_ == 0) {
             if (!baseline_initialized_) {
                 baseline_radius_ = pupil_radius;
@@ -421,7 +449,7 @@ public:
                 }
             }
         }
-        
+
         bool blink_condition;
         if (in_blink_) {
             blink_condition = !pupil_detected || 
@@ -455,8 +483,16 @@ public:
   void reset() {
     in_blink_ = false;
     recovery_countdown_ = 0;
+    // Also forget the learned baseline so it re-learns from the live pupil
+    // (matches a program restart). Without this, a baseline corrupted during an
+    // extended signal loss (subject out of frame) keeps the blink gate stuck on
+    // after the subject returns, so P1/P4 are never re-acquired until restart.
+    baseline_radius_ = 0;
+    baseline_initialized_ = false;
+    frames_since_update_ = 0;
+    frames_in_blink_ = 0;
   }
-  
+
     bool isInBlink() const { return in_blink_; }
     bool isRecovering() const { return recovery_countdown_ > 0; }
     
@@ -484,12 +520,39 @@ struct PurkinjeData {
     bool p4_detected;
 };
 
+// Why P4 was not reported for a frame (for reprocess diagnostics)
+enum P4RejectReason {
+    P4_OK = 0,            // P4 detected and accepted
+    P4_NOT_FULL_MODE,     // detection mode < full
+    P4_NO_P1,             // no P1 this frame (P4 search needs P1)
+    P4_BLINK,             // blink / blink-recovery gate suppressed detection
+    P4_NO_CANDIDATE,      // no pixel above threshold in search region
+    P4_PRED_ERROR,        // candidate too far from model prediction
+    P4_OUT_OF_BOUNDS,     // candidate outside ROI bounds
+    P4_INSIDE_PUPIL,      // validator: candidate outside 0.95*pupil_radius
+    P4_JUMP               // validator: candidate moved too far from last P4
+};
+
+// Why P1 was not reported for a frame (for reprocess diagnostics)
+enum P1RejectReason {
+    P1_OK = 0,            // P1 detected and accepted
+    P1_BLINK,             // blink / blink-recovery gate suppressed detection
+    P1_NOT_DETECTED,      // detectP1 returned no candidate (search/threshold/area)
+    P1_REJECTED_FAR,      // validator: jump > 2x max_jump (hard reject vs last P1)
+    P1_REJECTED_SOFT      // validator: in 1x-2x soft zone, still accumulating evidence
+};
+
 struct AnalysisResults {
     int frame_idx;
     PupilData pupil;
     PurkinjeData purkinje;
     bool in_blink;
     bool valid;
+    // reprocess diagnostics
+    int p4_reject_reason = P4_OK;
+    cv::Point2f p4_predicted{-1, -1};
+    bool p4_candidate_found = false;
+    int p1_reject_reason = P1_OK;
 };
 
 // ============================================================================
@@ -570,6 +633,27 @@ private:
   bool p4_was_lost_ = false;
   int frames_without_p1_for_p4_ = 0;
   bool p1_was_absent_extended_ = false;
+
+  // P1 loss/recovery tracking — member vars (NOT function-static) so reset()
+  // and resetTrackingState clear them. Previously function-static in
+  // detectPurkinje, which is why a stuck P1-loss state survived "reset" and only
+  // a program restart cleared it.
+  int p1_loss_counter_ = 0;
+  int p1_recovery_countdown_ = 0;
+  bool p1_was_lost_ = false;
+  bool p1_blink_event_state_ = false;  // last blink state, for blink_start/end events
+
+  // Synchronous (deterministic) analysis for offline reprocess.
+  // When true, analyzeFrame runs the pipeline inline on the caller's thread
+  // instead of pushing to frame_queue_. Live path leaves this false.
+  std::atomic<bool> synchronous_{false};
+
+  // Per-frame P4 diagnostic scratch (set during detectPurkinje/detectP4,
+  // copied into latest_results_ for the reprocess decision log)
+  int p4_reject_reason_ = P4_OK;
+  cv::Point2f p4_predicted_{-1, -1};
+  bool p4_candidate_found_ = false;
+  int p1_reject_reason_ = P1_OK;
 
   // Statistics
   int frame_count_;
@@ -1423,7 +1507,10 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
       
       // Predict in full-frame coordinates (matching training data)
       cv::Point2f predicted_p4_full = p4_model_.predict(pupil_full, p1_full);
-    
+
+      // Stash full-frame prediction for the reprocess decision log
+      p4_predicted_ = predicted_p4_full;
+
       // Convert prediction back to ROI-local coordinates for search
       predicted_p4_local = predicted_p4_full;
       if (use_roi && predicted_p4_full.x > 0) {
@@ -1488,11 +1575,13 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     }
     
     if (p4_candidate.x < 0) {
+        p4_reject_reason_ = P4_NO_CANDIDATE;
         if (in_recovery && debug_level_ >= DEBUG_NORMAL) {
             std::cout << "  P4 recovery: no candidate found in search region" << std::endl;
         }
         return cv::Point2f(-1, -1);
     }
+    p4_candidate_found_ = true;
 
     // Log candidate details during recovery for diagnostics
     if (in_recovery && debug_level_ >= DEBUG_NORMAL) {
@@ -1509,8 +1598,9 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     // Validate that P4 is within ROI bounds
     if (p4_candidate.x < 0 || p4_candidate.x >= gray_roi.cols ||
         p4_candidate.y < 0 || p4_candidate.y >= gray_roi.rows) {
+        p4_reject_reason_ = P4_OUT_OF_BOUNDS;
         if (debug_level_ >= DEBUG_NORMAL) {
-            std::cout << "⚠️ P4 candidate outside ROI bounds: (" 
+            std::cout << "⚠️ P4 candidate outside ROI bounds: ("
                       << p4_candidate.x << "," << p4_candidate.y 
                       << ") ROI size: " << gray_roi.cols << "x" << gray_roi.rows << std::endl;
         }
@@ -1550,6 +1640,7 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
         }
 
         if (prediction_error > effective_max_error) {
+            p4_reject_reason_ = P4_PRED_ERROR;
             if (debug_level_ >= DEBUG_NORMAL) {
                 std::cout << "⚠️ P4 prediction error too large: " << prediction_error
                          << " > " << effective_max_error
@@ -1624,16 +1715,16 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     }
         
     // P1 DETECTION (only if mode >= MODE_PUPIL_P1)
-    
-    // Declare static variables first
-    static int p1_loss_counter = 0;
-    static int p1_recovery_countdown = 0;
-    static bool p1_was_lost = false;
-    
+    // Loss/recovery state lives in member vars (p1_loss_counter_ etc.) so reset
+    // clears it. Local references keep the body below readable.
+    int& p1_loss_counter = p1_loss_counter_;
+    int& p1_recovery_countdown = p1_recovery_countdown_;
+    bool& p1_was_lost = p1_was_lost_;
+
     // Use dynamic thresholds from timing_ struct
     const int P1_LOSS_THRESHOLD = timing_.p1_loss_threshold;
     const int P1_RECOVERY_FRAMES = timing_.p1_recovery_frames;
-    
+
     // check if we should be in desperation mode
     bool in_desperation = (p1_loss_counter > P1_LOSS_THRESHOLD * 5);
     
@@ -1644,8 +1735,8 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
       std::cout << "P1: not detected" << std::endl;
     }
     
-    // Signal blink events
-    static bool was_in_blink = false;
+    // Signal blink events (state in a member so reset clears it)
+    bool& was_in_blink = p1_blink_event_state_;
     bool currently_in_blink = blink_detector_.isInBlink();
     
     if (!was_in_blink && currently_in_blink) {
@@ -1662,6 +1753,7 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     // Handle P1 detection/validation
     if (p1_local.x < 0) {
       // No P1 candidate detected
+      p1_reject_reason_ = P1_NOT_DETECTED;
       p1_loss_counter++;
       if (p1_loss_counter == P1_LOSS_THRESHOLD) {
 	p1_validator_.reset();
@@ -1710,9 +1802,10 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
       
       if (is_valid) {
 	// Success!
+	p1_reject_reason_ = P1_OK;
 	result.p1_detected = true;
 	result.p1_center = p1_full;
-	
+
 	if (p1_was_lost) {
 	  fireEvent(VstreamEvent("eyetracking/p1_recovered",
 				 "frame " + std::to_string(frame_idx)));
@@ -1740,9 +1833,14 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 	  p1_recovery_countdown--;
 	}	
       } else {
-	// Rejected by validator - treat as a loss
+	// Rejected by validator - treat as a loss. Classify for the reprocess log:
+	// FAR = hard reject (>2x max_jump vs stale last P1); SOFT = relocation
+	// candidate still accumulating evidence.
+	p1_reject_reason_ =
+	  (p1_validator_.getJumpDistance() > p1_validator_.getMaxJump() * 2.0f)
+	  ? P1_REJECTED_FAR : P1_REJECTED_SOFT;
 	p1_loss_counter++;
-	
+
 	if (debug_level_ >= DEBUG_NORMAL) {
 	  float jump_dist = p1_validator_.getJumpDistance();
 	  float max_allowed = p1_validator_.getMaxJump();
@@ -1793,6 +1891,13 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
         frames_without_p1_for_p4_ = 0;
         p1_was_absent_extended_ = false;
       }
+    }
+
+    // Diagnostic: record why P4 won't be attempted this frame
+    if (detection_mode_ != MODE_FULL) {
+      p4_reject_reason_ = P4_NOT_FULL_MODE;
+    } else if (!result.p1_detected) {
+      p4_reject_reason_ = P4_NO_P1;
     }
 
     if (detection_mode_ == MODE_FULL && result.p1_detected) {
@@ -1847,15 +1952,34 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 	  p4_full.y += roi.y;
 	}
 
+	// The old inside-pupil check (dist > 0.95*pupil_radius) rejected valid P4s
+	// when the pupil constricted (bright screen): measured 77% of P4 losses on
+	// coherence-sweep, all INSIDE_PUPIL, with PRED_ERROR/NO_CANDIDATE = 0. P4's
+	// offset from the pupil center is fixed by eye geometry, not pupil size.
+	// In full mode the model prediction + prediction-error gate already
+	// constrain P4 location, so the radius check is redundant — disable it (pass
+	// -1). Keep it only as a spatial fallback when there is no model prediction.
+	float gate_radius = p4_model_.isInitialized() ? -1.0f : pupil.radius;
+
 	bool is_valid =
 	  p4_in_recovery ||
-	  p4_validator_.isValid(p4_full, pupil.center, pupil.radius);
+	  p4_validator_.isValid(p4_full, pupil.center, gate_radius);
 
-	if (!is_valid && debug_level_ >= DEBUG_NORMAL) {
-	  std::cout << "⚠️ P4 rejected by validator" << std::endl;
+	if (!is_valid) {
+	  // Distinguish the validator's two gates for the reprocess log
+	  if (gate_radius > 0 &&
+	      cv::norm(p4_full - pupil.center) > gate_radius * 0.95f) {
+	    p4_reject_reason_ = P4_INSIDE_PUPIL;
+	  } else {
+	    p4_reject_reason_ = P4_JUMP;
+	  }
+	  if (debug_level_ >= DEBUG_NORMAL) {
+	    std::cout << "⚠️ P4 rejected by validator" << std::endl;
+	  }
 	}
 
 	if (is_valid) {
+	  p4_reject_reason_ = P4_OK;
 	  result.p4_detected = true;
 	  result.p4_center = p4_full;
 
@@ -1867,10 +1991,26 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 	    p4_validator_.update(p4_full, pupil.center);
 	  }
 
-	  // Only update model after recovery settles
+	  // LIVE-SAFE LEARNING: detection above is permissive (the radius-scaled
+	  // inside-pupil gate is gone), but online model updates are CONSERVATIVE —
+	  // learn geometry only from reliable frames. Updating on constricted /
+	  // off-prediction detections drifts the model and causes runaway P4 loss.
+	  // Conditions: not in recovery, pupil well-dilated (near baseline), and the
+	  // detection close to the model prediction.
 	  if (!p4_in_recovery &&
 	      p4_model_.isInitialized() && !p4_model_.isFrozen()) {
-	    p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
+	    const float LEARN_MIN_DILATION = 0.85f;  // pupil >= 85% of baseline radius
+	    const float LEARN_MAX_ERR_FRAC = 0.5f;   // within half the max pred error
+	    float baseline_r = blink_detector_.getBaselineRadius();
+	    bool well_dilated = (baseline_r > 0.0f) &&
+	                        (pupil.radius >= baseline_r * LEARN_MIN_DILATION);
+	    bool close_to_prediction =
+	        (p4_predicted_.x < 0.0f) ||
+	        (cv::norm(p4_full - p4_predicted_) <=
+	         p4_max_prediction_error_ * LEARN_MAX_ERR_FRAC);
+	    if (well_dilated && close_to_prediction) {
+	      p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
+	    }
 	  }
 	}
       }
@@ -1880,9 +2020,123 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
   }
   
     // ========================================================================
+    // PER-FRAME PIPELINE (runs on analysis thread, or inline when synchronous_)
+    // ========================================================================
+
+    void processFrameInline(const cv::Mat& frame, int frame_idx,
+                            const FrameMetadata& metadata) {
+        if (frame.empty()) {
+            return;
+        }
+
+        ensureBuffersAllocated(frame);
+
+        // Handle one-shot debug
+        int saved_debug_level = debug_level_;
+        if (debug_next_frame_.exchange(false)) {  // Atomic swap to false
+          debug_level_ = DEBUG_VERBOSE;
+          std::cout << "\n🔍 ════════ FRAME " << frame_idx
+                    << " DEBUG ════════" << std::endl;
+        }
+
+        auto start = std::chrono::high_resolution_clock::now();
+
+        PupilData pupil = detectPupil(frame);
+
+        bool was_in_blink = blink_detector_.isInBlink();
+
+        blink_detector_.update(pupil.detected, pupil.radius);
+
+        if (debug_level_ >= DEBUG_NORMAL && pupil.detected) {
+          std::cout << "Frame " << frame_idx
+                    << ": pupil_r=" << std::fixed << std::setprecision(1) << pupil.radius
+                    << " baseline=" << blink_detector_.getBaselineRadius()
+                    << " ratio=" << std::setprecision(2) << (pupil.radius / blink_detector_.getBaselineRadius())
+                    << " blink=" << blink_detector_.isInBlink()
+                    << " recovering=" << blink_detector_.isRecovering()
+                    << std::endl;
+        }
+
+        if (blink_detector_.shouldResetValidators()) {
+            p1_validator_.reset();
+            p4_validator_.reset();
+        }
+
+        // Reset per-frame diagnostics; detectPurkinje/detectP4 set them.
+        p4_reject_reason_ = P4_OK;
+        p4_predicted_ = cv::Point2f(-1, -1);
+        p4_candidate_found_ = false;
+        p1_reject_reason_ = P1_OK;
+
+        PurkinjeData purkinje;
+
+        if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering()) {
+          purkinje = detectPurkinje(frame, pupil, frame_idx);
+        } else {
+          p4_reject_reason_ = P4_BLINK;
+          p1_reject_reason_ = P1_BLINK;
+          if (debug_level_ >= DEBUG_NORMAL) {
+            std::cout << "Frame " << frame_idx
+                      << ": Skipping Purkinje detection (blink/recovery)"
+                      << std::endl;
+          }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(results_mutex_);
+            latest_results_.frame_idx = frame_idx;
+            latest_results_.pupil = pupil;
+            latest_results_.purkinje = purkinje;
+            latest_results_.in_blink = blink_detector_.isInBlink();
+            latest_results_.valid = true;
+            latest_results_.p4_reject_reason = p4_reject_reason_;
+            latest_results_.p4_predicted = p4_predicted_;
+            latest_results_.p4_candidate_found = p4_candidate_found_;
+            latest_results_.p1_reject_reason = p1_reject_reason_;
+        }
+
+        forwardResults(frame_idx, metadata, pupil, purkinje);
+
+        if (debug_level_ == DEBUG_VERBOSE && saved_debug_level != DEBUG_VERBOSE) {
+          std::cout << "════════════════════════════════════════\n" << std::endl;
+          debug_level_ = saved_debug_level;
+        }
+
+        blink_detector_.decrementRecovery();
+
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+
+        frame_count_++;
+
+        // Profiling output - timing only
+        if ((profile_flags_ & PROFILE_TIMING) && frame_count_ % 100 == 0) {
+            std::cout << "[Profile] Frame " << frame_count_
+                      << ": " << duration.count() << "µs" << std::endl;
+        }
+
+        // Profiling output - full details (original DEBUG_PROFILE behavior)
+        if (debug_level_ >= DEBUG_PROFILE && frame_count_ % 100 == 0) {
+            std::cout << "Frame " << frame_count_ << ": " << duration.count() << "µs";
+            if (pupil.detected) {
+                std::cout << " | Pupil: r=" << pupil.radius;
+            }
+            if (blink_detector_.isInBlink()) {
+                std::cout << " | BLINK";
+            }
+            std::cout << std::endl;
+        }
+
+        // Periodic summary at normal level
+        if (debug_level_ >= DEBUG_NORMAL && frame_count_ % 1000 == 0) {
+            std::cout << "Processed " << frame_count_ << " frames" << std::endl;
+        }
+    }
+
+    // ========================================================================
     // ANALYSIS THREAD
     // ========================================================================
-    
+
     void analysisThreadFunc() {
         if (debug_level_ >= DEBUG_CRITICAL) {
             std::cout << "Eye tracking analysis thread started" << std::endl;
@@ -1917,101 +2171,8 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
                     break;
                 }
                 
-                if (frame_data.frame.empty()) {
-                    continue;
-                }
-                
-                ensureBuffersAllocated(frame_data.frame);
-
-		// Handle one-shot debug
-		int saved_debug_level = debug_level_;
-		if (debug_next_frame_.exchange(false)) {  // Atomic swap to false
-		  debug_level_ = DEBUG_VERBOSE;
-		  std::cout << "\n🔍 ════════ FRAME " << frame_data.frame_idx 
-			    << " DEBUG ════════" << std::endl;
-		}
-		
-                auto start = std::chrono::high_resolution_clock::now();
-                
-                PupilData pupil = detectPupil(frame_data.frame);
-                
-                bool was_in_blink = blink_detector_.isInBlink();
-                
-                blink_detector_.update(pupil.detected, pupil.radius);
-
-		if (debug_level_ >= DEBUG_NORMAL && pupil.detected) {
-		  std::cout << "Frame " << frame_data.frame_idx 
-			    << ": pupil_r=" << std::fixed << std::setprecision(1) << pupil.radius
-			    << " baseline=" << blink_detector_.getBaselineRadius()
-			    << " ratio=" << std::setprecision(2) << (pupil.radius / blink_detector_.getBaselineRadius())
-			    << " blink=" << blink_detector_.isInBlink()
-			    << " recovering=" << blink_detector_.isRecovering()
-			    << std::endl;
-		}
-		
-                if (blink_detector_.shouldResetValidators()) {
-                    p1_validator_.reset();
-                    p4_validator_.reset();                
-                }
-                
-                PurkinjeData purkinje;
-
-		if (!blink_detector_.isInBlink() && !blink_detector_.isRecovering()) {
-		  purkinje = detectPurkinje(frame_data.frame,
-					    pupil,
-					    frame_data.frame_idx);
-		} else if (debug_level_ >= DEBUG_NORMAL) {
-		  std::cout << "Frame " << frame_data.frame_idx 
-			    << ": Skipping Purkinje detection (blink/recovery)" 
-			    << std::endl;
-		}		
-                
-                {
-                    std::lock_guard<std::mutex> lock(results_mutex_);
-                    latest_results_.frame_idx = frame_data.frame_idx;
-                    latest_results_.pupil = pupil;
-                    latest_results_.purkinje = purkinje;
-                    latest_results_.in_blink = blink_detector_.isInBlink();
-                    latest_results_.valid = true;
-                }
-
-		forwardResults(frame_data.frame_idx, frame_data.metadata,
-			       pupil, purkinje);
-		
-		if (debug_level_ == DEBUG_VERBOSE && saved_debug_level != DEBUG_VERBOSE) {
-		  std::cout << "════════════════════════════════════════\n" << std::endl;
-		  debug_level_ = saved_debug_level;
-		}
-		
-                blink_detector_.decrementRecovery();
-                
-                auto end = std::chrono::high_resolution_clock::now();
-                auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-                
-                frame_count_++;
-                
-                // Profiling output - timing only
-                if ((profile_flags_ & PROFILE_TIMING) && frame_count_ % 100 == 0) {
-                    std::cout << "[Profile] Frame " << frame_count_ 
-                              << ": " << duration.count() << "µs" << std::endl;
-                }
-                
-                // Profiling output - full details (original DEBUG_PROFILE behavior)
-                if (debug_level_ >= DEBUG_PROFILE && frame_count_ % 100 == 0) {
-                    std::cout << "Frame " << frame_count_ << ": " << duration.count() << "µs";
-                    if (pupil.detected) {
-                        std::cout << " | Pupil: r=" << pupil.radius;
-                    }
-                    if (blink_detector_.isInBlink()) {
-                        std::cout << " | BLINK";
-                    }
-                    std::cout << std::endl;
-                }
-                
-                // Periodic summary at normal level
-                if (debug_level_ >= DEBUG_NORMAL && frame_count_ % 1000 == 0) {
-                    std::cout << "Processed " << frame_count_ << " frames" << std::endl;
-                }
+                processFrameInline(frame_data.frame, frame_data.frame_idx,
+                                   frame_data.metadata);
             } catch (...) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
@@ -2108,13 +2269,14 @@ static int resetTrackingStateCmd(ClientData clientData, Tcl_Interp *interp,
     
     // Check if we're currently in a blink state
     bool was_in_blink = plugin->blink_detector_.isInBlink();
-    
-    // Light reset: just clear transient tracking state (for video rewind/loop)
-    // Keeps detection mode and calibrated P4 model intact
-    plugin->p1_validator_.reset();
-    plugin->p4_validator_.reset();
+
+    // Full reset of transient tracking state (validators, blink detector +
+    // baseline, P1/P4 loss-recovery counters). Keeps detection mode and the
+    // calibrated P4 model intact. This is what lets an operator recover from a
+    // stuck blink/loss state without restarting the program.
+    plugin->clearTrackingState();
     plugin->updateTimingThresholds();
-    
+
     // If we were in a blink, fire event to clear UI indicators
     if (was_in_blink) {
       fireEvent(VstreamEvent("eyetracking/blink_end", "frame -1"));
@@ -2125,6 +2287,22 @@ static int resetTrackingStateCmd(ClientData clientData, Tcl_Interp *interp,
     }
     
     Tcl_SetObjResult(interp, Tcl_NewStringObj("Tracking state reset", -1));
+    return TCL_OK;
+}
+
+// Enable/disable synchronous (deterministic) analysis for offline reprocess.
+// eyetracking::setSynchronous ?0|1?  -> returns current state.
+static int setSynchronousCmd(ClientData clientData, Tcl_Interp *interp,
+                             int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    if (objc >= 2) {
+        int enable;
+        if (Tcl_GetBooleanFromObj(interp, objv[1], &enable) != TCL_OK) {
+            return TCL_ERROR;
+        }
+        plugin->synchronous_.store(enable != 0);
+    }
+    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(plugin->synchronous_.load()));
     return TCL_OK;
 }
       
@@ -2956,9 +3134,28 @@ public:
         }
     }
 
+  // Clear ALL transient tracking state so a "reset" behaves like a fresh start
+  // (validators, blink detector + baseline, P1/P4 loss-recovery counters).
+  // Does NOT touch the calibrated P4 model or detection mode.
+  void clearTrackingState() {
+    p1_validator_.reset();
+    p4_validator_.reset();
+    blink_detector_.reset();
+    p1_loss_counter_ = 0;
+    p1_recovery_countdown_ = 0;
+    p1_was_lost_ = false;
+    p1_blink_event_state_ = false;
+    p4_loss_counter_ = 0;
+    p4_recovery_countdown_ = 0;
+    p4_was_lost_ = false;
+    frames_without_p1_for_p4_ = 0;
+    p1_was_absent_extended_ = false;
+  }
+
   void reset() override {
     first_frameID_ = -1;
     first_timestamp_ = -1;
+    clearTrackingState();
   }
 
 
@@ -2966,13 +3163,20 @@ public:
     reset();
   }
   
-    void analyzeFrame(const cv::Mat& frame, int frameIdx, 
+    void analyzeFrame(const cv::Mat& frame, int frameIdx,
                      const FrameMetadata& metadata) override {
+        // Deterministic offline path: run the pipeline inline so this frame's
+        // result is ready before the caller stores it (no queue, no reordering).
+        if (synchronous_.load()) {
+            processFrameInline(frame, frameIdx, metadata);
+            return;
+        }
+
         FrameData frame_data;
         frame_data.frame = frame.clone();
         frame_data.frame_idx = frameIdx;
         frame_data.metadata = metadata;
-        
+
         frame_queue_.push_back(frame_data);
     }
     
@@ -2988,9 +3192,11 @@ public:
                             setDetectionModeCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::resetDetection", 
                             resetDetectionCmd, this, NULL);
-        Tcl_CreateObjCommand(interp, "::eyetracking::resetTrackingState", 
+        Tcl_CreateObjCommand(interp, "::eyetracking::resetTrackingState",
                             resetTrackingStateCmd, this, NULL);
- 
+        Tcl_CreateObjCommand(interp, "::eyetracking::setSynchronous",
+                            setSynchronousCmd, this, NULL);
+
         Tcl_CreateObjCommand(interp, "::eyetracking::setPupilThreshold", 
                             setPupilThresholdCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::setROI", 
@@ -3770,7 +3976,12 @@ button.secondary:hover {
             p4_model_initialized INTEGER,
             p4_model_frozen INTEGER,
             p4_magnitude_ratio REAL,
-            p4_angle_offset_deg REAL
+            p4_angle_offset_deg REAL,
+            p4_reject_reason INTEGER,
+            p4_pred_x REAL,
+            p4_pred_y REAL,
+            p4_candidate INTEGER,
+            p1_reject_reason INTEGER
         );
         
        CREATE INDEX IF NOT EXISTS idx_eyetracking_obs
@@ -3797,8 +4008,10 @@ button.secondary:hover {
             p1_x, p1_y,
             p4_x, p4_y,
             p4_model_initialized, p4_model_frozen,
-            p4_magnitude_ratio, p4_angle_offset_deg
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            p4_magnitude_ratio, p4_angle_offset_deg,
+            p4_reject_reason, p4_pred_x, p4_pred_y, p4_candidate,
+            p1_reject_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
     
     sqlite3_stmt* stmt;
@@ -3868,12 +4081,25 @@ button.secondary:hover {
 	sqlite3_bind_null(stmt, col++);
 	sqlite3_bind_null(stmt, col++);
       }
+
+      // Reprocess diagnostics: why P4 was/wasn't reported, model prediction,
+      // and whether any candidate reflection was found this frame.
+      sqlite3_bind_int(stmt, col++, latest_results_.p4_reject_reason);
+      if (latest_results_.p4_predicted.x >= 0) {
+	sqlite3_bind_double(stmt, col++, latest_results_.p4_predicted.x);
+	sqlite3_bind_double(stmt, col++, latest_results_.p4_predicted.y);
+      } else {
+	sqlite3_bind_null(stmt, col++);
+	sqlite3_bind_null(stmt, col++);
+      }
+      sqlite3_bind_int(stmt, col++, latest_results_.p4_candidate_found ? 1 : 0);
+      sqlite3_bind_int(stmt, col++, latest_results_.p1_reject_reason);
     } else {
       // No valid results - insert NULL for everything except frame_number
       sqlite3_bind_int(stmt, col++, 0);  // in_blink = 0 (not blinking)
-      
+
       // All other columns are nullable - set to NULL
-      for (int i = 0; i < 11; i++) {  // 11 remaining columns
+      for (int i = 0; i < 16; i++) {  // 11 detection cols + 5 diagnostic cols
 	sqlite3_bind_null(stmt, col++);
       }
     }
