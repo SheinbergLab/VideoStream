@@ -1,0 +1,77 @@
+name: Build and Test
+
+on:
+  push:
+    branches: ['**']     # build on branch pushes; tags are handled by the release workflows
+  pull_request:
+
+jobs:
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt update
+          apt install -y sudo wget curl git ca-certificates jq build-essential cmake pkg-config
+          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev
+
+      - name: Check out our code
+        uses: actions/checkout@v4
+        with:
+          submodules: true     # deps/tcl is built from source on Linux
+
+      - name: Build and install Tcl 9 from the deps/tcl submodule
+        run: |
+          cd deps/tcl/unix
+          ./configure
+          make -j
+          make install
+          ldconfig || true
+
+      - name: Install dlsh (libdg + df.h)
+        run: |
+          DLSH_VERSION=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/SheinbergLab/dlsh/releases/latest | jq -r '.tag_name')
+          ARCH=$(dpkg --print-architecture)
+          wget -q "https://github.com/SheinbergLab/dlsh/releases/download/${DLSH_VERSION}/dlsh-dg_${DLSH_VERSION}_${ARCH}.deb"
+          dpkg --install "dlsh-dg_${DLSH_VERSION}_${ARCH}.deb"
+
+      - name: Build (FLIR-free, default)
+        run: |
+          cmake -B build
+          cmake --build build -j
+
+      - name: Sanity-check the binary
+        run: ./build/VideoStream --help
+
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - name: Install build dependencies
+        run: |
+          brew update
+          brew install cmake opencv tcl-tk@9 lz4 jansson jq wget
+
+      - name: Check out our code
+        uses: actions/checkout@v4
+        with:
+          submodules: false    # macOS uses brew Tcl/jansson, not the submodule
+
+      - name: Install dlsh (libdg + df.h)
+        run: |
+          DLSH_VERSION=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/SheinbergLab/dlsh/releases/latest | jq -r '.tag_name')
+          wget -q "https://github.com/SheinbergLab/dlsh/releases/download/${DLSH_VERSION}/dlsh-${DLSH_VERSION}-Darwin-arm64-signed.pkg"
+          sudo installer -pkg "dlsh-${DLSH_VERSION}-Darwin-arm64-signed.pkg" -target /
+
+      - name: Build (plain binary, no bundle/sign)
+        run: |
+          cmake -B build
+          cmake --build build -j
+
+      - name: Sanity-check the binary
+        run: ./build/VideoStream --help

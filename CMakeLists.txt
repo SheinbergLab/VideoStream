@@ -3,10 +3,17 @@ set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_BUILD_TYPE Release)
 
-# Version is injected from the release tag in CI (-D PROJECT_VERSION=...); 0.0.0 locally.
+# Version is injected from the release tag in CI (-D PROJECT_VERSION=<tag>); 0.0.0 locally.
+# project(VERSION) demands a strict numeric X.Y.Z, but tags may carry a leading 'v'
+# and/or a suffix (e.g. v0.0.1-test), so extract the numeric core for project()/CPack.
 if(NOT DEFINED PROJECT_VERSION)
     set(PROJECT_VERSION 0.0.0)
 endif()
+string(REGEX MATCH "[0-9]+(\\.[0-9]+)+" _vs_ver "${PROJECT_VERSION}")
+if(NOT _vs_ver)
+    set(_vs_ver 0.0.0)
+endif()
+set(PROJECT_VERSION "${_vs_ver}")
 
 project( VideoStream VERSION ${PROJECT_VERSION} )
 
