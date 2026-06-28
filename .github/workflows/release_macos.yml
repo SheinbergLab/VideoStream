@@ -99,7 +99,7 @@ jobs:
       - name: Create a GitHub release for the current tag and package
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "./*-signed.pkg"
+          artifacts: "./videostream-*-signed.pkg"
           body: VideoStream ${{ github.ref_name }} (macOS, Apple Silicon)
           generateReleaseNotes: true
           allowUpdates: true
