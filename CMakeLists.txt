@@ -3,7 +3,12 @@ set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_BUILD_TYPE Release)
 
-project( VideoStream )
+# Version is injected from the release tag in CI (-D PROJECT_VERSION=...); 0.0.0 locally.
+if(NOT DEFINED PROJECT_VERSION)
+    set(PROJECT_VERSION 0.0.0)
+endif()
+
+project( VideoStream VERSION ${PROJECT_VERSION} )
 
 # FLIR Spinnaker is a proprietary SDK and is NOT redistributable, so it is OFF by
 # default: the standard build (and all CI release artifacts) supports webcam/UVC,
@@ -393,3 +398,59 @@ if(APPLE)
         LINK_FLAGS "-undefined dynamic_lookup"
     )
 endif()
+
+######
+##### Install / packaging
+######
+#
+# Layout matches the SheinbergLab convention (cf. dserv): everything under
+# <prefix>/videostream/, with the plugin in plugins/ next to the binary so the
+# runtime loader (`[file dir [info nameofexecutable]]/plugins/...`) finds it.
+#
+# A.2a covers the generic/Linux path (DEB). The macOS .app bundle + dylibbundler
+# + signing is A.2b (pairs with release_macos.yml).
+#
+install(TARGETS VideoStream  DESTINATION videostream                 COMPONENT videostream)
+install(TARGETS eyetracking  LIBRARY DESTINATION videostream/plugins COMPONENT videostream)
+
+# Ship the runtime Tcl + web assets, excluding editor backups / scratch variants
+# (install(DIRECTORY) copies from the filesystem, so .gitignore doesn't filter these).
+install(DIRECTORY tcl DESTINATION videostream COMPONENT videostream
+        REGEX "~$"                                 EXCLUDE
+        REGEX "\\.(NEW|thresholds|BAK|bak|orig|swp)$" EXCLUDE
+        REGEX "\\.DS_Store$"                       EXCLUDE
+        REGEX "history\\.txt$"                     EXCLUDE)
+install(DIRECTORY www DESTINATION videostream COMPONENT videostream
+        REGEX "\\.DS_Store$" EXCLUDE)
+
+set(CPACK_PACKAGE_NAME videostream)
+set(CPACK_PACKAGE_VENDOR SheinbergLab)
+set(CPACK_PACKAGE_CONTACT SheinbergLab)
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Camera/video streaming + Purkinje eye-tracking host")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_COMPONENTS_ALL videostream)
+
+if(UNIX AND NOT APPLE)
+    set(CPACK_GENERATOR "DEB")
+    # Let dpkg-shlibdeps auto-discover shared-lib deps (OpenCV, Tcl, jansson, libuv, ...).
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+    # dlsh (libdg) is installed from the dlsh release .deb, declare it explicitly.
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "dlsh-dg")
+
+    execute_process(COMMAND dpkg --print-architecture
+        OUTPUT_VARIABLE PACKAGE_ARCH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT PACKAGE_ARCH)
+        set(PACKAGE_ARCH amd64)
+    endif()
+    # DISTRO_SUFFIX is passed per-distro in CI (-D DISTRO_SUFFIX=bookworm, ...).
+    if(NOT DEFINED DISTRO_SUFFIX)
+        set(DISTRO_SUFFIX "")
+    endif()
+    if(DISTRO_SUFFIX)
+        set(CPACK_DEBIAN_FILE_NAME "videostream_${PROJECT_VERSION}_${PACKAGE_ARCH}_${DISTRO_SUFFIX}.deb")
+    else()
+        set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+    endif()
+endif()
+
+include(CPack)
