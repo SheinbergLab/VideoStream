@@ -45,7 +45,7 @@ proc onEvent {type data} {
         "vstream/video_source_eof"    { puts "EOF (looping)" }
         "vstream/video_source_rewind" { eyetracking::resetTrackingState }
         "eyetracking/p4_lost"     { puts "P4 lost  @frame $data" }
-        "eyetracking/p4_recovered"{ puts "P4 recovered @frame $data" }
+        "eyetracking/p4_recovered" { puts "P4 recovered @frame $data" }
         "eyetracking/p1_lost"     { puts "P1 lost  @frame $data" }
     }
 }
