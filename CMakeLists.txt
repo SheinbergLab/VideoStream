@@ -16,6 +16,11 @@ project( VideoStream VERSION ${PROJECT_VERSION} )
 # that has the Spinnaker SDK installed to build the camera-acquisition path.
 option(WITH_FLIR "Build with FLIR Spinnaker camera support (requires Spinnaker SDK; not redistributable)" OFF)
 
+# macOS only: build a self-contained VideoStream.app / .dmg (dylibbundler + DragNDrop).
+# OFF by default so local dev keeps the plain ./build/VideoStream binary; CI/packaging
+# turns it ON.
+option(MACOS_APP_BUNDLE "Build a self-contained macOS .app bundle (for .dmg packaging)" OFF)
+
 if(WIN32)
 set (OpenCV_DIR c:/usr/local/lib/opencv/build/x64/vc15/lib)
 endif()
@@ -80,13 +85,30 @@ elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
 	set(LABLIB lablib)
 endif()
 elseif(APPLE)
-	# Try to find Tcl 9 first, fall back to 8.6
-	find_library(TCL_LIBRARY 
-	    NAMES tcl9.0 tcl90 tcl9 tcl8.6
-	    HINTS /usr/local/lib /opt/homebrew/lib
-	)
+	# Prefer Homebrew's tcl-tk@9: it ships a bundle-friendly libtcl (no appended
+	# zipfs, so install_name_tool/dylibbundler/codesign work) plus an on-disk
+	# stdlib (lib/tcl9.0) we can bundle into the .app — matching stim2's macOS
+	# build. (The dlsh /usr/local Tcl embeds the stdlib as a zipfs appended to
+	# the dylib, which the macOS relocation tools can't process.)
+	execute_process(COMMAND brew --prefix tcl-tk@9
+	    OUTPUT_VARIABLE BREW_TCL OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+	if(BREW_TCL AND EXISTS "${BREW_TCL}/lib/libtcl9.0.dylib")
+	    set(TCL_LIBRARY "${BREW_TCL}/lib/libtcl9.0.dylib")
+	    set(TCL_INCLUDE_DIR "${BREW_TCL}/include")
+	    include_directories("${BREW_TCL}/include")
+	    link_directories("${BREW_TCL}/lib")
+	    message(STATUS "Using Homebrew tcl-tk@9: ${BREW_TCL}")
+	else()
+	    find_library(TCL_LIBRARY
+		NAMES tcl9.0 tcl90 tcl9 tcl8.6
+		HINTS /usr/local/lib /opt/homebrew/lib)
+	    message(STATUS "Homebrew tcl-tk@9 not found; using ${TCL_LIBRARY}")
+	endif()
 	if(TCL_LIBRARY)
 	    get_filename_component(TCLLIB ${TCL_LIBRARY} NAME_WE)
+	    # Dir holding libtcl + the tcl9.0/ stdlib (resolve symlinks for bundling).
+	    get_filename_component(_tcl_real "${TCL_LIBRARY}" REALPATH)
+	    get_filename_component(LIBTCL_DIR "${_tcl_real}" DIRECTORY)
 	else()
 	    set(TCLLIB tcl8.6)  # Fallback
 	endif()
@@ -384,19 +406,7 @@ endif()
 # A.2a covers the generic/Linux path (DEB). The macOS .app bundle + dylibbundler
 # + signing is A.2b (pairs with release_macos.yml).
 #
-install(TARGETS VideoStream  DESTINATION videostream                 COMPONENT videostream)
-install(TARGETS eyetracking  LIBRARY DESTINATION videostream/plugins COMPONENT videostream)
-
-# Ship the runtime Tcl + web assets, excluding editor backups / scratch variants
-# (install(DIRECTORY) copies from the filesystem, so .gitignore doesn't filter these).
-install(DIRECTORY tcl DESTINATION videostream COMPONENT videostream
-        REGEX "~$"                                 EXCLUDE
-        REGEX "\\.(NEW|thresholds|BAK|bak|orig|swp)$" EXCLUDE
-        REGEX "\\.DS_Store$"                       EXCLUDE
-        REGEX "history\\.txt$"                     EXCLUDE)
-install(DIRECTORY www DESTINATION videostream COMPONENT videostream
-        REGEX "\\.DS_Store$" EXCLUDE)
-
+# ---- Common package metadata ----
 set(CPACK_PACKAGE_NAME videostream)
 set(CPACK_PACKAGE_VENDOR SheinbergLab)
 set(CPACK_PACKAGE_CONTACT SheinbergLab)
@@ -404,19 +414,143 @@ set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Camera/video streaming + Purkinje eye-tra
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
 set(CPACK_COMPONENTS_ALL videostream)
 
-if(UNIX AND NOT APPLE)
+if(APPLE AND MACOS_APP_BUNDLE)
+    # ============ Self-contained macOS .app -> .dmg (A.2b) ============
+    set_target_properties(VideoStream PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME VideoStream
+        MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
+        MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
+        MACOSX_BUNDLE_GUI_IDENTIFIER org.sheinberglab.videostream
+        # Custom Info.plist carries NSCameraUsageDescription (camera access prompt).
+        MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/macos/Info.plist.in)
+    set(CMAKE_SKIP_RPATH TRUE)
+
+    # Built-bundle path differs by generator (Xcode is multi-config -> Release/).
+    if(CMAKE_GENERATOR MATCHES "Xcode")
+        set(APP_BUNDLE ${CMAKE_BINARY_DIR}/Release/VideoStream.app)
+    else()
+        set(APP_BUNDLE ${CMAKE_BINARY_DIR}/VideoStream.app)
+    endif()
+
+    # Assemble everything INTO the built .app via absolute-path installs, then
+    # copy the finished bundle into the package staging at the end. The plugin
+    # sits next to the binary (Contents/MacOS/plugins) so the runtime loader
+    # `[file dir [info nameofexecutable]]/plugins/...` resolves inside the bundle.
+    install(TARGETS eyetracking
+            LIBRARY DESTINATION ${APP_BUNDLE}/Contents/MacOS/plugins COMPONENT videostream)
+    install(DIRECTORY tcl DESTINATION ${APP_BUNDLE}/Contents/Resources COMPONENT videostream
+            REGEX "~$"                                 EXCLUDE
+            REGEX "\\.(NEW|thresholds|BAK|bak|orig|swp)$" EXCLUDE
+            REGEX "\\.DS_Store$"                       EXCLUDE
+            REGEX "history\\.txt$"                     EXCLUDE)
+
+    # Bundle the Tcl stdlib so the relocated libtcl finds it at ../lib/tcl9.0
+    # (relative to Contents/Frameworks). tcl9.0/ = packages, tcl9/ = Tcl modules.
+    if(LIBTCL_DIR AND EXISTS "${LIBTCL_DIR}/tcl9.0")
+        install(DIRECTORY ${LIBTCL_DIR}/tcl9.0
+                DESTINATION ${APP_BUNDLE}/Contents/lib COMPONENT videostream)
+        install(DIRECTORY ${LIBTCL_DIR}/tcl9
+                DESTINATION ${APP_BUNDLE}/Contents/lib COMPONENT videostream OPTIONAL)
+    else()
+        message(WARNING "Tcl stdlib (tcl9.0/) not found under ${LIBTCL_DIR}; bundle may not self-init Tcl")
+    endif()
+
+    # Identity for the post-bundling re-sign. Empty -> ad-hoc ("-"), which is
+    # enough to RUN locally (arm64 SIGKILLs binaries whose signature was
+    # invalidated by editing load commands). CI sets a Developer ID for A.2b-2.
+    set(MACOS_CODESIGN_IDENTITY "" CACHE STRING "codesign identity for the .app (empty = ad-hoc)")
+
+    # Relocate non-system dylibs (OpenCV + its media tree + libtcl9.0; jansson/dg
+    # are static, no libuv) into Contents/Frameworks with install names -> @rpath,
+    # then repair rpaths and re-sign. dylibbundler's --install-path @rpath leaves
+    # a bogus, DUPLICATED '@rpath/' LC_RPATH that dyld rejects, so we replace it:
+    # bundled dylibs resolve siblings via @loader_path; the executable + plugin
+    # reach Frameworks via @executable_path/../Frameworks.
+    set(_DYLIBBUNDLER "dylibbundler --bundle-deps --overwrite-files --create-dir --search-path /opt/homebrew/lib --search-path ${LIBTCL_DIR} --dest-dir ${APP_BUNDLE}/Contents/Frameworks --install-path @rpath")
+    install(CODE "
+        set(_int \"${CMAKE_INSTALL_NAME_TOOL}\")
+        set(_bin \"${APP_BUNDLE}/Contents/MacOS/VideoStream\")
+        set(_plug \"${APP_BUNDLE}/Contents/MacOS/plugins/eyetracking.dylib\")
+        set(_id \"${MACOS_CODESIGN_IDENTITY}\")
+        if(NOT _id)
+            set(_id \"-\")
+        endif()
+
+        execute_process(COMMAND_ECHO STDOUT
+            COMMAND ${_DYLIBBUNDLER} -x \"\${_bin}\" -x \"\${_plug}\"
+            RESULT_VARIABLE _rc)
+        if(NOT _rc EQUAL 0)
+            message(FATAL_ERROR \"dylibbundler failed (rc=\${_rc})\")
+        endif()
+
+        file(GLOB _fw \"${APP_BUNDLE}/Contents/Frameworks/*.dylib\")
+        # bundled dylibs find their siblings via @loader_path
+        foreach(_l \${_fw})
+            execute_process(COMMAND \${_int} -add_rpath @loader_path \"\${_l}\" ERROR_QUIET)
+        endforeach()
+        # strip every bogus/duplicate literal '@rpath/' rpath (dyld rejects dups)
+        foreach(_f \${_fw} \"\${_bin}\" \"\${_plug}\")
+            set(_more TRUE)
+            while(_more)
+                execute_process(COMMAND \${_int} -delete_rpath @rpath/ \"\${_f}\"
+                    RESULT_VARIABLE _d OUTPUT_QUIET ERROR_QUIET)
+                if(NOT _d EQUAL 0)
+                    set(_more FALSE)
+                endif()
+            endwhile()
+        endforeach()
+        # executable + plugin reach Frameworks (plugin's @executable_path is the host)
+        execute_process(COMMAND \${_int} -add_rpath @executable_path/../Frameworks \"\${_bin}\" ERROR_QUIET)
+        execute_process(COMMAND \${_int} -add_rpath @executable_path/../Frameworks \"\${_plug}\" ERROR_QUIET)
+
+        # re-sign (editing load commands invalidated signatures; arm64 SIGKILLs
+        # edited binaries). A real Developer ID gets hardened runtime + the
+        # entitlements + a secure timestamp (all required for notarization);
+        # otherwise ad-hoc, which is enough to run locally. Sign inner-out:
+        # dylibs -> plugin -> binary -> bundle.
+        set(_ent \"${CMAKE_SOURCE_DIR}/macos/VideoStream.entitlements\")
+        if(_id STREQUAL \"-\")
+            set(_opts \"\")
+        else()
+            set(_opts --options runtime --timestamp --entitlements \"\${_ent}\")
+        endif()
+        foreach(_l \${_fw})
+            execute_process(COMMAND codesign --force \${_opts} -s \"\${_id}\" \"\${_l}\")
+        endforeach()
+        execute_process(COMMAND codesign --force \${_opts} -s \"\${_id}\" \"\${_plug}\")
+        execute_process(COMMAND codesign --force \${_opts} -s \"\${_id}\" \"\${_bin}\")
+        execute_process(COMMAND codesign --force \${_opts} -s \"\${_id}\" \"${APP_BUNDLE}\")
+    " COMPONENT videostream)
+
+    # Copy the finished bundle into the package staging root.
+    install(TARGETS VideoStream BUNDLE DESTINATION . COMPONENT videostream)
+
+    set(CPACK_GENERATOR "DragNDrop")
+    set(CPACK_DMG_VOLUME_NAME "VideoStream-${PROJECT_VERSION}")
+    set(CPACK_PACKAGE_FILE_NAME "videostream-${PROJECT_VERSION}-Darwin")
+
+elseif(NOT APPLE)
+    # ============ Linux: /usr/local/videostream + DEB (A.2a) ============
+    install(TARGETS VideoStream  DESTINATION videostream                 COMPONENT videostream)
+    install(TARGETS eyetracking  LIBRARY DESTINATION videostream/plugins COMPONENT videostream)
+    install(DIRECTORY tcl DESTINATION videostream COMPONENT videostream
+            REGEX "~$"                                 EXCLUDE
+            REGEX "\\.(NEW|thresholds|BAK|bak|orig|swp)$" EXCLUDE
+            REGEX "\\.DS_Store$"                       EXCLUDE
+            REGEX "history\\.txt$"                     EXCLUDE)
+    install(DIRECTORY www DESTINATION videostream COMPONENT videostream
+            REGEX "\\.DS_Store$" EXCLUDE)
+
     set(CPACK_GENERATOR "DEB")
-    # Let dpkg-shlibdeps auto-discover shared-lib deps (OpenCV, Tcl, jansson, libuv, ...).
-    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-    # dlsh (libdg) is installed from the dlsh release .deb, declare it explicitly.
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "dlsh-dg")
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)   # auto-discover OpenCV/Tcl/... deps
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "dlsh-dg")  # libdg from the dlsh release .deb
 
     execute_process(COMMAND dpkg --print-architecture
         OUTPUT_VARIABLE PACKAGE_ARCH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     if(NOT PACKAGE_ARCH)
         set(PACKAGE_ARCH amd64)
     endif()
-    # DISTRO_SUFFIX is passed per-distro in CI (-D DISTRO_SUFFIX=bookworm, ...).
     if(NOT DEFINED DISTRO_SUFFIX)
         set(DISTRO_SUFFIX "")
     endif()
