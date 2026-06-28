@@ -437,9 +437,15 @@ if(APPLE AND MACOS_APP_BUNDLE)
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
         MACOSX_BUNDLE_GUI_IDENTIFIER org.sheinberglab.videostream
-        # Custom Info.plist carries NSCameraUsageDescription (camera access prompt).
+        MACOSX_BUNDLE_ICON_FILE VideoStream
+        # Custom Info.plist carries NSCameraUsageDescription + CFBundleIconFile.
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/macos/Info.plist.in)
     set(CMAKE_SKIP_RPATH TRUE)
+
+    # Ship the app icon in Contents/Resources/VideoStream.icns.
+    target_sources(VideoStream PRIVATE ${CMAKE_SOURCE_DIR}/macos/VideoStream.icns)
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/macos/VideoStream.icns
+        PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 
     # Built-bundle path differs by generator (Xcode is multi-config -> Release/).
     if(CMAKE_GENERATOR MATCHES "Xcode")
