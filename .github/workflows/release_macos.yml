@@ -86,6 +86,15 @@ jobs:
           PKG="$(find . -maxdepth 2 -name 'videostream-*-Darwin.pkg' ! -name '*-signed.pkg' | head -1)"
           echo "Built pkg: $PKG"
 
+          # CPack's Distribution omits hostArchitectures, so the Installer assumes
+          # x86_64 and prompts for Rosetta on Apple Silicon. Inject arm64 (do this
+          # on the UNSIGNED pkg, before productsign).
+          pkgutil --expand "$PKG" pkg_exp
+          sed -i '' 's/<options /<options hostArchitectures="arm64" /' pkg_exp/Distribution
+          rm -f "$PKG"
+          pkgutil --flatten pkg_exp "$PKG"
+          rm -rf pkg_exp
+
           # Sign the pkg wrapper with the Developer ID Installer cert.
           SIGNED="videostream-${{ github.ref_name }}-Darwin-$(uname -m)-signed.pkg"
           productsign --sign "$INSTALLER_CERT_ID" "$PKG" "$SIGNED"
