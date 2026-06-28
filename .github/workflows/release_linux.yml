@@ -1,0 +1,93 @@
+name: Release for Linux
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            container: debian:12
+            distro: bookworm
+            arch: amd64
+          - runner: ubuntu-22.04-arm
+            container: debian:12
+            distro: bookworm
+            arch: arm64
+          - runner: ubuntu-22.04
+            container: debian:13
+            distro: trixie
+            arch: amd64
+          - runner: ubuntu-22.04-arm
+            container: debian:13
+            distro: trixie
+            arch: arm64
+          - runner: ubuntu-22.04
+            container: ubuntu:22.04
+            distro: jammy
+            arch: amd64
+          - runner: ubuntu-24.04
+            container: ubuntu:24.04
+            distro: noble
+            arch: amd64
+
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+
+    permissions:
+      contents: write
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+
+      - name: Install build dependencies
+        run: |
+          apt update
+          apt install -y sudo wget curl git ca-certificates jq build-essential cmake pkg-config
+          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev
+
+      - name: Check out our code for the current tag
+        uses: actions/checkout@v4
+        with:
+          submodules: true       # deps/tcl is built from source on Linux
+          fetch-depth: 0
+
+      - name: Build and install Tcl 9 from the deps/tcl submodule
+        run: |
+          cd deps/tcl/unix
+          ./configure
+          make -j
+          make install
+          ldconfig || true
+
+      - name: Install dlsh (libdg + df.h)
+        run: |
+          DLSH_VERSION=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/SheinbergLab/dlsh/releases/latest | jq -r '.tag_name')
+          wget -q "https://github.com/SheinbergLab/dlsh/releases/download/${DLSH_VERSION}/dlsh-dg_${DLSH_VERSION}_${{ matrix.arch }}.deb"
+          dpkg --install "dlsh-dg_${DLSH_VERSION}_${{ matrix.arch }}.deb" || apt -f install -y
+
+      - name: Build and package (.deb)
+        run: |
+          cmake -B build \
+            -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D DISTRO_SUFFIX=${{ matrix.distro }}
+          cmake --build build -j
+          cpack --config build/CPackConfig.cmake
+          ls -la videostream_*.deb
+
+      - name: Upload release artifacts
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "./videostream_*.deb"
+          body: VideoStream ${{ github.ref_name }} (Linux)
+          generateReleaseNotes: true
+          allowUpdates: true

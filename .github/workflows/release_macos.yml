@@ -21,7 +21,7 @@ jobs:
           brew update
           # tcl-tk@9 is bundle-friendly (non-zipfs libtcl + on-disk stdlib);
           # dylibbundler relocates dylibs into the .app.
-          brew install cmake dylibbundler opencv tcl-tk@9 lz4 jansson jq wget
+          brew install cmake pkg-config dylibbundler opencv tcl-tk@9 lz4 jansson jq wget
 
       - name: Check out our code for the current tag
         uses: actions/checkout@v4

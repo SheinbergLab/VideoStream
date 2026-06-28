@@ -97,14 +97,22 @@ elseif(APPLE)
 	# stdlib (lib/tcl9.0) we can bundle into the .app — matching stim2's macOS
 	# build. (The dlsh /usr/local Tcl embeds the stdlib as a zipfs appended to
 	# the dylib, which the macOS relocation tools can't process.)
+	# brew puts Tcl 9 headers in include/tcl-tk (NOT include/) and needs
+	# -DTCL_WITH_EXTERNAL_TOMMATH, so resolve compile flags via pkg-config rather
+	# than guessing — otherwise the compiler silently falls back to the macOS SDK's
+	# Tcl 8.6 headers (Tcl_Size unknown, Tcl_LinkVar signature mismatch).
+	find_package(PkgConfig REQUIRED)
 	execute_process(COMMAND brew --prefix tcl-tk@9
 	    OUTPUT_VARIABLE BREW_TCL OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-	if(BREW_TCL AND EXISTS "${BREW_TCL}/lib/libtcl9.0.dylib")
+	if(BREW_TCL AND EXISTS "${BREW_TCL}/lib/pkgconfig/tcl.pc")
+	    set(ENV{PKG_CONFIG_PATH} "${BREW_TCL}/lib/pkgconfig")
+	    pkg_check_modules(TCL REQUIRED tcl)
+	    set(TCL_INCLUDE_DIR "${TCL_INCLUDE_DIRS}")
 	    set(TCL_LIBRARY "${BREW_TCL}/lib/libtcl9.0.dylib")
-	    set(TCL_INCLUDE_DIR "${BREW_TCL}/include")
-	    include_directories("${BREW_TCL}/include")
-	    link_directories("${BREW_TCL}/lib")
-	    message(STATUS "Using Homebrew tcl-tk@9: ${BREW_TCL}")
+	    include_directories(${TCL_INCLUDE_DIRS})
+	    link_directories(${TCL_LIBRARY_DIRS})
+	    add_compile_options(${TCL_CFLAGS_OTHER})   # -DTCL_WITH_EXTERNAL_TOMMATH
+	    message(STATUS "Using Homebrew tcl-tk@9 (pkg-config): ${TCL_INCLUDE_DIRS}")
 	else()
 	    find_library(TCL_LIBRARY
 		NAMES tcl9.0 tcl90 tcl9 tcl8.6
@@ -556,16 +564,27 @@ elseif(NOT APPLE)
             REGEX "\\.DS_Store$" EXCLUDE)
 
     set(CPACK_GENERATOR "DEB")
-    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)   # auto-discover OpenCV/Tcl/... deps
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "dlsh-dg")  # libdg from the dlsh release .deb
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")  # -> /usr/local/videostream
+
+    # Hand-list runtime deps (NOT dpkg-shlibdeps): Tcl 9 is built from source into
+    # /usr/local, which has no dpkg metadata and would make shlibdeps error.
+    # jansson + dg are static (no dep). libtcl9.0 ships in apt only from Debian
+    # Trixie / newer Ubuntu onward; elsewhere the admin provides Tcl 9.
+    set(_vs_deb_deps "libc6, libstdc++6, zlib1g, liblz4-1, libopencv-dev, dlsh-dg")
+    if(NOT DEFINED DISTRO_SUFFIX)
+        set(DISTRO_SUFFIX "")
+    endif()
+    set(_vs_tcl9_distros "trixie" "noble" "")
+    list(FIND _vs_tcl9_distros "${DISTRO_SUFFIX}" _vs_tcl9_idx)
+    if(_vs_tcl9_idx GREATER_EQUAL 0)
+        set(_vs_deb_deps "${_vs_deb_deps}, libtcl9.0")
+    endif()
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "${_vs_deb_deps}")
 
     execute_process(COMMAND dpkg --print-architecture
         OUTPUT_VARIABLE PACKAGE_ARCH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     if(NOT PACKAGE_ARCH)
         set(PACKAGE_ARCH amd64)
-    endif()
-    if(NOT DEFINED DISTRO_SUFFIX)
-        set(DISTRO_SUFFIX "")
     endif()
     if(DISTRO_SUFFIX)
         set(CPACK_DEBIAN_FILE_NAME "videostream_${PROJECT_VERSION}_${PACKAGE_ARCH}_${DISTRO_SUFFIX}.deb")
