@@ -6,10 +6,10 @@
 #   ./build/VideoStream -d -f tcl/watch.tcl -- <mp4_path> [mag angle] [speed]
 #
 # Defaults to the coherence-sweep pilot file + its P4 model. Controls:
-#   SPACE pause/resume   <-/-> step (paused)   i insets   I frame info
+#   SPACE pause/resume   <-/-> step (paused)   i insets   f focus (off/annotated/clean)   I frame info
 #   shift-click = mark P4 sample   m calibrate model   r reset tracking
 #
-namespace eval ::R { variable w [dict create]; variable paused 0; variable insets 0 }
+namespace eval ::R { variable w [dict create]; variable paused 0 }
 
 set DEF_MP4   /Users/sheinb/src/VideoStream/data/pilot_2026-06-23/human_pursuit_coherence-sweep_260626135852.mp4
 set DEF_MAG 0.5023
@@ -22,6 +22,7 @@ set ::spd [expr {[llength $argv] >= 4 ? [lindex $argv 3] : 0.25}]
 set ::source_file $mp4
 
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
+source [file join [file dirname [info script]] et_keys.tcl]
 
 # defaults (same as the headless reprocess path)
 eyetracking::setROI 160 80 430 365
@@ -54,7 +55,6 @@ proc toggle_pause {args} {
 }
 proc step_fwd {args} { if {$::R::paused} { vstream::step 1;  puts "frame [vstream::getCurrentFrame]" } }
 proc step_bwd {args} { if {$::R::paused} { vstream::step -1; puts "frame [vstream::getCurrentFrame]" } }
-proc toggle_insets {args} { set ::R::insets [expr {!$::R::insets}]; eyetracking::toggleInsets $::R::insets }
 proc accept_p4 {args}  { catch {eyetracking::acceptP4Sample} r; puts $r }
 proc reset_trk {args}  { eyetracking::resetTrackingState; puts "tracking reset" }
 proc calib_p4 {args}   { catch {eyetracking::calibrateP4Model} r; puts $r; eyetracking::setDetectionMode full }
@@ -62,7 +62,7 @@ proc frame_info {args} { puts "frame [vstream::getCurrentFrame]/[vstream::getTot
 
 clear_widgets; clear_key_bindings
 vstream::startSource playback file $mp4 speed $::spd loop 1
-eyetracking::toggleInsets 1; set ::R::insets 1
+eyetracking::toggleInsets 1   ;# start with insets on
 
 # parameter sliders
 dict set ::R::w pup [add_int_slider 20 -50 150 40 {Pupil Threshold} 1 255 [eyetracking::setPupilThreshold] eyetracking::setPupilThreshold]
@@ -73,7 +73,7 @@ dict set ::R::w p4e [add_float_slider 20 -185 150 40 {P4 Max PredErr} 5 100 [eye
 bind_key " " toggle_pause
 bind_key $::keys::RIGHT step_fwd
 bind_key $::keys::LEFT  step_bwd
-bind_key "i" toggle_insets
+::et::bind_overlay_keys              ;# i = insets, f = focus (shared)
 bind_key "I" frame_info
 bind_key "r" reset_trk
 bind_key "m" calib_p4
@@ -82,5 +82,5 @@ bind_key $::keys::ENTER accept_p4
 puts "=============================================="
 puts " watch.tcl: $mp4"
 puts "   model mag=$::mag angle=$::ang  speed=$::spd  full mode"
-puts "   SPACE pause | <-/-> step | i insets | I info | shift-click mark P4 | m calibrate | r reset"
+puts "   SPACE pause | <-/-> step | i insets | f focus (off/annotated/clean) | I info | shift-click mark P4 | m calibrate | r reset"
 puts "=============================================="

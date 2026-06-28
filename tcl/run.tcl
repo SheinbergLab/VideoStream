@@ -1,3 +1,5 @@
+source [file join [file dirname [info script]] et_keys.tcl]
+
 namespace eval ::Registry {
     variable widgets
     set widgets [dict create]
@@ -568,7 +570,7 @@ proc run_mode {} {
     bind_key $::keys::LEFT {::ROI::nudgeLeft}
     bind_key $::keys::RIGHT {::ROI::nudgeRight}
 
-    bind_key i ::eyetracking::toggleInsets
+    ::et::bind_overlay_keys                ;# i = insets, f = focus (shared)
     bind_key " " toggle_pause              ;# SPACE to pause/resume
     
     # Button row

@@ -1,3 +1,5 @@
+source [file join [file dirname [info script]] et_keys.tcl]
+
 namespace eval ::Registry {
     variable widgets
     set widgets [dict create]
@@ -549,7 +551,7 @@ proc playback_mode { { filename {} } } {
     bind_key $::keys::RIGHT step_forward   ;# Arrow to step when paused
     bind_key $::keys::LEFT step_backward   ;# Arrow to step when paused
     bind_key "I" show_frame_info           ;# 'i' for info
-    bind_key "i" ::eyetracking::toggleInsets
+    ::et::bind_overlay_keys                ;# i = insets, f = focus (shared)
     bind_key $::keys::ENTER accept_p4_sample
     
     # Show instructions

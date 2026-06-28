@@ -666,7 +666,19 @@ private:
   int profile_flags_;
   std::atomic<bool> debug_next_frame_;
   std::atomic<bool> show_insets_;
-  
+
+  // Focus-assist mode: a large magnified view of the P4 region to help the
+  // experimenter set camera focus per subject/session. Anchored on the P4-model
+  // prediction (with fallbacks) so it works even before P4 is detectable.
+  // Tri-state so a single key can cycle annotations off for "pure" focusing:
+  //   0 = off, 1 = annotated (reticle + sharpness + sparkline), 2 = clean image.
+  // Drawn only on the display thread (drawOverlay), so focus_history_/focus_best_
+  // need no extra locking.
+  enum { FOCUS_OFF = 0, FOCUS_ANNOTATED = 1, FOCUS_CLEAN = 2 };
+  std::atomic<int> focus_mode_;
+  std::vector<float> focus_history_;   // sharpness score trace for sparkline
+  float focus_best_ = 0.0f;            // running max since mode was enabled
+
   // Frame source for getting frame rate
   IFrameSource* frame_source_;
 
@@ -2903,7 +2915,44 @@ static int refreshSettingsCmd(ClientData clientData, Tcl_Interp *interp,
     Tcl_SetObjResult(interp, Tcl_NewStringObj(status, -1));
     return TCL_OK;
   }
-  
+
+  // ::eyetracking::focusMode            -> cycle off -> annotated -> clean -> off
+  // ::eyetracking::focusMode 0|1|2      -> set explicitly (off/annotated/clean)
+  static int focusModeCmd(ClientData clientData, Tcl_Interp *interp,
+			  int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+
+    int prev = plugin->focus_mode_;
+    if (objc == 1) {
+      // Cycle through the three states.
+      plugin->focus_mode_ = (prev + 1) % 3;
+    } else if (objc == 2) {
+      int value;
+      if (Tcl_GetIntFromObj(interp, objv[1], &value) != TCL_OK) {
+	return TCL_ERROR;
+      }
+      if (value < 0) value = 0;
+      if (value > 2) value = 2;
+      plugin->focus_mode_ = value;
+    } else {
+      Tcl_WrongNumArgs(interp, 1, objv, "?0|1|2?");
+      return TCL_ERROR;
+    }
+
+    // Reset the sharpness history/best whenever we transition from OFF into an
+    // active state, so the running peak reflects only the current focus session.
+    if (prev == FOCUS_OFF && plugin->focus_mode_ != FOCUS_OFF) {
+      plugin->focus_history_.clear();
+      plugin->focus_best_ = 0.0f;
+    }
+
+    const char* status = (plugin->focus_mode_ == FOCUS_ANNOTATED) ? "annotated"
+		       : (plugin->focus_mode_ == FOCUS_CLEAN)     ? "clean"
+								  : "off";
+    Tcl_SetObjResult(interp, Tcl_NewStringObj(status, -1));
+    return TCL_OK;
+  }
+
 public:
     EyeTrackingPlugin() 
         : running_(false),
@@ -2927,6 +2976,7 @@ public:
           frame_count_(0),
           buffers_initialized_(false),
 	  show_insets_(false),
+	  focus_mode_(FOCUS_OFF),
           debug_level_(DEBUG_CRITICAL),
 	  debug_next_frame_(false),	  
           profile_flags_(PROFILE_NONE),
@@ -3108,8 +3158,10 @@ public:
 			     setDebugLevelCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::enableProfiling", 
 			     enableProfilingCmd, this, NULL);
-	Tcl_CreateObjCommand(interp, "::eyetracking::toggleInsets", 
+	Tcl_CreateObjCommand(interp, "::eyetracking::toggleInsets",
 			     toggleInsetsCmd, this, NULL);
+	Tcl_CreateObjCommand(interp, "::eyetracking::focusMode",
+			     focusModeCmd, this, NULL);
 
 	Tcl_CreateObjCommand(interp, "::eyetracking::getResults",
 			     getResultsCmd, this, NULL);
@@ -4138,10 +4190,186 @@ void drawMagnifiedInset(cv::Mat& frame, const cv::Mat& gray_roi,
     // Copy inset to frame
     magnified.copyTo(frame(inset_roi));
 }
-  
+
+// Large magnified view of the P4 region to assist camera focusing. Anchored on
+// the P4-model prediction window (the small box that tracks P4 ~centered), with
+// a fallback chain so it still works before the model is initialized / P4 is
+// detected — exactly the situation during focus setup. Uses INTER_NEAREST so no
+// resampling blur is added to confound the focus judgment, and overlays a
+// variance-of-Laplacian sharpness score (+ history sparkline) the experimenter
+// can maximize while turning the focus ring. Drawn last, over a dimmed frame.
+//
+// full_gray is the FULL-frame grayscale; all anchor positions (predicted P4,
+// p4_center, last-known) are in full-frame coordinates, so no ROI offset math.
+// annotate=false draws just the magnified image (for "pure" focusing, no
+// reticle/text/sparkline obscuring the view).
+void drawFocusPanel(cv::Mat& frame, const cv::Mat& full_gray,
+		    bool use_roi, const cv::Rect& roi, bool annotate) {
+    if (full_gray.empty() || frame.empty()) return;
+
+    // Source window size: the P4 search ROI plus a little context. Square.
+    int win = std::max(p4_search_roi_size_.width, p4_search_roi_size_.height);
+    win = (int)std::round(win * 1.4f);
+    win = std::max(24, win);
+    win = std::min({win, full_gray.cols, full_gray.rows});
+
+    // Anchor (full-frame coords): prefer the P4-model prediction window, then
+    // the detected P4, then last-known P4, then ROI/frame center.
+    cv::Point2f anchor(-1, -1);
+    bool from_prediction = false;
+    if (p4_model_.isInitialized() && latest_results_.valid &&
+	latest_results_.pupil.detected && latest_results_.purkinje.p1_detected) {
+	cv::Point2f pred = p4_model_.predict(latest_results_.pupil.center,
+					     latest_results_.purkinje.p1_center);
+	if (pred.x > 0) { anchor = pred; from_prediction = true; }
+    }
+    if (anchor.x < 0 && latest_results_.valid &&
+	latest_results_.purkinje.p4_detected) {
+	anchor = latest_results_.purkinje.p4_center;
+    }
+    if (anchor.x < 0 && p4_last_known_position_.x > 0) {
+	anchor = p4_last_known_position_;
+    }
+    if (anchor.x < 0 && use_roi) {
+	anchor = cv::Point2f(roi.x + roi.width / 2.0f, roi.y + roi.height / 2.0f);
+    }
+    if (anchor.x < 0) {
+	anchor = cv::Point2f(full_gray.cols / 2.0f, full_gray.rows / 2.0f);
+    }
+
+    // Source rect: window centered on anchor, clamped to frame bounds.
+    int sx = (int)std::round(anchor.x) - win / 2;
+    int sy = (int)std::round(anchor.y) - win / 2;
+    sx = std::max(0, std::min(sx, full_gray.cols - win));
+    sy = std::max(0, std::min(sy, full_gray.rows - win));
+    cv::Mat src = full_gray(cv::Rect(sx, sy, win, win));
+    if (src.cols < 2 || src.rows < 2) return;
+
+    // Auto-fit zoom so the panel fills ~60% of the smaller frame dimension.
+    const double target = 0.60 * std::min(frame.cols, frame.rows);
+    int zoom = (int)std::round(target / win);
+    zoom = std::max(3, std::min(zoom, 24));
+    const int panel_w = src.cols * zoom;
+    const int panel_h = src.rows * zoom;
+
+    // Dim the whole frame so the panel reads as a dedicated mode.
+    frame.convertTo(frame, -1, 0.35, 0);
+
+    // Magnify (nearest-neighbor) and colorize.
+    cv::Mat mag_gray, panel;
+    cv::resize(src, mag_gray, cv::Size(panel_w, panel_h), 0, 0, cv::INTER_NEAREST);
+    cv::cvtColor(mag_gray, panel, cv::COLOR_GRAY2BGR);
+
+    if (annotate) {
+	// Sharpness metric: variance of the Laplacian over the source region.
+	cv::Mat lap;
+	cv::Laplacian(src, lap, CV_64F);
+	cv::Scalar mu, sigma;
+	cv::meanStdDev(lap, mu, sigma);
+	float focus = (float)(sigma[0] * sigma[0]);
+	focus_best_ = std::max(focus_best_, focus);
+	focus_history_.push_back(focus);
+	const size_t kHistMax = 160;
+	if (focus_history_.size() > kHistMax) {
+	    focus_history_.erase(focus_history_.begin(),
+				 focus_history_.begin() +
+				 (focus_history_.size() - kHistMax));
+	}
+
+	// Reticle at the anchor location (P4 sits ~here), in panel coords.
+	cv::Point ctr((int)((anchor.x - sx) * zoom), (int)((anchor.y - sy) * zoom));
+	cv::Scalar reticle = from_prediction ? cv::Scalar(0, 255, 0)   // model active
+					     : cv::Scalar(0, 165, 255); // amber: no model
+	cv::line(panel, cv::Point(ctr.x, 0), cv::Point(ctr.x, panel_h), reticle, 1);
+	cv::line(panel, cv::Point(0, ctr.y), cv::Point(panel_w, ctr.y), reticle, 1);
+	cv::circle(panel, ctr, 4 * zoom, reticle, 1);
+
+	// Mark the detected P4, if any, mapped into panel coordinates.
+	if (latest_results_.valid && latest_results_.purkinje.p4_detected) {
+	    cv::Point2f p4 = latest_results_.purkinje.p4_center;
+	    float lx = p4.x - sx;
+	    float ly = p4.y - sy;
+	    if (lx >= 0 && lx < src.cols && ly >= 0 && ly < src.rows) {
+		cv::circle(panel, cv::Point((int)(lx * zoom), (int)(ly * zoom)),
+			   3 * zoom, cv::Scalar(0, 0, 255), 2);
+	    }
+	}
+
+	// Border + title.
+	cv::rectangle(panel, cv::Point(0, 0), cv::Point(panel_w - 1, panel_h - 1),
+		      cv::Scalar(255, 255, 255), 2);
+	cv::putText(panel, "FOCUS MODE - maximize sharpness", cv::Point(8, 22),
+		    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+
+	// Sharpness readout.
+	char sbuf[80];
+	snprintf(sbuf, sizeof(sbuf), "Sharpness: %.0f  (best %.0f)", focus, focus_best_);
+	cv::putText(panel, sbuf, cv::Point(8, 42),
+		    cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 255, 255), 1);
+
+	// Sparkline of the sharpness history along the bottom of the panel.
+	if (focus_history_.size() >= 2 && focus_best_ > 0.0f) {
+	    const int spark_h = std::min(40, panel_h / 5);
+	    const int base_y = panel_h - 8;
+	    const int top_y = base_y - spark_h;
+	    const float xstep = (float)(panel_w - 16) / (focus_history_.size() - 1);
+	    cv::Point prev;
+	    for (size_t i = 0; i < focus_history_.size(); ++i) {
+		int x = 8 + (int)(i * xstep);
+		int y = base_y - (int)((focus_history_[i] / focus_best_) * spark_h);
+		y = std::max(top_y, std::min(base_y, y));
+		cv::Point cur(x, y);
+		if (i > 0) cv::line(panel, prev, cur, cv::Scalar(0, 255, 255), 1);
+		prev = cur;
+	    }
+	}
+    }
+
+    // Center the panel on the frame (clamped).
+    int px = (frame.cols - panel_w) / 2;
+    int py = (frame.rows - panel_h) / 2;
+    px = std::max(0, std::min(px, frame.cols - panel_w));
+    py = std::max(0, std::min(py, frame.rows - panel_h));
+    if (panel_w <= frame.cols && panel_h <= frame.rows) {
+	panel.copyTo(frame(cv::Rect(px, py, panel_w, panel_h)));
+    }
+}
+
 bool drawOverlay(cv::Mat& frame, int frame_idx) override {
     std::lock_guard<std::mutex> lock(results_mutex_);
-    
+
+    // Focus-assist takes over the whole frame and must work even before any
+    // detection succeeds (results may be invalid while the experimenter is
+    // still focusing), so it runs ahead of the normal overlay path.
+    if (focus_mode_ != FOCUS_OFF) {
+	cv::Rect froi;
+	bool fuse_roi;
+	{
+	    std::lock_guard<std::mutex> roi_lock(roi_mutex_);
+	    froi = current_roi_;
+	    fuse_roi = roi_enabled_;
+	}
+	if (fuse_roi) {
+	    if (froi.x < 0 || froi.y < 0 ||
+		froi.x + froi.width > frame.cols ||
+		froi.y + froi.height > frame.rows ||
+		froi.width <= 0 || froi.height <= 0) {
+		fuse_roi = false;
+	    }
+	}
+	// Pass the FULL-frame grayscale; the panel anchors a small window on the
+	// P4 prediction (full-frame coords), and falls back to the ROI center.
+	cv::Mat fgray;
+	if (frame.channels() > 1) {
+	    cv::cvtColor(frame, fgray, cv::COLOR_BGR2GRAY);
+	} else {
+	    fgray = frame.clone();
+	}
+	drawFocusPanel(frame, fgray, fuse_roi, froi,
+		       focus_mode_ == FOCUS_ANNOTATED);
+	return true;
+    }
+
     if (!latest_results_.valid) return false;
 
  cv::Rect roi;

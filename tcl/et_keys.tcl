@@ -19,8 +19,14 @@
 #
 namespace eval ::et {}
 
+# Bind to procs (not inline script blocks): the host appends an event argument
+# to key/mouse callbacks, so an inline "puts \"...\"" would receive that extra
+# token and mis-parse it as a channel name. Procs with {args} swallow it.
+proc ::et::toggle_insets {args} { puts "insets: [eyetracking::toggleInsets]" }
+proc ::et::cycle_focus  {args} { puts "focus:  [eyetracking::focusMode]" }  ;# off->annotated->clean
+
 proc ::et::bind_overlay_keys {} {
-    bind_key "i" { puts "insets: [eyetracking::toggleInsets]" }
-    bind_key "f" { puts "focus:  [eyetracking::focusMode]" }  ;# off->annotated->clean
-    # New overlay toggles go HERE, once.
+    bind_key "i" ::et::toggle_insets
+    bind_key "f" ::et::cycle_focus
+    # New overlay toggles: add a proc above + a bind_key here, once.
 }

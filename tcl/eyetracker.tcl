@@ -3,6 +3,8 @@
 #  eyetracker.tcl
 #
 
+source [file join [file dirname [info script]] et_keys.tcl]
+
 namespace eval ::Registry {
     variable widgets
     set widgets [dict create]
@@ -12,7 +14,6 @@ namespace eval ::Registry {
     variable p1_lost_indicator -1
     variable in_obs_indicator -1
     variable paused 0
-    variable insets_visible 0
     variable camera_initialized 0
     variable ds_host {}
     variable ds_connected 0
@@ -284,10 +285,6 @@ proc onEvent {type data} {
     }
 }
 
-proc toggle_insets { args } {
-    set ::Registry::insets_visible [expr {!$::Registry::insets_visible}]
-    ::eyetracking::toggleInsets $::Registry::insets_visible
-}
 
 proc toggle_pause { args } {
     set ::Registry::paused [expr {!$::Registry::paused}]
@@ -806,7 +803,7 @@ proc playback_mode { { filename {} } } {
     bind_key $::keys::RIGHT step_forward   ;# Arrow to step when paused
     bind_key $::keys::LEFT step_backward   ;# Arrow to step when paused
     bind_key "I" show_frame_info           ;# 'i' for info
-    bind_key "i" toggle_insets
+    ::et::bind_overlay_keys               ;# i = insets, f = focus (shared)
     bind_key $::keys::ENTER accept_p4_sample
     eyetracking::resetP4Model
     
