@@ -1,41 +1,116 @@
 # VideoStream
 
-Stand alone program to acquire video frames using the FLIR Spinnaker library or OpenCV device, display, and store to disk.
+Standalone program to acquire video frames (from a standard webcam/UVC device, a
+FLIR Spinnaker camera, or an mp4 file), display them, run analysis plugins
+(e.g. Purkinje eye tracking), and store frames to disk. It is a general tool for
+**video-based characterization of behavior**, eye movements being one case.
 
-For control, the program opens a TCP/IP communication port, and receives Tcl scripts across the port.  Metadata about frames are stored alongside the video using the "dgz" format.  Dependencies are [Tcl](https://tcl.tk), [sockpp](https://github.com/fpagliughi/sockpp), and [libdg](https://github.com/sheinb/libdg).
+For control, the program opens a TCP/IP port and receives Tcl scripts. Metadata
+about frames is stored alongside the video in the `dgz` format.
 
-## Installation
+Core dependencies: [Tcl 9](https://tcl.tk), [OpenCV](https://opencv.org),
+[libdg](https://github.com/SheinbergLab/dlsh) (from the dlsh release), plus
+[uWebSockets/uSockets](https://github.com/uNetworking/uWebSockets) (fetched
+automatically via CMake), `jansson` and `lz4` (system packages), and `sqlite`
+(vendored in `external/`). FLIR Spinnaker is optional (see below).
+
+## Releases
+
+Prebuilt, signed artifacts are published on the
+[Releases page](https://github.com/SheinbergLab/VideoStream/releases) for each
+tagged version. **These builds are FLIR-free** — they support webcam/UVC capture,
+mp4 playback, and review/reprocess. For FLIR camera acquisition, build from source
+with `-D WITH_FLIR=ON` (see [Building with FLIR support](#building-with-flir-support)).
+
+### macOS
+
+A signed and **notarized** `.pkg` (Apple Silicon, macOS 14 Sonoma or newer).
+Double-click to install; it places `VideoStream.app` in `/Applications` and a
+`videostream` command-line launcher in `/usr/local/bin`. The app is
+self-contained (OpenCV and Tcl are bundled) — nothing else needs to be installed.
+
+```sh
+videostream --help
+videostream -f /path/to/script.tcl
+```
+
+On first camera use macOS will prompt for camera permission.
 
 ### Linux
 
-A number of readily available packages are required to build the VideoStream app.
-`sudo apt install libopencv-dev python3-opencv ffmpeg`
-`sudo apt install libjansson-dev liblz4-dev`
+A `.deb` for Debian (Bookworm/Trixie) and Ubuntu (Jammy/Noble), amd64 and arm64.
+It installs under `/usr/local/videostream/`.
 
-#### Camera support
-For FLIR camera control, the Spinnaker SDK should be installed.  This does not require the SpinView app to be installed.  For USB Webcam support, any camera that can be found using OpenCV will work.
+```sh
+sudo apt install ./videostream_<version>_<arch>_<distro>.deb
+/usr/local/videostream/VideoStream --help
+```
 
-#### Development Libs
-Standard libs that should be installed include:
+Note: the package depends on `libtcl9.0`, which is only available from apt on
+Debian Trixie / newer Ubuntu. On older releases you must provide Tcl 9 yourself
+(or build from source).
 
-* essential build tools (gcc)
-* cmake
-* the Tcl development environment
-* the OpenCV Devlopment libraries
+CI (GitHub Actions) builds these artifacts on every tag; see
+[docs/build-and-release-plan.md](docs/build-and-release-plan.md) for details.
 
-`
-sudo apt install build-essential cmake tcl-dev libopendev-dev
-`
+## Building from source
 
-#### sockpp
+The default build is FLIR-free (webcam/UVC + mp4 + review/reprocess).
 
-For TCP/IP communications, VideoStream uses the socket wrapper called [sockpp](https://github.com/fpagliughi/sockpp). Compile and install this using cmake.
+### Linux
 
-#### libdg
+```sh
+sudo apt install build-essential cmake pkg-config
+sudo apt install libopencv-dev zlib1g-dev liblz4-dev libjansson-dev
+# Tcl 9: build from the deps/tcl submodule, or install libtcl9.0/tcl9.0-dev where available
+# libdg: install the dlsh-dg .deb from https://github.com/SheinbergLab/dlsh/releases
 
-This is a library written to allow storing and reading complex binary data file structures.  The C API in [this repo](https://github.com/sheinb/libdg) should be built and installed.
+cmake -B build
+cmake --build build -j
+./build/VideoStream --help
+```
 
-## General Functions
+### macOS
+
+```sh
+brew install cmake pkg-config opencv tcl-tk@9 lz4 jansson
+# libdg: install the dlsh .pkg from https://github.com/SheinbergLab/dlsh/releases
+
+cmake -B build
+cmake --build build -j
+./build/VideoStream --help
+```
+
+To build the self-contained, signed `.app`/`.dmg` locally, configure with
+`-D MACOS_APP_BUNDLE=ON` (and `-D MACOS_CODESIGN_IDENTITY="Developer ID Application: ..."`
+to sign); see the CMake `APPLE` branch and `release_macos.yml` for the full flow.
+
+## Building with FLIR support
+
+FLIR Spinnaker is a proprietary SDK that is **not redistributable**, so it is
+**off by default** and never included in the published artifacts. To build a
+camera-acquisition binary on a machine that has the SDK installed:
+
+1. Install the **Spinnaker SDK** from Teledyne FLIR (the SpinView app is not
+   required — only the SDK libraries/headers). On Linux the build expects it under
+   `/opt/spinnaker` (`/opt/spinnaker/include`, `/opt/spinnaker/lib`).
+2. Configure with FLIR enabled and build:
+
+   ```sh
+   cmake -B build -D WITH_FLIR=ON
+   cmake --build build -j
+   ```
+
+   CMake prints `FLIR Spinnaker camera support: ENABLED` when it is on.
+
+3. Run with a FLIR source, e.g. `./build/VideoStream --flir`.
+
+Without `-D WITH_FLIR=ON`, passing `--flir` prints a message and exits — use
+`--webcam` (or a `playback`/file source) instead.
+
+FLIR support is currently Linux/Windows only; macOS builds are webcam/file only.
+
+## General functions
 ```
  vstream::fileOpen
  vstream::fileClose
@@ -49,7 +124,7 @@ This is a library written to allow storing and reading complex binary data file 
  vstream::displayClose
 ```
 
-## FLIR Camera Functions
+## FLIR camera functions
 ```
 vstream::configureExposure
 vstream::configureGain
