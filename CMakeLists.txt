@@ -96,29 +96,9 @@ elseif(APPLE)
 	include_directories(/usr/local/include /opt/homebrew/include)
 	link_directories(/usr/local/lib /opt/homebrew/lib)
 
-   # macOS requires libuv for uSockets
-    find_package(PkgConfig)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(LIBUV libuv)
-        if(NOT LIBUV_FOUND)
-            find_library(LIBUV_LIBRARIES NAMES uv libuv)
-            if(LIBUV_LIBRARIES)
-                set(LIBUV_FOUND TRUE)
-            endif()
-        endif()
-    else()
-        find_library(LIBUV_LIBRARIES NAMES uv libuv)
-        if(LIBUV_LIBRARIES)
-            set(LIBUV_FOUND TRUE)
-        endif()
-    endif()
-    
-    if(NOT LIBUV_FOUND)
-        message(FATAL_ERROR "libuv is required on macOS. Install with: brew install libuv")
-    endif()
-    
-    set(USOCKETS_LIBS ${LIBUV_LIBRARIES})
-    set(WITH_LIBUV 1)
+    # macOS uses uSockets' native kqueue backend (its default on Darwin), so no
+    # libuv dependency — leaner deps and one fewer dylib in the .app bundle
+    # (cf. stim2's no-libuv guard). WITH_LIBUV stays unset here.
 
 else()  # Linux
 	find_library(LIBDL dl)
@@ -216,9 +196,8 @@ if(WIN32)
     # Windows uses libuv by default
     target_compile_definitions(usockets PRIVATE LIBUS_USE_LIBUV)
 elseif(APPLE)
-    # macOS uses libuv
-    target_compile_definitions(usockets PRIVATE LIBUS_USE_LIBUV)
-    target_include_directories(usockets PRIVATE ${LIBUV_INCLUDE_DIRS})
+    # macOS uses the native kqueue backend (no libuv)
+    target_compile_definitions(usockets PRIVATE LIBUS_USE_KQUEUE)
 else()
     # Linux uses epoll
     target_compile_definitions(usockets PRIVATE LIBUS_USE_EPOLL)
@@ -227,11 +206,6 @@ endif()
 # Add compile flags that uSockets expects
 if(NOT WIN32)
     target_compile_options(usockets PRIVATE -std=c11 -flto)
-endif()
-
-# Include libuv headers if found
-if(LIBUV_FOUND)
-    target_include_directories(usockets PRIVATE ${LIBUV_INCLUDE_DIRS})
 endif()
 
 # Create directory for web assets
