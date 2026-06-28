@@ -523,11 +523,17 @@ if(APPLE AND MACOS_APP_BUNDLE)
         execute_process(COMMAND codesign --force \${_opts} -s \"\${_id}\" \"${APP_BUNDLE}\")
     " COMPONENT videostream)
 
-    # Copy the finished bundle into the package staging root.
-    install(TARGETS VideoStream BUNDLE DESTINATION . COMPONENT videostream)
+    # Stage the finished bundle into /Applications (pkg installs there).
+    install(TARGETS VideoStream BUNDLE DESTINATION Applications COMPONENT videostream)
 
-    set(CPACK_GENERATOR "DragNDrop")
-    set(CPACK_DMG_VOLUME_NAME "VideoStream-${PROJECT_VERSION}")
+    # Ship a signed .pkg (like dlsh-interp) rather than a .dmg: its postinstall
+    # drops a /usr/local/bin/videostream CLI launcher so args work from the
+    # terminal. cpack produces an UNSIGNED .pkg; the workflow then runs
+    # `productsign` (Developer ID Installer) + notarize + staple.
+    set(CPACK_GENERATOR "productbuild")
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/")
+    set(CPACK_PRODUCTBUILD_COMPONENT_INSTALL ON)
+    set(CPACK_POSTFLIGHT_VIDEOSTREAM_SCRIPT ${CMAKE_SOURCE_DIR}/macos/postinstall.sh)
     set(CPACK_PACKAGE_FILE_NAME "videostream-${PROJECT_VERSION}-Darwin")
 
 elseif(NOT APPLE)
