@@ -3,6 +3,7 @@
 #include <iostream>
 #include <atomic>
 #include <thread>
+#include <algorithm>   // std::max/min (GCC 14 / Debian Trixie: no transitive include)
 #include "VstreamEvent.h"
 #include <tcl.h>
 #include "FlirCameraSource.h"

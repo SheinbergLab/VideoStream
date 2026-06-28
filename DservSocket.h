@@ -11,6 +11,7 @@
 #include <chrono>
 #include <queue>
 #include <tuple>
+#include <algorithm>   // std::remove_if / std::remove (GCC 14 / Debian Trixie no longer includes transitively)
 
 #include <stdlib.h>
 

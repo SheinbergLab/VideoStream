@@ -6,8 +6,9 @@
 #include "opencv2/opencv.hpp"
 
 #include <iostream>
-#include <sstream> 
+#include <sstream>
 #include <fstream>
+#include <algorithm>   // std::max/min, std::remove* (GCC 14 / Debian Trixie: no transitive include)
 #include <thread>
 #include <functional>
 #include <mutex>
