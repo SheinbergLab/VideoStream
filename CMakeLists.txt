@@ -462,14 +462,26 @@ if(APPLE AND MACOS_APP_BUNDLE)
 
     # Bundle the Tcl stdlib so the relocated libtcl finds it at ../lib/tcl9.0
     # (relative to Contents/Frameworks). tcl9.0/ = packages, tcl9/ = Tcl modules.
+    # Trailing slash on the source + full destination path => install the
+    # CONTENTS (dereferencing brew's keg symlinks). Without it, a symlinked
+    # lib/tcl9.0 on the CI runner copies as an empty dir entry. (Matches stim2.)
     if(LIBTCL_DIR AND EXISTS "${LIBTCL_DIR}/tcl9.0")
-        install(DIRECTORY ${LIBTCL_DIR}/tcl9.0
-                DESTINATION ${APP_BUNDLE}/Contents/lib COMPONENT videostream)
-        install(DIRECTORY ${LIBTCL_DIR}/tcl9
-                DESTINATION ${APP_BUNDLE}/Contents/lib COMPONENT videostream OPTIONAL)
+        install(DIRECTORY ${LIBTCL_DIR}/tcl9.0/
+                DESTINATION ${APP_BUNDLE}/Contents/lib/tcl9.0 COMPONENT videostream)
+        install(DIRECTORY ${LIBTCL_DIR}/tcl9/
+                DESTINATION ${APP_BUNDLE}/Contents/lib/tcl9 COMPONENT videostream OPTIONAL)
     else()
-        message(WARNING "Tcl stdlib (tcl9.0/) not found under ${LIBTCL_DIR}; bundle may not self-init Tcl")
+        message(FATAL_ERROR "Tcl stdlib (tcl9.0/) not found under ${LIBTCL_DIR}; cannot build a self-contained .app")
     endif()
+
+    # Fail the build loudly if the stdlib didn't actually land in the bundle
+    # (e.g. an empty/symlinked copy) rather than shipping a .app that can't
+    # find init.tcl at runtime.
+    install(CODE "
+        if(NOT EXISTS \"${APP_BUNDLE}/Contents/lib/tcl9.0/init.tcl\")
+            message(FATAL_ERROR \"Bundled Tcl stdlib is missing Contents/lib/tcl9.0/init.tcl\")
+        endif()
+    " COMPONENT videostream)
 
     # Identity for the post-bundling re-sign. Empty -> ad-hoc ("-"), which is
     # enough to RUN locally (arm64 SIGKILLs binaries whose signature was
