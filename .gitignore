@@ -46,3 +46,8 @@ history.txt
 # NOTE: when we add CI smoke-test fixtures, allow them explicitly, e.g.:
 #   !tests/fixtures/*.mp4
 #   !tests/fixtures/*.db
+
+# Local scratch / abandoned experiments — kept on disk, out of git
+plugins/working/
+plugins/EyeTrackingPlugin.cpp.templates
+settings.tcl
