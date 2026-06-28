@@ -5,11 +5,18 @@ set(CMAKE_BUILD_TYPE Release)
 
 project( VideoStream )
 
+# FLIR Spinnaker is a proprietary SDK and is NOT redistributable, so it is OFF by
+# default: the standard build (and all CI release artifacts) supports webcam/UVC,
+# mp4 playback, review and headless reprocess. Enable -DWITH_FLIR=ON on a machine
+# that has the Spinnaker SDK installed to build the camera-acquisition path.
+option(WITH_FLIR "Build with FLIR Spinnaker camera support (requires Spinnaker SDK; not redistributable)" OFF)
+
 if(WIN32)
 set (OpenCV_DIR c:/usr/local/lib/opencv/build/x64/vc15/lib)
 endif()
 
-find_package( OpenCV REQUIRED )
+# Only the OpenCV modules actually used (drops dnn/calib3d/features2d/photo/ml/...)
+find_package( OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio highgui )
 
 
 # Add uWebSockets as external project
@@ -53,13 +60,16 @@ include_directories(external/sqlite)
 find_library(LZ4_LIBRARY NAMES lz4)
 
 if(WIN32)
-set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -DUSE_FLIR=1")
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
 	set(TCLLIB tcl90t_64)  # Updated to Tcl 9
-	include_directories("c:/usr/local/include" "C:/Program Files/Point Grey Research/Spinnaker/include")
-	link_directories("c:/usr/local/lib64" "c:/usr/local/lib" "C:/Program Files/Point Grey Research/Spinnaker/lib64/vs2015")
+	include_directories("c:/usr/local/include")
+	link_directories("c:/usr/local/lib64" "c:/usr/local/lib")
 	set(DGLIB dg)
-	set(FLIRLIB Spinnaker_v140)
+	if(WITH_FLIR)
+		include_directories("C:/Program Files/Point Grey Research/Spinnaker/include")
+		link_directories("C:/Program Files/Point Grey Research/Spinnaker/lib64/vs2015")
+		set(FLIRLIB Spinnaker_v140)
+	endif()
 elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
 	set(TCLLIB tcl90t)  # Updated to Tcl 9
 	set(LABLIB lablib)
@@ -109,12 +119,15 @@ else()  # Linux
 	find_library(LIBDL dl)
 	find_library(LIBPTHREAD pthread)
 
-        find_library(FLIR_LIBRARY
-          NAMES Spinnaker
-          PATHS /opt/spinnaker/lib
-          REQUIRED
-        )
-	
+	if(WITH_FLIR)
+	    find_library(FLIR_LIBRARY
+	      NAMES Spinnaker
+	      PATHS /opt/spinnaker/lib
+	      REQUIRED
+	    )
+	    set(FLIR_INCLUDE_DIR /opt/spinnaker/include)
+	endif()
+
 	# Try to find Tcl 9 first
 	find_path(TCL_INCLUDE_DIR tcl.h
 	    PATHS /usr/include/tcl9.0 /usr/include/tcl9 /usr/include/tcl8.6 /usr/local/include
@@ -133,11 +146,17 @@ else()  # Linux
 	endif()
 	
         find_library(LIBJANSSON NAMES "libjansson.a")
-	
+
 	set(DGLIB dg)
-	set(FLIR_INCLUDE_DIR /opt/spinnaker/include)
-	set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -Wno-conversion-null -DUSE_FLIR=1")
-	add_definitions(-DUSE_FLIR=1)
+	set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -Wno-conversion-null")
+endif()
+
+# Unified FLIR define across platforms (source is guarded by #ifdef USE_FLIR).
+if(WITH_FLIR)
+    add_definitions(-DUSE_FLIR=1)
+    message(STATUS "FLIR Spinnaker camera support: ENABLED")
+else()
+    message(STATUS "FLIR Spinnaker camera support: disabled (default). Use -DWITH_FLIR=ON to enable.")
 endif()
 
 

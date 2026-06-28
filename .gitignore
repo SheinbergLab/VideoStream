@@ -1,0 +1,48 @@
+# Build output
+/build/
+/_deps/
+*.o
+*.a
+*.dylib
+*.so
+
+# CMake (in-source stragglers)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+embedded_terminal.h
+embedded_interface.h
+
+# macOS
+.DS_Store
+
+# Editor / backup files
+*~
+*.bak
+*.BAK
+*.orig
+*.swp
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Recorded data & media (not source — keep large captures out of git)
+*.db
+*.mp4
+*.mkv
+*.dgz
+/data/
+
+# Tcl editor backups / scratch variants
+*.tcl~
+*.tcl.NEW
+*.tcl.thresholds
+
+# Misc scratch
+history.txt
+*.h~
+
+# NOTE: when we add CI smoke-test fixtures, allow them explicitly, e.g.:
+#   !tests/fixtures/*.mp4
+#   !tests/fixtures/*.db

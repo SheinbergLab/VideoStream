@@ -2396,7 +2396,7 @@ int main(int argc, char **argv)
     use_flir = true;
     no_source = false;
 #else
-    std::cerr << "FLIR support not compiled. Use --webcam or recompile with USE_FLIR" << std::endl;
+    std::cerr << "FLIR support not compiled. Use --webcam, or rebuild with -DWITH_FLIR=ON (requires the Spinnaker SDK)." << std::endl;
     return -1;
 #endif
   }
