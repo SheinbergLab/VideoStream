@@ -6,10 +6,15 @@
 *.dylib
 *.so
 
-# CMake (in-source stragglers)
+# CMake (in-source stragglers, e.g. from an accidental in-source configure)
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+CTestTestfile.cmake
+install_manifest.txt
+/Makefile
 embedded_terminal.h
 embedded_interface.h
 
