@@ -634,6 +634,13 @@ private:
   int frames_without_p1_for_p4_ = 0;
   bool p1_was_absent_extended_ = false;
 
+  // P4 auto-reacquire: counts consecutive accepted frames where P4 sits far
+  // from the model prediction (near the search-box edge). When it persists,
+  // we reset the P4 validator + arm recovery — the same re-lock a blink does —
+  // so a stuck/cornered P4 recenters without waiting for a blink. Does not
+  // touch learned geometry, so it is safe even when the model is frozen.
+  int p4_offset_streak_ = 0;
+
   // P1 loss/recovery tracking — member vars (NOT function-static) so reset()
   // and resetTrackingState clear them. Previously function-static in
   // detectPurkinje, which is why a stuck P1-loss state survived "reset" and only
@@ -642,6 +649,14 @@ private:
   int p1_recovery_countdown_ = 0;
   bool p1_was_lost_ = false;
   bool p1_blink_event_state_ = false;  // last blink state, for blink_start/end events
+
+  // P1 desperation state — LATCHED (hysteresis) so it doesn't oscillate around
+  // the entry threshold and reprint diagnostics every frame. Entered when the
+  // loss counter blows past the threshold; only cleared once a spatially
+  // consistent lock is re-established across several frames.
+  bool p1_desperation_ = false;
+  int p1_desperation_streak_ = 0;
+  cv::Point2f p1_desperation_last_pos_{-1, -1};
 
   // Synchronous (deterministic) analysis for offline reprocess.
   // When true, analyzeFrame runs the pipeline inline on the caller's thread
@@ -1140,9 +1155,12 @@ private:
 	  continue;  // Try next candidate
 	}
       } else {
-	// In desperation mode - just report what we're accepting
-	if (debug_level_ >= DEBUG_CRITICAL && i == 0) {
-	  std::cout << "🆘 P1 desperation mode accepting candidate #" << (i+1) 
+	// In desperation mode - just report what we're accepting.
+	// VERBOSE only: entering desperation and recovering from it are logged
+	// once (edge-triggered) in detectPurkinje; per-frame accepts here would
+	// otherwise spam the log for the whole duration of a desperation episode.
+	if (debug_level_ >= DEBUG_VERBOSE && i == 0) {
+	  std::cout << "🆘 P1 desperation mode accepting candidate #" << (i+1)
 		    << " (skipping validation)" << std::endl;
 	}
       }
@@ -1585,10 +1603,23 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
     const int P1_LOSS_THRESHOLD = timing_.p1_loss_threshold;
     const int P1_RECOVERY_FRAMES = timing_.p1_recovery_frames;
 
-    // check if we should be in desperation mode
-    bool in_desperation = (p1_loss_counter > P1_LOSS_THRESHOLD * 5);
-    
-    cv::Point2f p1_local = detectP1(gray_buffer_, pupil_center_local, pupil.radius, 
+    // Latched desperation state with hysteresis. Entered when the loss counter
+    // blows past the threshold; cleared only after a stable re-lock (below).
+    // Previously this was recomputed every frame as a pure threshold on an
+    // oscillating counter, which made it flip-flop across the boundary and
+    // reprint the desperation diagnostics forever.
+    if (!p1_desperation_ && p1_loss_counter > P1_LOSS_THRESHOLD * 5) {
+      p1_desperation_ = true;
+      p1_desperation_streak_ = 0;
+      p1_desperation_last_pos_ = cv::Point2f(-1, -1);
+      if (debug_level_ >= DEBUG_CRITICAL) {
+	std::cout << "🆘 P1 entering desperation mode (loss_counter="
+		  << p1_loss_counter << ")" << std::endl;
+      }
+    }
+    bool in_desperation = p1_desperation_;
+
+    cv::Point2f p1_local = detectP1(gray_buffer_, pupil_center_local, pupil.radius,
 				    in_desperation);
     
     if (debug_level_ >= DEBUG_VERBOSE && p1_local.x < 0) {
@@ -1666,32 +1697,53 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 	result.p1_detected = true;
 	result.p1_center = p1_full;
 
-	if (p1_was_lost) {
-	  fireEvent(VstreamEvent("eyetracking/p1_recovered",
-				 "frame " + std::to_string(frame_idx)));
-	  p1_was_lost = false;
-	}
-	
-	// Gradually reduce loss counter when in desperation mode
-	// (don't snap to 0 immediately or we'll exit desperation too soon)
 	if (in_desperation) {
-	  p1_loss_counter = std::max(0, p1_loss_counter - 10);
-	  if (debug_level_ >= DEBUG_CRITICAL) {
-	    std::cout << "✓ P1 accepted in desperation mode (loss_counter now " 
-		      << p1_loss_counter << ")" << std::endl;
+	  // We're accepting candidates blind (validator bypassed). Don't declare
+	  // recovery — or hand back to the validator — until we've seen a
+	  // spatially CONSISTENT lock across several frames. This latches
+	  // desperation (hysteresis) instead of dropping out the instant the
+	  // counter dips under the entry threshold, which is what caused the
+	  // enter/exit oscillation and endless diagnostic reprints.
+	  bool consistent =
+	    (p1_desperation_last_pos_.x >= 0.0f) &&
+	    (cv::norm(p1_full - p1_desperation_last_pos_) < p1_validator_.getMaxJump());
+	  p1_desperation_streak_ = consistent ? (p1_desperation_streak_ + 1) : 0;
+	  p1_desperation_last_pos_ = p1_full;
+
+	  if (p1_desperation_streak_ >= timing_.p1_relocation_frames) {
+	    // Stable re-lock: exit desperation and hand back to the normal
+	    // validator so ordinary validation sustains the track from here.
+	    p1_desperation_ = false;
+	    p1_desperation_streak_ = 0;
+	    p1_loss_counter = 0;
+	    p1_validator_.update(p1_full);
+	    if (p1_was_lost) {
+	      fireEvent(VstreamEvent("eyetracking/p1_recovered",
+				     "frame " + std::to_string(frame_idx)));
+	      p1_was_lost = false;
+	    }
+	    if (debug_level_ >= DEBUG_CRITICAL) {
+	      std::cout << "✓ P1 recovered from desperation mode at ("
+			<< p1_full.x << "," << p1_full.y << ")" << std::endl;
+	    }
 	  }
+	  // else: still latched — reporting P1 but not yet trusting it enough to
+	  // fire recovered or seed the validator.
 	} else {
-	  // Normal operation - reset counter
+	  // Normal operation - reset counter and adapt validator to new position
 	  p1_loss_counter = 0;
+	  if (p1_was_lost) {
+	    fireEvent(VstreamEvent("eyetracking/p1_recovered",
+				   "frame " + std::to_string(frame_idx)));
+	    p1_was_lost = false;
+	  }
+	  p1_validator_.update(p1_full);
 	}
-	
-	// Update validator to adapt to the new position
-	p1_validator_.update(p1_full);
-	
+
 	// Decrement recovery countdown on successful detection
 	if (p1_recovery_countdown > 0) {
 	  p1_recovery_countdown--;
-	}	
+	}
       } else {
 	// Rejected by validator - treat as a loss. Classify for the reprocess log:
 	// FAR = hard reject (>2x max_jump vs stale last P1); SOFT = relocation
@@ -1872,10 +1924,43 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 	      p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
 	    }
 	  }
+
+	  // AUTO-REACQUIRE when P4 is stuck near the search-box edge.
+	  // Detection accepts anything within p4_max_prediction_error_ of the
+	  // prediction, but learning only nudges the model within a tighter band
+	  // (and is off entirely when frozen). A P4 that persistently lands far
+	  // from the prediction therefore sticks in a corner of the search box:
+	  // the model bias never self-corrects, and only a blink (which resets the
+	  // P4 validator) breaks it. Replicate that re-lock on a timer: when the
+	  // offset stays large for several consecutive frames, reset the validator
+	  // and arm recovery so the box re-acquires the true P4 — without a blink,
+	  // and without touching learned geometry (safe even when frozen).
+	  if (!p4_in_recovery &&
+	      p4_model_.isInitialized() && p4_predicted_.x >= 0.0f) {
+	    const float RECENTER_OFFSET_FRAC = 0.7f;  // fraction of max pred error
+	    float pred_offset = cv::norm(p4_full - p4_predicted_);
+	    if (pred_offset > p4_max_prediction_error_ * RECENTER_OFFSET_FRAC) {
+	      p4_offset_streak_++;
+	    } else {
+	      p4_offset_streak_ = 0;
+	    }
+	    if (p4_offset_streak_ >= P4_LOSS_THRESHOLD) {
+	      p4_validator_.reset();
+	      p4_recovery_countdown_ = P4_RECOVERY_FRAMES;
+	      p4_offset_streak_ = 0;
+	      if (debug_level_ >= DEBUG_CRITICAL) {
+		std::cout << "🔄 P4 auto-reacquire: stuck " << pred_offset
+			  << "px off prediction — resetting validator to re-lock"
+			  << std::endl;
+	      }
+	    }
+	  } else {
+	    p4_offset_streak_ = 0;
+	  }
 	}
       }
     }
-        
+
     return result;
   }
   
@@ -3057,9 +3142,13 @@ public:
     p1_recovery_countdown_ = 0;
     p1_was_lost_ = false;
     p1_blink_event_state_ = false;
+    p1_desperation_ = false;
+    p1_desperation_streak_ = 0;
+    p1_desperation_last_pos_ = cv::Point2f(-1, -1);
     p4_loss_counter_ = 0;
     p4_recovery_countdown_ = 0;
     p4_was_lost_ = false;
+    p4_offset_streak_ = 0;
     frames_without_p1_for_p4_ = 0;
     p1_was_absent_extended_ = false;
   }
