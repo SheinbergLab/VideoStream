@@ -6,7 +6,7 @@
 #   ./build/VideoStream -d -f tcl/watch.tcl -- <mp4_path> [mag angle] [speed]
 #
 # Defaults to the coherence-sweep pilot file + its P4 model. Controls:
-#   SPACE pause/resume   <-/-> step (paused)   i insets   f focus (off/annotated/clean)   I frame info
+#   SPACE pause/resume   <-/-> step (paused)   i insets   f focus (off/annotated/clean)   c center ROI on pupil   I frame info
 #   shift-click = mark P4 sample   m calibrate model   r reset tracking
 #
 namespace eval ::R { variable w [dict create]; variable paused 0 }
@@ -41,12 +41,18 @@ proc onMouseClick {x y mod} {
     if {$mod eq "shift"} { eyetracking::markP4Sample $x $y; puts "P4 sample @ $x,$y (Enter to add)" }
 }
 proc onEvent {type data} {
+    # $data for eyetracking events is "frame <n>"
     switch -glob $type {
         "vstream/video_source_eof"    { puts "EOF (looping)" }
         "vstream/video_source_rewind" { eyetracking::resetTrackingState }
-        "eyetracking/p4_lost"     { puts "P4 lost  @frame $data" }
-        "eyetracking/p4_recovered" { puts "P4 recovered @frame $data" }
-        "eyetracking/p1_lost"     { puts "P1 lost  @frame $data" }
+        "eyetracking/p4_lost"      { puts "P4 lost      @$data" }
+        "eyetracking/p4_recovered" { puts "P4 recovered @$data" }
+        "eyetracking/p1_lost"      { puts "P1 lost      @$data" }
+        "eyetracking/p1_recovered" { puts "P1 recovered @$data" }
+        "eyetracking/blink_start"  { puts "blink start  @$data" }
+        "eyetracking/blink_end"    { puts "blink end    @$data" }
+        "eyetracking/tracking_lost"      { puts "TRACKING LOST @$data" }
+        "eyetracking/tracking_recovered" { puts "TRACKING RECOVERED @$data" }
     }
 }
 proc toggle_pause {args} {
@@ -82,5 +88,5 @@ bind_key $::keys::ENTER accept_p4
 puts "=============================================="
 puts " watch.tcl: $mp4"
 puts "   model mag=$::mag angle=$::ang  speed=$::spd  full mode"
-puts "   SPACE pause | <-/-> step | i insets | f focus (off/annotated/clean) | I info | shift-click mark P4 | m calibrate | r reset"
+puts "   SPACE pause | <-/-> step | i insets | f focus (off/annotated/clean) | c center ROI | I info | shift-click mark P4 | m calibrate | r reset"
 puts "=============================================="
