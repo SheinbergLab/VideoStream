@@ -1,10 +1,12 @@
 # Headless batch reprocess: play an mp4 through the eyetracking plugin and
 # write a fresh metadata .db, then exit. No GUI, no display.
 #
-#   VideoStream -f tcl/reprocess_headless.tcl <mp4_path> <out_db_base> [speed] [mag angle]
+#   VideoStream -f tcl/reprocess_headless.tcl <mp4_path> <out_db_base> [speed] [mag angle] [online] [margin <frac>]
 #
 # If mag+angle are given, loads that P4 model and runs in 'full' mode.
 # Otherwise stays in pupil_p1 (no P4) — useful for a pure determinism check.
+# "margin <frac>" sets the P4 pupil-disk search constraint (default 0.95;
+# negative disables the disk check entirely) for A/B validation of that gate.
 
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
 
@@ -46,6 +48,14 @@ if {[llength $argv] >= 5} {
     if { !$online } { eyetracking::freezeP4Model 1 }
     eyetracking::setDetectionMode full
     puts "P4 model set: mag=$mag angle=$angle -> full mode ([expr {$online ? {online/adaptive} : {frozen}}])"
+}
+
+# Optional "margin <frac>": P4 pupil-disk search constraint (see setP4PupilMargin)
+set mi [lsearch $argv "margin"]
+if {$mi >= 0 && $mi + 1 < [llength $argv]} {
+    set mfrac [lindex $argv [expr {$mi + 1}]]
+    eyetracking::setP4PupilMargin $mfrac
+    puts "P4 pupil search margin: $mfrac"
 }
 
 vstream::onlySaveInObs 0
