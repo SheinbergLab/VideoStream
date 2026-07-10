@@ -24,9 +24,15 @@ namespace eval ::et {}
 # token and mis-parse it as a channel name. Procs with {args} swallow it.
 proc ::et::toggle_insets {args} { puts "insets: [eyetracking::toggleInsets]" }
 proc ::et::cycle_focus  {args} { puts "focus:  [eyetracking::focusMode]" }  ;# off->annotated->clean
+proc ::et::center_roi   {args} {
+    # Recenter the ROI on the current pupil (size unchanged, clamped to frame).
+    # Safe mid-session: tracking state is full-frame, only the crop moves.
+    if {[catch {eyetracking::centerROI} r]} { puts "center ROI: $r" } else { puts "ROI -> $r" }
+}
 
 proc ::et::bind_overlay_keys {} {
     bind_key "i" ::et::toggle_insets
     bind_key "f" ::et::cycle_focus
+    bind_key "c" ::et::center_roi
     # New overlay toggles: add a proc above + a bind_key here, once.
 }
