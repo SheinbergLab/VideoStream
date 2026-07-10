@@ -54,7 +54,10 @@ jobs:
       - name: Install build dependencies
         run: |
           brew update
-          brew install cmake pkg-config opencv tcl-tk@9 lz4 jansson jq wget
+          # opencv@4, NOT opencv: the unversioned formula moved to OpenCV 5.0
+          # (2026-07), which breaks the imgproc shape API this codebase uses.
+          # CMakeLists adds the keg-only opencv@4 prefix to CMAKE_PREFIX_PATH.
+          brew install cmake pkg-config opencv@4 tcl-tk@9 lz4 jansson jq wget
 
       - name: Check out our code
         uses: actions/checkout@v4

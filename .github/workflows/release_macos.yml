@@ -21,7 +21,9 @@ jobs:
           brew update
           # tcl-tk@9 is bundle-friendly (non-zipfs libtcl + on-disk stdlib);
           # dylibbundler relocates dylibs into the .app.
-          brew install cmake pkg-config dylibbundler opencv tcl-tk@9 lz4 jansson jq wget
+          # opencv@4, NOT opencv: the unversioned formula moved to OpenCV 5.0
+          # (2026-07), which breaks the imgproc shape API this codebase uses.
+          brew install cmake pkg-config dylibbundler opencv@4 tcl-tk@9 lz4 jansson jq wget
 
       - name: Check out our code for the current tag
         uses: actions/checkout@v4
