@@ -617,6 +617,20 @@ private:
   // any extra operator action. eyetracking::autoCenterROI 0|1 to disable.
   bool auto_center_roi_on_p4_ = true;
 
+  // Dilation reference for CONSERVATIVE model learning: a leaky MAXIMUM of the
+  // pupil radius (half-life ~10 min), seeded by P4 calibration accepts. The
+  // blink detector's baseline cannot serve here — it deliberately TRACKS the
+  // current pupil (that's what blink detection needs), so under a sustained
+  // bright-screen constriction it follows the radius down within seconds and
+  // "well-dilated" quietly becomes "near the constricted size" — re-admitting
+  // exactly the noisy-center frames the learning gate exists to exclude. A
+  // decaying max can only soften on a ~10-minute clock, never from
+  // constriction itself; if it is ever too strict, learning simply pauses and
+  // the model holds (proven safe frozen), which is the right failure mode.
+  // Survives resetTrackingState (session physiology, like the model); cleared
+  // on reset()/fileOpen. Decay factor is computed from the frame rate.
+  float learn_ref_radius_ = 0.0f;
+
   // Pupil plausibility gate. The old detector took moments of EVERY dark pixel
   // in the ROI, so lashes/shadows/hair biased the centroid, and when the
   // subject looked away or left, whatever dark junk remained still read as a
@@ -830,6 +844,7 @@ private:
     int p1_desperation_timeout;   // Desperation frames before giving up
     int p1_desperation_cooldown;  // Frames before desperation may re-latch
     int long_blink_reset_frames;  // Blink-with-pupil frames before self-heal
+    float learn_ref_decay;        // Per-frame decay of the dilation reference
 
     // Per-frame jump limits (max_jump) are DISTANCES an object may move in
     // one frame, so they scale with frame time: the tuned values are
@@ -852,7 +867,8 @@ private:
         p1_desperation_timeout(500),
         p1_desperation_cooldown(250),
         long_blink_reset_frames(375),
-        jump_scale(1.0f) {}
+        jump_scale(1.0f),
+        learn_ref_decay(0.999995f) {}
     
     // Calculate frame counts from time constants and frame rate
     void calculateFromFrameRate(float fps) {
@@ -875,6 +891,8 @@ private:
       constexpr float LONG_BLINK_RESET_MS = 1500.0f;
       // Frame rate the per-frame jump limits were tuned at
       constexpr float JUMP_REFERENCE_FPS = 250.0f;
+      // Half-life of the learning dilation reference (leaky max)
+      constexpr float LEARN_REF_HALFLIFE_MS = 600000.0f;  // 10 minutes
 
       // Convert to frame counts
       p1_loss_threshold = static_cast<int>(std::ceil(P1_LOSS_TIME_MS / frame_time_ms));
@@ -891,6 +909,8 @@ private:
       p1_desperation_cooldown = static_cast<int>(std::ceil(P1_DESPERATION_COOLDOWN_MS / frame_time_ms));
       long_blink_reset_frames = static_cast<int>(std::ceil(LONG_BLINK_RESET_MS / frame_time_ms));
       jump_scale = (fps > 0.0f) ? (JUMP_REFERENCE_FPS / fps) : 1.0f;
+      // decay^(frames_per_halflife) = 0.5
+      learn_ref_decay = std::exp(-0.6931472f * frame_time_ms / LEARN_REF_HALFLIFE_MS);
     }
   } timing_;
   
@@ -2107,11 +2127,14 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 	  // detection close to the model prediction.
 	  if (!p4_in_recovery &&
 	      p4_model_.isInitialized() && !p4_model_.isFrozen()) {
-	    const float LEARN_MIN_DILATION = 0.85f;  // pupil >= 85% of baseline radius
+	    const float LEARN_MIN_DILATION = 0.85f;  // pupil >= 85% of dilation ref
 	    const float LEARN_MAX_ERR_FRAC = 0.5f;   // within half the max pred error
-	    float baseline_r = blink_detector_.getBaselineRadius();
-	    bool well_dilated = (baseline_r > 0.0f) &&
-	                        (pupil.radius >= baseline_r * LEARN_MIN_DILATION);
+	    // Dilation gate anchored to the leaky-max reference, NOT the blink
+	    // baseline: the baseline tracks a sustained constriction down within
+	    // seconds, which silently re-admitted constricted (noisy-center)
+	    // frames into model learning — the drift the gate exists to prevent.
+	    bool well_dilated = (learn_ref_radius_ > 0.0f) &&
+	                        (pupil.radius >= learn_ref_radius_ * LEARN_MIN_DILATION);
 	    bool close_to_prediction =
 	        (p4_predicted_.x < 0.0f) ||
 	        (cv::norm(p4_full - p4_predicted_) <=
@@ -2292,6 +2315,15 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
                 }
             }
             frames_without_pupil_ = 0;
+        }
+
+        // Dilation reference upkeep: decays on a wall-clock-derived schedule
+        // every frame; ratchets up on clean frames only. See the member docs.
+        learn_ref_radius_ *= timing_.learn_ref_decay;
+        if (pupil.detected && !blink_detector_.isInBlink() &&
+            !blink_detector_.isRecovering() &&
+            pupil.radius > learn_ref_radius_) {
+            learn_ref_radius_ = pupil.radius;
         }
 
         // Reset per-frame diagnostics; detectPurkinje/detectP4 set them.
@@ -2663,8 +2695,15 @@ static int acceptP4SampleCmd(ClientData clientData, Tcl_Interp *interp,
     // Clear the pending sample
     plugin->p4_pending_sample_active_ = false;
 
-    // Setup flow: the pupil is known-good at sample time, so follow it with
-    // the crop (once per accept; no-op when the ROI is already centered).
+    // Setup flow: the pupil is known-good at sample time — seed the learning
+    // dilation reference from it, and follow it with the crop
+    // (once per accept; no-op when the ROI is already centered).
+    {
+        std::lock_guard<std::mutex> lock(plugin->results_mutex_);
+        if (plugin->latest_results_.pupil.radius > plugin->learn_ref_radius_) {
+            plugin->learn_ref_radius_ = plugin->latest_results_.pupil.radius;
+        }
+    }
     if (plugin->auto_center_roi_on_p4_ && plugin->centerROIOn(pupil_center)) {
         if (plugin->debug_level_ >= DEBUG_CRITICAL) {
             std::cout << "ROI recentered on pupil ("
@@ -2989,6 +3028,9 @@ static int getP4ModelStatusCmd(ClientData clientData, Tcl_Interp *interp,
         Tcl_DictObjPut(interp, statusDict, Tcl_NewStringObj("angle_offset_deg", -1),
                       Tcl_NewDoubleObj(plugin->p4_model_.getAngleOffset() * 180.0 / M_PI));
     }
+    // What the learning gate currently considers "dilated" (leaky max, px)
+    Tcl_DictObjPut(interp, statusDict, Tcl_NewStringObj("learn_ref_radius", -1),
+                  Tcl_NewDoubleObj(plugin->learn_ref_radius_));
     
     Tcl_SetObjResult(interp, statusDict);
     return TCL_OK;
@@ -3701,6 +3743,10 @@ public:
   void reset() override {
     first_frameID_ = -1;
     first_timestamp_ = -1;
+    // New session: forget the dilation reference (deliberately NOT part of
+    // clearTrackingState — an operator resetTrackingState mid-session keeps
+    // it, like the calibrated model).
+    learn_ref_radius_ = 0.0f;
     clearTrackingState();
   }
 
