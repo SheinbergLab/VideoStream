@@ -70,6 +70,18 @@ clear_widgets; clear_key_bindings
 vstream::startSource playback file $mp4 speed $::spd loop 1
 eyetracking::toggleInsets 1   ;# start with insets on
 
+# Reference ("ghost") overlay: if a session .db sits next to the mp4, load it
+# so the recorded detections draw in orange under the live ones ('g' toggles).
+# Load any OTHER db (e.g. a reprocess) with: eyetracking::loadReference <path>
+set refdb [file rootname $mp4].db
+if {[file exists $refdb]} {
+    if {![catch {eyetracking::loadReference $refdb} n]} {
+        puts "reference overlay: [file tail $refdb] ($n frames)  -- 'g' toggles"
+    } else {
+        puts "reference overlay failed: $n"
+    }
+}
+
 # parameter sliders
 dict set ::R::w pup [add_int_slider 20 -50 150 40 {Pupil Threshold} 1 255 [eyetracking::setPupilThreshold] eyetracking::setPupilThreshold]
 dict set ::R::w p4t [add_int_slider 20 -95 150 40 {P4 Threshold} 1 255 [eyetracking::setP4MinIntensity] eyetracking::setP4MinIntensity]
@@ -88,5 +100,5 @@ bind_key $::keys::ENTER accept_p4
 puts "=============================================="
 puts " watch.tcl: $mp4"
 puts "   model mag=$::mag angle=$::ang  speed=$::spd  full mode"
-puts "   SPACE pause | <-/-> step | i insets | f focus (off/annotated/clean) | c center ROI | I info | shift-click mark P4 | m calibrate | r reset"
+puts "   SPACE pause | <-/-> step | i insets | f focus (off/annotated/clean) | c center ROI | g ghosts | I info | shift-click mark P4 | m calibrate | r reset"
 puts "=============================================="

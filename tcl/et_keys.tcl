@@ -29,10 +29,15 @@ proc ::et::center_roi   {args} {
     # Safe mid-session: tracking state is full-frame, only the crop moves.
     if {[catch {eyetracking::centerROI} r]} { puts "center ROI: $r" } else { puts "ROI -> $r" }
 }
+proc ::et::toggle_ghosts {args} {
+    # Reference overlay: stored session detections drawn under the live ones.
+    puts "reference ghosts: [eyetracking::toggleReference]"
+}
 
 proc ::et::bind_overlay_keys {} {
     bind_key "i" ::et::toggle_insets
     bind_key "f" ::et::cycle_focus
     bind_key "c" ::et::center_roi
+    bind_key "g" ::et::toggle_ghosts
     # New overlay toggles: add a proc above + a bind_key here, once.
 }
