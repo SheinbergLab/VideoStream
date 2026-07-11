@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <unordered_map>
 
 #include <jansson.h>
 
@@ -403,11 +404,12 @@ private:
     int long_blink_reset_frames_;
 
 public:
-    BlinkDetector(int recovery_frames = 15, int baseline_update_frames = 10)
+    BlinkDetector(int recovery_frames = 15, int baseline_update_frames = 10,
+                  int long_blink_reset_frames = 375)
         : in_blink_(false), recovery_countdown_(0), recovery_frames_(recovery_frames),
           baseline_radius_(0), baseline_initialized_(false),
           frames_since_update_(0), baseline_update_frames_(baseline_update_frames),
-          frames_in_blink_(0), long_blink_reset_frames_(375) {}
+          frames_in_blink_(0), long_blink_reset_frames_(long_blink_reset_frames) {}
 
     void update(bool pupil_detected, float pupil_radius) {
         // Track how long we've been "in blink". A real blink is short; a very
@@ -556,6 +558,9 @@ struct AnalysisResults {
     bool in_blink;
     bool tracking_lost = false;  // no plausible pupil longer than any real blink
     bool valid;
+    // Monotonic frame id of this analysis (metadata.frameID - session anchor);
+    // keys the reference-overlay lookup in drawOverlay.
+    long long abs_frame_id = -1;
     // reprocess diagnostics
     int p4_reject_reason = P4_OK;
     cv::Point2f p4_predicted{-1, -1};
@@ -762,6 +767,29 @@ private:
   // Frame source for getting frame rate
   IFrameSource* frame_source_;
 
+  // Reference ("ghost") overlay: detections loaded from a recorded session
+  // .db so playback shows what WAS stored — live recording or any reprocess —
+  // alongside what the CURRENT code detects on the same frames. The overlay
+  // draws the reference in orange under the live markers, and running
+  // agreement counters quantify what a code change won or lost.
+  struct RefFrame {
+    float px, py, pr;      // pupil
+    float p1x, p1y;
+    float p4x, p4y;
+    uint8_t has;           // bitmask of the HAS_* flags below
+    bool blink;
+  };
+  enum { REF_HAS_PUPIL = 1, REF_HAS_P1 = 2, REF_HAS_P4 = 4 };
+  std::unordered_map<long long, RefFrame> reference_;
+  std::mutex reference_mutex_;
+  std::atomic<bool> show_reference_{true};
+  // Fast-path gate so the per-frame hot path costs ONE relaxed atomic read
+  // when no reference is loaded (the live-rig case) — no mutex, no lookup.
+  std::atomic<bool> reference_loaded_{false};
+  // agreement counters (reset on load; updated on the analysis thread)
+  long long ref_frames_matched_ = 0;
+  long long ref_p4_ref_ = 0, ref_p4_live_ = 0, ref_p4_both_ = 0;
+
   // Cached prepared statement for storeFrameData — preparing the INSERT once
   // per recording instead of once per frame (250 Hz). Prepared lazily against
   // the db the host passes in; finalized in endStorageBatch, which the host
@@ -801,6 +829,14 @@ private:
     int tracking_lost_frames;     // No-pupil frames before declaring LOST
     int p1_desperation_timeout;   // Desperation frames before giving up
     int p1_desperation_cooldown;  // Frames before desperation may re-latch
+    int long_blink_reset_frames;  // Blink-with-pupil frames before self-heal
+
+    // Per-frame jump limits (max_jump) are DISTANCES an object may move in
+    // one frame, so they scale with frame time: the tuned values are
+    // referenced to 250 Hz, and at lower rates the eye moves proportionally
+    // farther between frames. Applied when timing is (re)calculated:
+    // validator limit = user setting * jump_scale.
+    float jump_scale;
 
     // Initialize with default time constants (assuming 250 Hz)
     TimingThresholds()
@@ -814,7 +850,9 @@ private:
         baseline_update_frames(10),
         tracking_lost_frames(125),
         p1_desperation_timeout(500),
-        p1_desperation_cooldown(250) {}
+        p1_desperation_cooldown(250),
+        long_blink_reset_frames(375),
+        jump_scale(1.0f) {}
     
     // Calculate frame counts from time constants and frame rate
     void calculateFromFrameRate(float fps) {
@@ -833,6 +871,10 @@ private:
       constexpr float TRACKING_LOST_TIME_MS = 500.0f;
       constexpr float P1_DESPERATION_TIMEOUT_MS = 2000.0f;
       constexpr float P1_DESPERATION_COOLDOWN_MS = 1000.0f;
+      // Stuck-blink self-heal: blink persisting this long WITH a pupil present
+      constexpr float LONG_BLINK_RESET_MS = 1500.0f;
+      // Frame rate the per-frame jump limits were tuned at
+      constexpr float JUMP_REFERENCE_FPS = 250.0f;
 
       // Convert to frame counts
       p1_loss_threshold = static_cast<int>(std::ceil(P1_LOSS_TIME_MS / frame_time_ms));
@@ -847,6 +889,8 @@ private:
       tracking_lost_frames = static_cast<int>(std::ceil(TRACKING_LOST_TIME_MS / frame_time_ms));
       p1_desperation_timeout = static_cast<int>(std::ceil(P1_DESPERATION_TIMEOUT_MS / frame_time_ms));
       p1_desperation_cooldown = static_cast<int>(std::ceil(P1_DESPERATION_COOLDOWN_MS / frame_time_ms));
+      long_blink_reset_frames = static_cast<int>(std::ceil(LONG_BLINK_RESET_MS / frame_time_ms));
+      jump_scale = (fps > 0.0f) ? (JUMP_REFERENCE_FPS / fps) : 1.0f;
     }
   } timing_;
   
@@ -2278,10 +2322,26 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
             latest_results_.in_blink = blink_detector_.isInBlink();
             latest_results_.tracking_lost = tracking_lost_;
             latest_results_.valid = true;
+            latest_results_.abs_frame_id = event_frame_id_;
             latest_results_.p4_reject_reason = p4_reject_reason_;
             latest_results_.p4_predicted = p4_predicted_;
             latest_results_.p4_candidate_found = p4_candidate_found_;
             latest_results_.p1_reject_reason = p1_reject_reason_;
+        }
+
+        // Reference-overlay agreement bookkeeping: how the current code's P4
+        // compares to what was stored for this same frame. Gated on a relaxed
+        // atomic so the live path (no reference loaded) pays one flag read.
+        if (reference_loaded_.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> ref_lock(reference_mutex_);
+            auto it = reference_.find(event_frame_id_);
+            if (it != reference_.end()) {
+                ref_frames_matched_++;
+                bool ref_p4 = (it->second.has & REF_HAS_P4) != 0;
+                if (ref_p4) ref_p4_ref_++;
+                if (purkinje.p4_detected) ref_p4_live_++;
+                if (ref_p4 && purkinje.p4_detected) ref_p4_both_++;
+            }
         }
 
         forwardResults(frame_idx, metadata, pupil, purkinje);
@@ -2616,6 +2676,129 @@ static int acceptP4SampleCmd(ClientData clientData, Tcl_Interp *interp,
     int sample_count = plugin->p4_model_.getCalibrationSampleCount();
 
     Tcl_SetObjResult(interp, Tcl_NewIntObj(sample_count));
+    return TCL_OK;
+}
+
+// Load a recorded session's eyetracking_frames as the reference ("ghost")
+// overlay. eyetracking::loadReference <path.db> -> returns frame count.
+static int loadReferenceCmd(ClientData clientData, Tcl_Interp *interp,
+                            int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    if (objc != 2) {
+        Tcl_WrongNumArgs(interp, 1, objv, "path.db");
+        return TCL_ERROR;
+    }
+    const char* path = Tcl_GetString(objv[1]);
+
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        std::string msg = std::string("cannot open ") + path;
+        if (db) sqlite3_close(db);
+        Tcl_SetObjResult(interp, Tcl_NewStringObj(msg.c_str(), -1));
+        return TCL_ERROR;
+    }
+
+    const char* sql =
+        "SELECT frame_number, pupil_x, pupil_y, pupil_radius, "
+        "p1_x, p1_y, p4_x, p4_y, in_blink FROM eyetracking_frames";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        std::string msg = std::string("no eyetracking_frames table in ") + path;
+        sqlite3_close(db);
+        Tcl_SetObjResult(interp, Tcl_NewStringObj(msg.c_str(), -1));
+        return TCL_ERROR;
+    }
+
+    std::unordered_map<long long, RefFrame> loaded;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        RefFrame rf{};
+        long long fn = sqlite3_column_int64(stmt, 0);
+        if (sqlite3_column_type(stmt, 1) != SQLITE_NULL) {
+            rf.px = (float)sqlite3_column_double(stmt, 1);
+            rf.py = (float)sqlite3_column_double(stmt, 2);
+            rf.pr = (float)sqlite3_column_double(stmt, 3);
+            rf.has |= REF_HAS_PUPIL;
+        }
+        if (sqlite3_column_type(stmt, 4) != SQLITE_NULL) {
+            rf.p1x = (float)sqlite3_column_double(stmt, 4);
+            rf.p1y = (float)sqlite3_column_double(stmt, 5);
+            rf.has |= REF_HAS_P1;
+        }
+        if (sqlite3_column_type(stmt, 6) != SQLITE_NULL) {
+            rf.p4x = (float)sqlite3_column_double(stmt, 6);
+            rf.p4y = (float)sqlite3_column_double(stmt, 7);
+            rf.has |= REF_HAS_P4;
+        }
+        rf.blink = sqlite3_column_int(stmt, 8) != 0;
+        loaded.emplace(fn, rf);
+    }
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+
+    int count = (int)loaded.size();
+    {
+        std::lock_guard<std::mutex> lock(plugin->reference_mutex_);
+        plugin->reference_ = std::move(loaded);
+        plugin->ref_frames_matched_ = 0;
+        plugin->ref_p4_ref_ = 0;
+        plugin->ref_p4_live_ = 0;
+        plugin->ref_p4_both_ = 0;
+    }
+    plugin->show_reference_ = true;
+    plugin->reference_loaded_.store(count > 0);
+
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(count));
+    return TCL_OK;
+}
+
+static int clearReferenceCmd(ClientData clientData, Tcl_Interp *interp,
+                             int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    std::lock_guard<std::mutex> lock(plugin->reference_mutex_);
+    plugin->reference_.clear();
+    plugin->reference_loaded_.store(false);
+    plugin->ref_frames_matched_ = 0;
+    plugin->ref_p4_ref_ = 0;
+    plugin->ref_p4_live_ = 0;
+    plugin->ref_p4_both_ = 0;
+    Tcl_SetObjResult(interp, Tcl_NewStringObj("reference cleared", -1));
+    return TCL_OK;
+}
+
+// eyetracking::toggleReference ?0|1? -> show/hide ghosts (state retained)
+static int toggleReferenceCmd(ClientData clientData, Tcl_Interp *interp,
+                              int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    if (objc == 1) {
+        plugin->show_reference_ = !plugin->show_reference_;
+    } else {
+        int value;
+        if (Tcl_GetBooleanFromObj(interp, objv[1], &value) != TCL_OK) {
+            return TCL_ERROR;
+        }
+        plugin->show_reference_ = (value != 0);
+    }
+    Tcl_SetObjResult(interp, Tcl_NewBooleanObj(plugin->show_reference_));
+    return TCL_OK;
+}
+
+// eyetracking::referenceStats -> dict of running agreement counters
+static int referenceStatsCmd(ClientData clientData, Tcl_Interp *interp,
+                             int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    std::lock_guard<std::mutex> lock(plugin->reference_mutex_);
+    Tcl_Obj* d = Tcl_NewDictObj();
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("loaded", -1),
+                   Tcl_NewWideIntObj((Tcl_WideInt)plugin->reference_.size()));
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("frames", -1),
+                   Tcl_NewWideIntObj(plugin->ref_frames_matched_));
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("p4_ref", -1),
+                   Tcl_NewWideIntObj(plugin->ref_p4_ref_));
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("p4_live", -1),
+                   Tcl_NewWideIntObj(plugin->ref_p4_live_));
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("p4_both", -1),
+                   Tcl_NewWideIntObj(plugin->ref_p4_both_));
+    Tcl_SetObjResult(interp, d);
     return TCL_OK;
 }
 
@@ -3099,22 +3282,22 @@ static int setP1MaxJumpCmd(ClientData clientData, Tcl_Interp *interp,
     EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
     
     if (objc == 1) {
-        float current = plugin->p1_validator_.getMaxJump();
-        Tcl_SetObjResult(interp, Tcl_NewDoubleObj(current));
+        // User units: px per frame at the 250 Hz reference rate
+        Tcl_SetObjResult(interp, Tcl_NewDoubleObj(plugin->settings_.p1_max_jump));
         return TCL_OK;
     }
-    
+
     if (objc != 2) {
         Tcl_WrongNumArgs(interp, 1, objv, "?pixels?");
         return TCL_ERROR;
     }
-    
+
     double pixels;
     if (Tcl_GetDoubleFromObj(interp, objv[1], &pixels) != TCL_OK) {
         return TCL_ERROR;
     }
-    
-    plugin->p1_validator_.setMaxJump(pixels);
+
+    plugin->p1_validator_.setMaxJump(pixels * plugin->timing_.jump_scale);
     plugin->settings_.p1_max_jump = pixels;
     
     // Fire event
@@ -3129,22 +3312,22 @@ static int setP4MaxJumpCmd(ClientData clientData, Tcl_Interp *interp,
     EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
     
     if (objc == 1) {
-        float current = plugin->p4_validator_.getMaxJump();
-        Tcl_SetObjResult(interp, Tcl_NewDoubleObj(current));
+        // User units: px per frame at the 250 Hz reference rate
+        Tcl_SetObjResult(interp, Tcl_NewDoubleObj(plugin->settings_.p4_max_jump));
         return TCL_OK;
     }
-    
+
     if (objc != 2) {
         Tcl_WrongNumArgs(interp, 1, objv, "?pixels?");
         return TCL_ERROR;
     }
-    
+
     double pixels;
     if (Tcl_GetDoubleFromObj(interp, objv[1], &pixels) != TCL_OK) {
         return TCL_ERROR;
     }
-    
-    plugin->p4_validator_.setMaxJump(pixels);
+
+    plugin->p4_validator_.setMaxJump(pixels * plugin->timing_.jump_scale);
     plugin->settings_.p4_max_jump = pixels;
     
     // Fire event
@@ -3453,17 +3636,28 @@ public:
     }
     
     timing_.calculateFromFrameRate(fps);
-    
+
     // Recreate BlinkDetector with new timing
-    blink_detector_ = BlinkDetector(timing_.blink_recovery_frames, 
-				    timing_.baseline_update_frames);
-    
+    blink_detector_ = BlinkDetector(timing_.blink_recovery_frames,
+				    timing_.baseline_update_frames,
+				    timing_.long_blink_reset_frames);
+
+    // Per-frame jump limits scale with frame time: the user-facing settings
+    // are in "px per frame at 250 Hz" (the rate they were tuned at); the
+    // validators get the equivalent for the actual rate.
+    p1_validator_.setMaxJump(settings_.p1_max_jump * timing_.jump_scale);
+    p4_validator_.setMaxJump(settings_.p4_max_jump * timing_.jump_scale);
+
     if (debug_level_ >= DEBUG_CRITICAL) {
       std::cout << "   P1 loss: " << timing_.p1_loss_threshold << " frames" << std::endl;
       std::cout << "   P1 recovery: " << timing_.p1_recovery_frames << " frames" << std::endl;
       std::cout << "   P1 relocation: " << timing_.p1_relocation_frames << " frames" << std::endl;
       std::cout << "   Blink recovery: " << timing_.blink_recovery_frames << " frames" << std::endl;
       std::cout << "   Baseline update: " << timing_.baseline_update_frames << " frames" << std::endl;
+      if (timing_.jump_scale != 1.0f) {
+        std::cout << "   Jump scale: " << timing_.jump_scale
+                  << " (max_jump settings are px/frame at 250 Hz)" << std::endl;
+      }
     }
   }
   
@@ -3561,6 +3755,14 @@ public:
                             centerROICmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::autoCenterROI",
                             autoCenterROICmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::loadReference",
+                            loadReferenceCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::clearReference",
+                            clearReferenceCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::toggleReference",
+                            toggleReferenceCmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::referenceStats",
+                            referenceStatsCmd, this, NULL);
 
 	Tcl_CreateObjCommand(interp, "::eyetracking::markP4Sample", 
 			     setP4PendingSampleCmd, this, NULL);
@@ -4950,6 +5152,33 @@ bool drawOverlay(cv::Mat& frame, int frame_idx) override {
 		  cv::Scalar(0, 0, 255), 1);
     }
     
+    // Reference ("ghost") overlay: what the loaded session db stored for this
+    // same frame — orange, distinct marker shapes (circle/diamond/square) so
+    // live (green/blue/red) and reference never blur together. A missing
+    // orange square where the red P4 circle sits IS the improvement, visible.
+    if (show_reference_ && reference_loaded_.load(std::memory_order_relaxed)) {
+      std::lock_guard<std::mutex> ref_lock(reference_mutex_);
+      {
+        auto it = reference_.find(latest_results_.abs_frame_id);
+        if (it != reference_.end()) {
+          const RefFrame& rf = it->second;
+          const cv::Scalar ghost(0, 165, 255);  // orange
+          if (rf.has & REF_HAS_PUPIL) {
+            cv::circle(overlay, cv::Point(cvRound(rf.px), cvRound(rf.py)),
+                       (int)rf.pr, ghost, 1);
+          }
+          if (rf.has & REF_HAS_P1) {
+            cv::drawMarker(overlay, cv::Point(cvRound(rf.p1x), cvRound(rf.p1y)),
+                           ghost, cv::MARKER_DIAMOND, 10, 1);
+          }
+          if (rf.has & REF_HAS_P4) {
+            cv::drawMarker(overlay, cv::Point(cvRound(rf.p4x), cvRound(rf.p4y)),
+                           ghost, cv::MARKER_SQUARE, 10, 1);
+          }
+        }
+      }
+    }
+
   // P4 Manual Calibration Visualization
     if (p4_pending_sample_active_) {
       // PENDING: Yellow circle (awaiting confirmation) - NO crosshair
@@ -5004,6 +5233,22 @@ bool drawOverlay(cv::Mat& frame, int frame_idx) override {
     if (latest_results_.tracking_lost) {
       cv::putText(frame, "TRACKING LOST", cv::Point(12, 28),
                   cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
+    }
+
+    // Reference scoreboard: running P4 detection, stored session vs the code
+    // running now, over the frames seen since the reference was loaded.
+    if (show_reference_ && reference_loaded_.load(std::memory_order_relaxed)) {
+      std::lock_guard<std::mutex> ref_lock(reference_mutex_);
+      if (ref_frames_matched_ > 0) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "P4  ref %.1f%%  live %.1f%%  (n=%lld)",
+                 100.0 * ref_p4_ref_ / ref_frames_matched_,
+                 100.0 * ref_p4_live_ / ref_frames_matched_,
+                 ref_frames_matched_);
+        cv::putText(frame, buf, cv::Point(12, frame.rows - 12),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 165, 255), 1);
+      }
     }
 
     if (show_insets_) {    
