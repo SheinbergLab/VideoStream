@@ -177,8 +177,13 @@ class WatchdogThread
       /* rqueue will be available after command has been processed */
       std::string s(wd_rqueue.front());
       wd_rqueue.pop_front();
-      // sleep 
-      std::this_thread::sleep_for(std::chrono::milliseconds(interval));
+      // The "reply" may be the shutdown unblocker pushed by cleanup (the main
+      // loop that services wd_cqueue has exited by then) — check before
+      // sleeping, and sleep in slices so shutdown never waits a full interval.
+      if (m_bDone) break;
+      for (int slept = 0; slept < interval && !m_bDone; slept += 100) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
     }
   }
 };
@@ -2710,6 +2715,12 @@ cleanup:
 
   if (watchdog_thread.joinable()) {
     watchdogTimer.m_bDone = true;
+    // The watchdog round-trips through wd_cqueue/wd_rqueue, which only the
+    // main loop services — and the main loop has exited. If the watchdog
+    // fired into the teardown window it is blocked in wd_rqueue.front()
+    // awaiting a reply that will never come (the ~50%-of-runs exit hang):
+    // feed it a dummy reply so the join always completes.
+    wd_rqueue.push_back(std::string());
     watchdog_thread.join();
   }
 

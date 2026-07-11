@@ -65,7 +65,14 @@ public:
   
   std::mutex mutex;
   std::condition_variable cond;
-    
+
+  // Startup handshake state: 0 = pending, 1 = listening, -1 = failed.
+  // A bare cond.wait() here had two hang modes: a lost wakeup (the server
+  // thread can notify before the parent reaches wait), and failure paths
+  // (socket/bind/listen — e.g. the port held by another instance) that
+  // returned without notifying at all, leaving start_server blocked forever.
+  int server_state = 0;
+
   // CHANGED: Added DservSocket* instance parameter
   static void ds_client_process(DservSocket* instance, int sock);
   
@@ -126,15 +133,36 @@ public:
 #endif
   }
 
+  // Publish the startup outcome under the handshake mutex so start_server's
+  // predicated wait can never miss it (see server_state).
+  void signal_server_state(int state)
+  {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      server_state = state;
+    }
+    cond.notify_one();
+  }
+
   
   std::thread start_server(void)
   {
     std::unique_lock<std::mutex> mlock(mutex);
+    server_state = 0;
     std::thread dsnet_thread(&DservSocket::start_ds_tcp_server, this);
 
-    cond.wait(mlock);
+    // Predicate + timeout: immune to lost wakeups, and a failed server
+    // (port already held by another instance) errors instead of hanging.
+    if (!cond.wait_for(mlock, std::chrono::seconds(5),
+                       [this] { return server_state != 0; })) {
+      std::cerr << "DservSocket: server did not start within 5s" << std::endl;
+    } else if (server_state != 1) {
+      std::cerr << "DservSocket: server failed to start "
+                << "(port " << dsport << " in use by another instance?)"
+                << std::endl;
+    }
     mlock.unlock();
-    
+
     return dsnet_thread;
   }
 
@@ -160,19 +188,21 @@ public:
     /* Create TCP socket. */
     if ((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
       perror("socket");
+      signal_server_state(-1);
       return;
     }
-    
+
     listening_socket_fd = socket_fd;
-    
+
     /* Set SO_REUSEADDR to allow quick restart */
     setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&on, sizeof(on));
-    
+
     /* Bind address to socket. */
     if (bind(socket_fd, (const struct sockaddr *) &address,
 	     sizeof (struct sockaddr)) == -1) {
       perror("bind");
       close_socket(socket_fd);
+      signal_server_state(-1);
       return;
     }
     
@@ -180,6 +210,7 @@ public:
     if (listen(socket_fd, 20) == -1) {
       perror("listen");
       close_socket(socket_fd);
+      signal_server_state(-1);
       return;
     }
 
@@ -190,7 +221,7 @@ public:
     }
 
     /* let main process know we are ready to receive */
-    cond.notify_one();    
+    signal_server_state(1);
   
     //    std::cout << "listening on port " << std::to_string(dsport) << std::endl;
     
