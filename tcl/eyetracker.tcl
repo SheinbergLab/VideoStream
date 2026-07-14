@@ -154,7 +154,7 @@ proc onEvent {type data} {
         "vstream/video_source_eof" {
             puts "🎬 End of video reached"
             if {$::Registry::recording_state eq "recording"} {
-                puts "💾 Auto-saving recording..."
+                puts "Auto-saving recording..."
                 stop_metadata_recording
             }
         }
@@ -180,7 +180,7 @@ proc onEvent {type data} {
             # data is a dict
             set sampled [get_dict_value $data sampled 0]
             set total [get_dict_value $data total 0]
-            puts "✅ Sampling complete: $sampled/$total frames"
+            puts "Sampling complete: $sampled/$total frames"
             
             # Remove progress indicator
             if {[dict exists $::Registry::widgets sampling_progress]} {
@@ -194,7 +194,7 @@ proc onEvent {type data} {
         
         "eyetracking/blink_start" {
             # data is an integer (frame number)
-            puts "👁️ Blink at frame $data"
+            puts "Blink at frame $data"
             
             # Add visual indicator
             if {$::Registry::blink_indicator == -1} {
@@ -213,7 +213,7 @@ proc onEvent {type data} {
         
         "eyetracking/p1_lost" {
             # data is an integer (frame number)
-            puts "⚠️ P1 lost at frame $data"
+            puts "P1 lost at frame $data"
             
             # Add persistent warning
             if {$::Registry::p1_lost_indicator == -1} {
@@ -224,7 +224,7 @@ proc onEvent {type data} {
         
         "eyetracking/p1_recovered" {
             # data is an integer (frame number)
-            puts "✅ P1 recovered at frame $data"
+            puts "P1 recovered at frame $data"
             
             # Remove warning
             if {$::Registry::p1_lost_indicator != -1} {
@@ -239,7 +239,7 @@ proc onEvent {type data} {
             set magnitude [get_dict_value $data magnitude 0.0]
             set angle [get_dict_value $data angle 0.0]
             
-            puts "✅ P4 Calibrated:"
+            puts "P4 Calibrated:"
             puts "   Samples: $samples"
             puts "   Magnitude ratio: [format %.3f $magnitude]"
             puts "   Angle offset: [format %.1f $angle]°"
@@ -313,7 +313,7 @@ proc toggle_pause { args } {
 # Step forward
 proc step_forward { code } {
     if {!$::Registry::paused} {
-        puts "⚠️ Pause first (press Space)"
+        puts "Pause first (press Space)"
         return
     }
     
@@ -325,7 +325,7 @@ proc step_forward { code } {
 # Step backward
 proc step_backward { code } {
     if {!$::Registry::paused} {
-        puts "⚠️ Pause first (press Space)"
+        puts "Pause first (press Space)"
         return
     }
     
@@ -385,9 +385,9 @@ proc show_frame_info { code } {
 
 proc accept_p4_sample { code } {
     if {[catch {eyetracking::acceptP4Sample} result]} {
-        puts "❌ $result"
+        puts "$result"
     } else {
-        puts "✅ Sample $result added"
+        puts "Sample $result added"
     }
 }
 
@@ -403,14 +403,14 @@ proc calibrate_p4_model {} {
     
     # Check if already calibrated
     if {$initialized} {
-        puts "✅ Model already calibrated"
+        puts "Model already calibrated"
         eyetracking::setDetectionMode full
         return
     }
     
     # Check if we have samples
     if {$count < 1} {
-        puts "⚠️ Need at least 1 sample to calibrate"
+        puts "Need at least 1 sample to calibrate"
         puts "  Shift-click P4 on one or more frames"
         return
     }
@@ -418,11 +418,11 @@ proc calibrate_p4_model {} {
     # Calibrate the model
     puts "Calibrating P4 model with $count sample(s)..."
     if {[catch {eyetracking::calibrateP4Model} result]} {
-        puts "❌ Calibration failed: $result"
+        puts "Calibration failed: $result"
         return
     }
     
-    puts "✅ $result"
+    puts "$result"
     
     # Show model parameters
     set status [eyetracking::getP4ModelStatus]
@@ -434,7 +434,7 @@ proc calibrate_p4_model {} {
         
         # Now switch to full mode to use the model
         eyetracking::setDetectionMode full
-        puts "✅ Switched to full tracking mode"
+        puts "Switched to full tracking mode"
     }
 }
 
@@ -532,13 +532,13 @@ proc start_metadata_recording {} {
         vstream::fileUseSQLite 1
         vstream::fileOpenMetadata $metadata_name $::source_file
     } err]} {
-        puts "❌ Failed to start metadata recording: $err"
+        puts "Failed to start metadata recording: $err"
         set ::Registry::recording_state "idle"
         return
     }
     
     set ::Registry::recording_state "recording"
-    puts "✅ Started metadata recording: ${metadata_name}.db"
+    puts "Started metadata recording: ${metadata_name}.db"
     puts "   Source: $::source_file"
     
     # Rewind video to beginning
@@ -562,9 +562,9 @@ proc start_metadata_recording {} {
 
 proc stop_metadata_recording {} {
     if {[catch {vstream::fileClose} err]} {
-        puts "❌ Failed to close recording: $err"
+        puts "Failed to close recording: $err"
     } else {
-        puts "✅ Saved: ${::Registry::current_metadata_base}.db"
+        puts "Saved: ${::Registry::current_metadata_base}.db"
     }
     
     set ::Registry::recording_state "idle"
@@ -668,12 +668,12 @@ namespace eval ::ROI {
         set results [eyetracking::getResults]
         
         if {$results eq "no results"} {
-            puts "⚠️ No tracking results available"
+            puts "No tracking results available"
             return
         }
         
         if {![dict exists $results pupil]} {
-            puts "⚠️ No valid pupil detected"
+            puts "No valid pupil detected"
             return
         }
         
@@ -703,7 +703,7 @@ namespace eval ::ROI {
         } err]} {
             puts "ROI center failed: $err"
         } else {
-            puts "✅ ROI centered at offset ($new_offset_x, $new_offset_y)"
+            puts "ROI centered at offset ($new_offset_x, $new_offset_y)"
         }
     }
 }

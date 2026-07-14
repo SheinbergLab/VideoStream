@@ -521,10 +521,16 @@ struct PupilData {
 };
 
 struct PurkinjeData {
-    cv::Point2f p1_center;
-    cv::Point2f p4_center;
-    bool p1_detected;
-    bool p4_detected;
+    // Default member initializers are LOAD-BEARING: processFrameInline
+    // declares a PurkinjeData and only assigns it when detection runs, so on
+    // blink/LOST frames these defaults ARE the result. Without them the
+    // detected flags were uninitialized stack memory — on the live analysis
+    // thread they sometimes read true, storing/drawing phantom P1/P4 at (0,0)
+    // during blinks (2026-07-13 rig sessions).
+    cv::Point2f p1_center{-1.0f, -1.0f};
+    cv::Point2f p4_center{-1.0f, -1.0f};
+    bool p1_detected = false;
+    bool p4_detected = false;
 };
 
 // Why P4 was not reported for a frame (for reprocess diagnostics)
@@ -684,6 +690,12 @@ private:
   // Kept small on purpose: it makes the PREDICTED spot searchable without
   // re-admitting the far-from-prediction iris spots the disk exists to block.
   static constexpr float P4_DISK_PRED_SLACK = 6.0f;
+
+  // Hard ceiling on the floored disk, as a fraction of the pupil radius.
+  // The floor exists for slight radius UNDER-estimates; a prediction well
+  // beyond the pupil edge is a broken model, not a constricted pupil.
+  static constexpr float P4_DISK_MAX_FRAC = 1.15f;
+  bool p4_pred_outside_warned_ = false;  // one-shot latch for the warning
 
   cv::Point2f p4_last_known_position_;
   bool p4_pending_sample_active_;
@@ -1665,9 +1677,29 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
       if (have_predictive_rect) {
         // Pupil-disk bound, floored at the predicted P4 orbit: a constricted
         // pupil must never exclude the location the model itself predicts.
+        // The floor is CAPPED at P4_DISK_MAX_FRAC*r: P4 physically lives
+        // inside the pupil, so a prediction far beyond the pupil edge means
+        // the MODEL is wrong — following it would let online learning walk
+        // P4 onto iris/spectacle reflections one in-tolerance step at a time
+        // (observed on the 2026-07-13 rig session: mag ratio staircased
+        // 0.5 -> 3.3 and P4 locked ~1.3r outside the pupil). The cap is the
+        // spatial anchor that breaks that staircase.
         float pred_orbit = cv::norm(predicted_p4_local - pupil_center_local);
-        float disk_limit = std::max(pupil_radius * p4_pupil_search_margin_,
-                                    pred_orbit + P4_DISK_PRED_SLACK);
+        float disk_limit = std::max(
+            pupil_radius * p4_pupil_search_margin_,
+            std::min(pred_orbit + P4_DISK_PRED_SLACK,
+                     pupil_radius * P4_DISK_MAX_FRAC));
+        if (pred_orbit > pupil_radius) {
+          if (!p4_pred_outside_warned_ && debug_level_ >= DEBUG_CRITICAL) {
+            std::cout << "P4 model predicts OUTSIDE the pupil (orbit "
+                      << pred_orbit << "px vs r=" << pupil_radius
+                      << ") - model suspect, consider recalibrating"
+                      << std::endl;
+            p4_pred_outside_warned_ = true;
+          }
+        } else {
+          p4_pred_outside_warned_ = false;
+        }
         p4_candidate = findP4ByProximityWeightedSearch(
             gray_roi, p4_rect_mask_, predictive_roi, predicted_p4_local,
             pupil_center_local, disk_limit);
@@ -2129,6 +2161,14 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 	      p4_model_.isInitialized() && !p4_model_.isFrozen()) {
 	    const float LEARN_MIN_DILATION = 0.85f;  // pupil >= 85% of dilation ref
 	    const float LEARN_MAX_ERR_FRAC = 0.5f;   // within half the max pred error
+	    // The magnitude ratio divides by |P1 - pupil|: when that baseline is
+	    // small relative to the acceptance tolerance, the learned ratio is
+	    // ill-conditioned (a 6px positional slop on a 30px baseline is a 20%
+	    // ratio error), and a persistently biased target ratchets the model
+	    // upward one in-tolerance step at a time (2026-07-13 rig runaway:
+	    // mag 0.5 -> 3.3 during near-axis pursuit). Only learn when the
+	    // baseline dwarfs the tolerance.
+	    const float LEARN_MIN_CONDITIONING = 3.0f;  // |P1-pupil| >= 3x max err
 	    // Dilation gate anchored to the leaky-max reference, NOT the blink
 	    // baseline: the baseline tracks a sustained constriction down within
 	    // seconds, which silently re-admitted constricted (noisy-center)
@@ -2139,7 +2179,10 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
 	        (p4_predicted_.x < 0.0f) ||
 	        (cv::norm(p4_full - p4_predicted_) <=
 	         p4_max_prediction_error_ * LEARN_MAX_ERR_FRAC);
-	    if (well_dilated && close_to_prediction) {
+	    bool well_conditioned =
+	        cv::norm(result.p1_center - pupil.center) >=
+	        p4_max_prediction_error_ * LEARN_MIN_CONDITIONING;
+	    if (well_dilated && close_to_prediction && well_conditioned) {
 	      p4_model_.updateModel(pupil.center, result.p1_center, p4_full);
 	    }
 	  }
@@ -3862,7 +3905,11 @@ public:
     }
   
   const char* getName() override { return "eye_tracking"; }
-  const char* getVersion() override { return "1.0"; }
+  // Compile-stamped so the startup line ("Registered plugin: eye_tracking
+  // vX.Y (...)") pins exactly WHICH dylib a rig loaded — a stale plugin once
+  // masqueraded as a tracking regression. If the log says plain "v1.0",
+  // it's a pre-2026-07 build.
+  const char* getVersion() override { return "1.1 (" __DATE__ " " __TIME__ ")"; }
   const char* getDescription() override { 
     return "Pupil and Purkinje reflection tracking with bright spot detection"; 
   }
