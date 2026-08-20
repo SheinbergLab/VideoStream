@@ -23,13 +23,20 @@ private:
   int binning_h;  // horizontal binning
   int binning_v;  // vertical binning
 
+  // I/O line whose state stamps each frame's metadata.lineStatus
+  // (bit index into ExposureEndLineStatusAll; -1 = unresolved -> polled fallback)
+  int ttl_line_;
+  bool chunk_line_status_ok_;  // ExposureEndLineStatusAll chunk enabled on this camera
+
   // Cache for pause
   cv::Mat last_frame_;
   FrameMetadata last_metadata_;
   bool has_last_frame_;
-  
+
   bool initializeCamera();
   void configureCameraDefaults();
+  void resolveTTLLine();
+  bool readFrameLineStatus(Spinnaker::ChunkData& chunkData);
   
 public:
   FlirCameraSource(int cameraId = 0, int width = 1920, int height = 1200);
@@ -86,6 +93,9 @@ public:
   bool setROIOffset(int offsetX, int offsetY);  
   bool configureChunkData(bool enable, bool verbose = false);
   bool getLineStatus();
+  bool setTTLLine(int line);
+  int getTTLLine() const { return ttl_line_; }
+  int64_t getLineStatusAll();
   
   Spinnaker::GenApi::INodeMap* getNodeMap() { return nodeMapPtr; }
 };

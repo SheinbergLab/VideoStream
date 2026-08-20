@@ -36,15 +36,15 @@ struct FrameData {
 };
 
 struct CameraSettings {
-    int binning_horizontal;
-    int binning_vertical;
-    int roi_offset_x;
-    int roi_offset_y;
-    int roi_width;
-    int roi_height;
-    float exposure_time;
-    float gain;
-    float frame_rate;
+    int binning_horizontal = 1;
+    int binning_vertical = 1;
+    int roi_offset_x = 0;
+    int roi_offset_y = 0;
+    int roi_width = 0;
+    int roi_height = 0;
+    float exposure_time = 0.0f;
+    float gain = 0.0f;
+    float frame_rate = 0.0f;
     std::string pixel_format;
 };
 

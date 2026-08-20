@@ -4,6 +4,9 @@
 #include <atomic>
 #include <thread>
 #include <algorithm>   // std::max/min (GCC 14 / Debian Trixie: no transitive include)
+#include <cstring>
+#include <cctype>
+#include <cstdlib>
 #include "VstreamEvent.h"
 #include <tcl.h>
 #include "FlirCameraSource.h"
@@ -31,8 +34,9 @@ void FlirCameraSource::fireAllSettings() {
     fireSettingChanged("exposure_time", std::to_string(settings_.exposure_time));
     fireSettingChanged("gain", std::to_string(settings_.gain));
     fireSettingChanged("frame_rate", std::to_string(settings_.frame_rate));
-    fireSettingChanged("acquisition_running", 
+    fireSettingChanged("acquisition_running",
                       settings_.acquisition_running ? "1" : "0");
+    fireSettingChanged("ttl_line", std::to_string(ttl_line_));
 }
 
 FlirCameraSource::FlirCameraSource(int cameraId, int width, int height)
@@ -42,8 +46,12 @@ FlirCameraSource::FlirCameraSource(int cameraId, int width, int height)
     , nodeMapPtr(nullptr)
     , fps(100.0)
     , offset_x(0)
-    , offset_y(0)      
+    , offset_y(0)
+    , binning_h(1)
+    , binning_v(1)
     , color(false)
+    , ttl_line_(-1)
+    , chunk_line_status_ok_(false)
     , has_last_frame_(false)
 {
     processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
@@ -82,7 +90,17 @@ bool FlirCameraSource::initializeCamera() {
     
     // Configure chunk data by default
     configureChunkData(true, false);
-    
+
+    // Default the TTL line to whatever the camera's LineSelector points at
+    // (the same line the legacy polled path read); flir::ttlLine overrides.
+    resolveTTLLine();
+    std::cout << "TTL input line: "
+              << (ttl_line_ >= 0 ? "Line" + std::to_string(ttl_line_)
+                                 : std::string("unresolved"))
+              << (chunk_line_status_ok_ && ttl_line_ >= 0
+                      ? " (exposure-end latched)" : " (polled)")
+              << std::endl;
+
     // Set acquisition mode to continuous
     CEnumerationPtr ptrAcquisitionMode = nodeMap.GetNode("AcquisitionMode");
     if (!IsAvailable(ptrAcquisitionMode) || !IsWritable(ptrAcquisitionMode)) {
@@ -115,6 +133,19 @@ bool FlirCameraSource::initializeCamera() {
     CIntegerPtr ptrHeight = nodeMap.GetNode("Height");
     if (IsAvailable(ptrHeight) && IsReadable(ptrHeight)) {
         height = static_cast<int>(ptrHeight->GetValue());
+    }
+
+    // The camera can retain binning from a previous session; cache its
+    // actual state so recorded settings are right even if configureBinning
+    // is never called
+    CIntegerPtr ptrBinH = nodeMap.GetNode("BinningHorizontal");
+    if (IsAvailable(ptrBinH) && IsReadable(ptrBinH)) {
+        binning_h = static_cast<int>(ptrBinH->GetValue());
+    }
+
+    CIntegerPtr ptrBinV = nodeMap.GetNode("BinningVertical");
+    if (IsAvailable(ptrBinV) && IsReadable(ptrBinV)) {
+        binning_v = static_cast<int>(ptrBinV->GetValue());
     }
     
     // Update global dimensions immediately
@@ -198,14 +229,16 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
             }
         }
         
-        // Get line status
-        metadata.lineStatus = getLineStatus();
-        
         // Get chunk data
         ChunkData chunkData = pResultImage->GetChunkData();
         metadata.frameID = chunkData.GetFrameID();
         metadata.timestamp = chunkData.GetTimestamp();
         metadata.systemTime = std::chrono::high_resolution_clock::now();
+
+        // TTL status for this frame: the camera latches all line states at
+        // exposure end into the chunk; a live poll would instead sample at
+        // dequeue time, up to several frame periods late.
+        metadata.lineStatus = readFrameLineStatus(chunkData);
         
         // Convert to OpenCV Mat
         ImagePtr convertedImage = 
@@ -263,7 +296,7 @@ void FlirCameraSource::close() {
 
 bool FlirCameraSource::getLineStatus() {
     if (!nodeMapPtr) return false;
-    
+
     try {
         CBooleanPtr lineStatus = nodeMapPtr->GetNode("LineStatus");
         if (IsAvailable(lineStatus) && IsReadable(lineStatus)) {
@@ -273,6 +306,85 @@ bool FlirCameraSource::getLineStatus() {
         return false;
     }
     return false;
+}
+
+bool FlirCameraSource::readFrameLineStatus(ChunkData& chunkData) {
+    if (chunk_line_status_ok_ && ttl_line_ >= 0) {
+        try {
+            return ((chunkData.GetExposureEndLineStatusAll() >> ttl_line_) & 1) != 0;
+        } catch (Spinnaker::Exception &e) {
+            chunk_line_status_ok_ = false;
+            std::cerr << "ExposureEndLineStatusAll chunk read failed ("
+                      << e.what() << "); reverting to polled LineStatus"
+                      << std::endl;
+        }
+    }
+    return getLineStatus();
+}
+
+// Default the TTL bit index to the camera's currently selected line, so the
+// latched chunk path samples the same pin the legacy poll did.
+void FlirCameraSource::resolveTTLLine() {
+    if (!nodeMapPtr) return;
+
+    try {
+        CEnumerationPtr lineSelector = nodeMapPtr->GetNode("LineSelector");
+        if (IsAvailable(lineSelector) && IsReadable(lineSelector)) {
+            CEnumEntryPtr current = lineSelector->GetCurrentEntry();
+            if (current) {
+                const char* sym = current->GetSymbolic().c_str();  // e.g. "Line0"
+                if (strncmp(sym, "Line", 4) == 0 &&
+                    isdigit((unsigned char)sym[4])) {
+                    ttl_line_ = atoi(sym + 4);
+                }
+            }
+        }
+    } catch (Spinnaker::Exception &e) {
+        std::cerr << "Error resolving LineSelector: " << e.what() << std::endl;
+    }
+}
+
+bool FlirCameraSource::setTTLLine(int line) {
+    if (line < 0 || line > 7) return false;
+
+    // Point LineSelector at the same line so the polled fallback stays
+    // consistent with the chunk bit we mask.
+    if (nodeMapPtr) {
+        try {
+            CEnumerationPtr lineSelector = nodeMapPtr->GetNode("LineSelector");
+            if (IsAvailable(lineSelector) && IsWritable(lineSelector)) {
+                std::string name = "Line" + std::to_string(line);
+                CEnumEntryPtr entry = lineSelector->GetEntryByName(name.c_str());
+                if (!IsAvailable(entry) || !IsReadable(entry)) {
+                    std::cerr << name << " not present on this camera" << std::endl;
+                    return false;
+                }
+                lineSelector->SetIntValue(entry->GetValue());
+            }
+        } catch (Spinnaker::Exception &e) {
+            std::cerr << "Error selecting line " << line << ": "
+                      << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    ttl_line_ = line;
+    fireSettingChanged("ttl_line", std::to_string(line));
+    return true;
+}
+
+// Live poll of every line's state (bit N = LineN); toggle the TTL while
+// watching this to identify which line it's wired to. -1 if unavailable.
+int64_t FlirCameraSource::getLineStatusAll() {
+    if (!nodeMapPtr) return -1;
+
+    try {
+        CIntegerPtr all = nodeMapPtr->GetNode("LineStatusAll");
+        if (IsAvailable(all) && IsReadable(all)) {
+            return all->GetValue();
+        }
+    } catch (...) {}
+    return -1;
 }
 
 bool FlirCameraSource::configureImageOrientation(bool reverseX, bool reverseY) {
@@ -552,7 +664,15 @@ bool FlirCameraSource::configureBinning(int horizontal, int vertical)
       ptrBinningVertical->SetValue(vertical);
       std::cout << "Set vertical binning to " << vertical << std::endl;
     }
-    
+
+    // Update cached values with what the camera actually accepted
+    if (IsReadable(ptrBinningHorizontal)) {
+      binning_h = static_cast<int>(ptrBinningHorizontal->GetValue());
+    }
+    if (IsReadable(ptrBinningVertical)) {
+      binning_v = static_cast<int>(ptrBinningVertical->GetValue());
+    }
+
     // Restart acquisition if it was running
     if (wasAcquiring) {
       pCam->BeginAcquisition();
@@ -650,6 +770,7 @@ bool FlirCameraSource::configureChunkData(bool enable, bool verbose) {
             if (IsAvailable(ptrChunkModeActive) && IsWritable(ptrChunkModeActive)) {
                 ptrChunkModeActive->SetValue(false);
             }
+            chunk_line_status_ok_ = false;
             return true;
         }
         
@@ -677,23 +798,30 @@ bool FlirCameraSource::configureChunkData(bool enable, bool verbose) {
             CEnumEntryPtr ptrChunkSelectorEntry = entries.at(i);
             if (!IsAvailable(ptrChunkSelectorEntry) || !IsReadable(ptrChunkSelectorEntry))
                 continue;
-            
+
             ptrChunkSelector->SetIntValue(ptrChunkSelectorEntry->GetValue());
             if (verbose) std::cout << "\t" << ptrChunkSelectorEntry->GetSymbolic() << ": ";
-            
+
+            bool enabled = false;
             CBooleanPtr ptrChunkEnable = nodeMapPtr->GetNode("ChunkEnable");
             if (!IsAvailable(ptrChunkEnable)) {
                 if (verbose) std::cout << "Node not available" << std::endl;
             } else if (ptrChunkEnable->GetValue()) {
+                enabled = true;
                 if (verbose) std::cout << "Enabled" << std::endl;
             } else if (IsWritable(ptrChunkEnable)) {
                 ptrChunkEnable->SetValue(true);
+                enabled = true;
                 if (verbose) std::cout << "Enabled" << std::endl;
             } else {
                 if (verbose) std::cout << "Node not writable" << std::endl;
             }
+            if (enabled &&
+                ptrChunkSelectorEntry->GetSymbolic() == "ExposureEndLineStatusAll") {
+                chunk_line_status_ok_ = true;
+            }
         }
-        
+
         return true;
     } catch (Spinnaker::Exception &e) {
         std::cerr << "Error configuring chunk data: " << e.what() << std::endl;
@@ -752,7 +880,11 @@ static int flirGetSettingsCmd(ClientData clientData, Tcl_Interp *interp,
     Tcl_DictObjPut(interp, settingsDict,
                    Tcl_NewStringObj("acquisition_running", -1),
                    Tcl_NewBooleanObj(source->settings_.acquisition_running));
-    
+
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("ttl_line", -1),
+                   Tcl_NewIntObj(source->getTTLLine()));
+
     Tcl_SetObjResult(interp, settingsDict);
   }
   else {
@@ -1323,6 +1455,77 @@ static int setROIOffsetCmd(ClientData clientData, Tcl_Interp *interp,
 #endif
 }
 
+// flir::ttlLine ?line? -> query/set which I/O line stamps frame line_status
+static int ttlLineCmd(ClientData clientData, Tcl_Interp *interp,
+                      int objc, Tcl_Obj *const objv[])
+{
+#ifdef USE_FLIR
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* flirSource =
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+
+  if (!flirSource) {
+    Tcl_SetResult(interp, "No FLIR camera active", TCL_STATIC);
+    return TCL_ERROR;
+  }
+
+  if (objc == 1) {
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(flirSource->getTTLLine()));
+    return TCL_OK;
+  }
+
+  if (objc != 2) {
+    Tcl_WrongNumArgs(interp, 1, objv, "?line?");
+    return TCL_ERROR;
+  }
+
+  int line;
+  if (Tcl_GetIntFromObj(interp, objv[1], &line) != TCL_OK) {
+    return TCL_ERROR;
+  }
+
+  if (!flirSource->setTTLLine(line)) {
+    Tcl_SetObjResult(interp, Tcl_ObjPrintf("cannot select line %d", line));
+    return TCL_ERROR;
+  }
+
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(flirSource->getTTLLine()));
+  return TCL_OK;
+#else
+  Tcl_SetResult(interp, "FLIR support not compiled", TCL_STATIC);
+  return TCL_ERROR;
+#endif
+}
+
+// flir::lineStatusAll -> live bitfield of all I/O lines (bit N = LineN);
+// toggle the TTL while watching this to find the wired line
+static int lineStatusAllCmd(ClientData clientData, Tcl_Interp *interp,
+                            int objc, Tcl_Obj *const objv[])
+{
+#ifdef USE_FLIR
+  extern IFrameSource* g_frameSource;
+  FlirCameraSource* flirSource =
+    dynamic_cast<FlirCameraSource*>(g_frameSource);
+
+  if (!flirSource) {
+    Tcl_SetResult(interp, "No FLIR camera active", TCL_STATIC);
+    return TCL_ERROR;
+  }
+
+  int64_t all = flirSource->getLineStatusAll();
+  if (all < 0) {
+    Tcl_SetResult(interp, "LineStatusAll not readable", TCL_STATIC);
+    return TCL_ERROR;
+  }
+
+  Tcl_SetObjResult(interp, Tcl_NewWideIntObj((Tcl_WideInt)all));
+  return TCL_OK;
+#else
+  Tcl_SetResult(interp, "FLIR support not compiled", TCL_STATIC);
+  return TCL_ERROR;
+#endif
+}
+
 int add_flir_commands(Tcl_Interp *interp)
 {
   Tcl_CreateObjCommand(interp, "flir::isAvailable", 
@@ -1373,8 +1576,13 @@ int add_flir_commands(Tcl_Interp *interp)
 		    (Tcl_CmdProc *) getROICmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "flir::setROIOffset",
-		    (Tcl_CmdProc *) setROIOffsetCmd, 
-		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);  
+		    (Tcl_CmdProc *) setROIOffsetCmd,
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+
+  Tcl_CreateObjCommand(interp, "flir::ttlLine",
+		       ttlLineCmd, (ClientData)NULL, NULL);
+  Tcl_CreateObjCommand(interp, "flir::lineStatusAll",
+		       lineStatusAllCmd, (ClientData)NULL, NULL);
   return TCL_OK;
 }
 
