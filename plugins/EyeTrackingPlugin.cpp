@@ -1,5 +1,11 @@
 #include <tcl.h>
 #include "opencv2/opencv.hpp"
+// OpenCV 5 moved the shape-analysis API (moments, contourArea, fitEllipse,
+// arcLength, boundingRect) from imgproc to geometry, and its 5.0 umbrella
+// header omits that module; OpenCV 4 (Debian Trixie rigs) predates the split.
+#ifdef HAVE_OPENCV_GEOMETRY
+#include "opencv2/geometry.hpp"
+#endif
 
 #include <thread>
 #include <mutex>

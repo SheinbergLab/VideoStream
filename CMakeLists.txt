@@ -32,24 +32,18 @@ if(WIN32)
 set (OpenCV_DIR c:/usr/local/lib/opencv/build/x64/vc15/lib)
 endif()
 
-if(APPLE)
-    # Homebrew's `opencv` formula moved to OpenCV 5.0 (2026-07), which
-    # reorganized imgproc so the shape-analysis API this code uses (moments,
-    # contourArea, fitEllipse, ...) no longer resolves via the 4.x headers.
-    # We build against the OpenCV 4 API: prefer an opencv@4 keg when present
-    # (keg-only, so it needs an explicit prefix). CMAKE_PREFIX_PATH is searched
-    # ahead of the system prefixes, so 4.x wins even with 5.x also installed.
-    list(APPEND CMAKE_PREFIX_PATH /opt/homebrew/opt/opencv@4 /usr/local/opt/opencv@4)
-endif()
-
-# Only the OpenCV modules actually used (drops dnn/calib3d/features2d/photo/ml/...)
-find_package( OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio highgui )
+# Only the OpenCV modules actually used (drops dnn/calib3d/features2d/photo/ml/...).
+# Works with OpenCV 4 (Debian Trixie rigs) and 5 (Homebrew, whose formula moved
+# to 5.0 in 2026-07 and dropped the opencv@4 keg in 2026-08): 5.x split the
+# shape-analysis API (moments, contourArea, fitEllipse, ...) out of imgproc
+# into a `geometry` module, requested here as optional since 4.x has no such
+# component. The sources include opencv2/geometry.hpp under
+# #ifdef HAVE_OPENCV_GEOMETRY, which also covers 5.0's umbrella header
+# forgetting to include it.
+find_package( OpenCV REQUIRED
+    COMPONENTS core imgproc imgcodecs videoio highgui
+    OPTIONAL_COMPONENTS geometry )
 message(STATUS "OpenCV ${OpenCV_VERSION} (${OpenCV_INCLUDE_DIRS})")
-if(OpenCV_VERSION VERSION_GREATER_EQUAL 5)
-    message(WARNING "OpenCV ${OpenCV_VERSION} found, but this codebase targets "
-                    "the OpenCV 4 API (imgproc shape functions moved in 5.x). "
-                    "Install OpenCV 4 (macOS: brew install opencv@4).")
-endif()
 
 
 # Add uWebSockets as external project
