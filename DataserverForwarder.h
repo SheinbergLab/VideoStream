@@ -47,6 +47,9 @@ private:
     
     static constexpr uint8_t BINARY_MSG_CHAR = '>';
     static constexpr size_t FIXED_LENGTH = 128;
+    // variable-length binary push (dserv DPOINT_BINARY_VAR_MSG_CHAR)
+    static constexpr uint8_t BINARY_VAR_MSG_CHAR = '}';
+    static constexpr size_t VAR_HEADER_LEN = 2 + 4 + 4 + 8;
     static constexpr int RECONNECT_DELAY_MS = 5000;
     
 public:
@@ -162,55 +165,27 @@ public:
     bool isConnected() const { return connected.load(); }
 
   
-  bool sendDataPoint(const DataPoint& dp) {
-    if (drain_only.load()) {
-      return true;
-    }
-    
-    if (!connected.load() || sockfd < 0) return false;  
-    
-    char buf[FIXED_LENGTH];
-    memset(buf, 0, FIXED_LENGTH);  // Zero the entire buffer
-    
-    uint16_t varlen = dp.name.length();
-    uint64_t timestamp =
-      std::chrono::duration_cast<std::chrono::microseconds>(
-							    std::chrono::high_resolution_clock::now().time_since_epoch()).count();
-    
-    size_t idx = 0;
-    buf[idx++] = BINARY_MSG_CHAR;  // '>'
-    
-    memcpy(&buf[idx], &varlen, sizeof(uint16_t)); 
-    idx += sizeof(uint16_t);
-    
-    memcpy(&buf[idx], dp.name.c_str(), varlen); 
-    idx += varlen;
-    
-    memcpy(&buf[idx], &timestamp, sizeof(uint64_t)); 
-    idx += sizeof(uint64_t);
-    
-    uint32_t dt = dp.dtype;
-    uint32_t dl = dp.data.size();
-    
-    memcpy(&buf[idx], &dt, sizeof(uint32_t)); 
-    idx += sizeof(uint32_t);
-    
-    memcpy(&buf[idx], &dl, sizeof(uint32_t)); 
-    idx += sizeof(uint32_t);
-    
-    // Make sure we don't overflow the buffer
-    if (idx + dp.data.size() > FIXED_LENGTH) {
-      std::cerr << "Data too large: " << (idx + dp.data.size()) 
-		<< " > " << FIXED_LENGTH << std::endl;
-      return false;
-    }
-    
-    memcpy(&buf[idx], dp.data.data(), dp.data.size());
-    // Rest of buffer is already zeroed
-    
-    // Send exactly 128 bytes
-    ssize_t sent = send(sockfd, buf, FIXED_LENGTH, MSG_NOSIGNAL);
-    if (sent < 0) {
+  // Write a whole message.  The socket is non-blocking, so a large write
+  // (or a briefly full send buffer) can go out in pieces; a partial message
+  // would desynchronize dserv's stream parser, so keep going until every
+  // byte is out or the connection is really gone.
+  bool sendAll(const char* buf, size_t len) {
+    size_t off = 0;
+    int spins = 0;
+    while (off < len) {
+      ssize_t sent = send(sockfd, buf + off, len - off, MSG_NOSIGNAL);
+      if (sent > 0) {
+	off += sent;
+	continue;
+      }
+      if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+	if (++spins > 1000) {          // ~1 s of backpressure: give up
+	  std::cerr << "Send stalled after " << off << " of " << len << std::endl;
+	  return false;
+	}
+	std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	continue;
+      }
       std::cerr << "Send failed: " << strerror(errno) << std::endl;
       if (errno == EPIPE || errno == ECONNRESET || errno == ENOTCONN) {
 	connected.store(false);
@@ -218,13 +193,58 @@ public:
       }
       return false;
     }
-    
-    if (sent != FIXED_LENGTH) {
-      std::cerr << "Incomplete send: " << sent << " of " << FIXED_LENGTH << std::endl;
-      return false;
-    }
-    
     return true;
+  }
+
+  bool sendDataPoint(const DataPoint& dp) {
+    if (drain_only.load()) {
+      return true;
+    }
+
+    if (!connected.load() || sockfd < 0) return false;
+
+    uint16_t varlen = dp.name.length();
+    uint64_t timestamp =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+							    std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    uint32_t dt = dp.dtype;
+    uint32_t dl = dp.data.size();
+
+    // Two wire formats, chosen by size:
+    //   '>'  fixed 128-byte frame: lead, varlen(u16), name, timestamp(u64),
+    //        type(u32), datalen(u32), data, zero padding
+    //   '}'  length-prefixed (dserv >= 2026-07): lead, varlen(u16),
+    //        type(u32), datalen(u32), timestamp(u64), name, data
+    // The fixed frame leaves only 128 - 19 - varlen bytes for data (90 for
+    // "eyetracking/results"), which a double batch exceeds, so anything that
+    // does not fit goes out as a '}' message instead of being dropped.
+    const size_t fixed_needed = 1 + sizeof(uint16_t) + varlen + sizeof(uint64_t)
+      + 2 * sizeof(uint32_t) + dp.data.size();
+
+    if (fixed_needed <= FIXED_LENGTH) {
+      char buf[FIXED_LENGTH];
+      memset(buf, 0, FIXED_LENGTH);  // Zero the entire buffer (padding)
+      size_t idx = 0;
+      buf[idx++] = BINARY_MSG_CHAR;  // '>'
+      memcpy(&buf[idx], &varlen, sizeof(uint16_t));    idx += sizeof(uint16_t);
+      memcpy(&buf[idx], dp.name.c_str(), varlen);      idx += varlen;
+      memcpy(&buf[idx], &timestamp, sizeof(uint64_t)); idx += sizeof(uint64_t);
+      memcpy(&buf[idx], &dt, sizeof(uint32_t));        idx += sizeof(uint32_t);
+      memcpy(&buf[idx], &dl, sizeof(uint32_t));        idx += sizeof(uint32_t);
+      memcpy(&buf[idx], dp.data.data(), dp.data.size());
+      return sendAll(buf, FIXED_LENGTH);
+    }
+
+    std::vector<char> buf(1 + VAR_HEADER_LEN + varlen + dp.data.size());
+    size_t idx = 0;
+    buf[idx++] = BINARY_VAR_MSG_CHAR;  // '}'
+    memcpy(&buf[idx], &varlen, sizeof(uint16_t));    idx += sizeof(uint16_t);
+    memcpy(&buf[idx], &dt, sizeof(uint32_t));        idx += sizeof(uint32_t);
+    memcpy(&buf[idx], &dl, sizeof(uint32_t));        idx += sizeof(uint32_t);
+    memcpy(&buf[idx], &timestamp, sizeof(uint64_t)); idx += sizeof(uint64_t);
+    memcpy(&buf[idx], dp.name.c_str(), varlen);      idx += varlen;
+    memcpy(&buf[idx], dp.data.data(), dp.data.size());
+    return sendAll(buf.data(), buf.size());
   }
   
   void start() {

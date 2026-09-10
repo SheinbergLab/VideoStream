@@ -4841,39 +4841,53 @@ button.secondary:hover {
         
 
     // Extended format with frame metadata
-    // [frame_id, frame_timestamp_us, pupil_x, pupil_y, pupil_r, 
+    // [frame_id, frame_time_s, pupil_x, pupil_y, pupil_r,
     //  p1_x, p1_y, p4_x, p4_y, blink, p1_detected, p4_detected]
-    float batch[12];
+    //
+    // Doubles, not floats.  This batch was float[12] until 2026-09-10, and
+    // frame_id/time are relative to the anchor set at the last fileOpen(),
+    // which only resets when dserv's ess/datafile subscription is alive.
+    // With that subscription dead the anchor aged ~10 days, and a float32
+    // at 8.8e5 s has 0.0625 s resolution (frame_id at 2.2e8 has 16): the
+    // int64 ns timestamp was even rounded to float32 BEFORE the divide
+    // (ulp 2^26 ns = 67 ms).  Four sessions of eye timing were quantized
+    // before dserv ever saw them.  A double is exact for the frame count and
+    // for ns differences up to 2^53 (~104 days), so the batch carries full
+    // precision no matter how old the anchor is.  The pixel values gain
+    // nothing but cost nothing at 96 bytes/frame.
+    double batch[12];
 
-    // Send a frame count reference corresponding to open file frame id
-    batch[0] = static_cast<float>(metadata.frameID - first_frameID_);
+    // Frame count relative to the open-file anchor (exact in a double)
+    batch[0] = static_cast<double>(metadata.frameID - first_frameID_);
 
-    // relative to first frame
-    batch[1] = (metadata.timestamp - first_timestamp_) / 1e9f;  // nanoseconds to seconds
-    
-    
+    // Seconds relative to the anchor: int64 ns difference converted to
+    // double (exact), then divided in double
+    batch[1] = static_cast<double>(metadata.timestamp - first_timestamp_) / 1e9;
+
     // Pupil data (use -1 for not detected)
-    batch[2] = pupil.detected ? pupil.center.x : -1.0f;
-    batch[3] = pupil.detected ? pupil.center.y : -1.0f;
-    batch[4] = pupil.detected ? pupil.radius : -1.0f;
-    
+    batch[2] = pupil.detected ? pupil.center.x : -1.0;
+    batch[3] = pupil.detected ? pupil.center.y : -1.0;
+    batch[4] = pupil.detected ? pupil.radius : -1.0;
+
     // P1 data
-    batch[5] = purkinje.p1_detected ? purkinje.p1_center.x : -1.0f;
-    batch[6] = purkinje.p1_detected ? purkinje.p1_center.y : -1.0f;
-    
+    batch[5] = purkinje.p1_detected ? purkinje.p1_center.x : -1.0;
+    batch[6] = purkinje.p1_detected ? purkinje.p1_center.y : -1.0;
+
     // P4 data
-    batch[7] = purkinje.p4_detected ? purkinje.p4_center.x : -1.0f;
-    batch[8] = purkinje.p4_detected ? purkinje.p4_center.y : -1.0f;
-    
+    batch[7] = purkinje.p4_detected ? purkinje.p4_center.x : -1.0;
+    batch[8] = purkinje.p4_detected ? purkinje.p4_center.y : -1.0;
+
     // Status flags
-    batch[9] = blink_detector_.isInBlink() ? 1.0f : 0.0f;
-    batch[10] = purkinje.p1_detected ? 1.0f : 0.0f;
-    batch[11] = purkinje.p4_detected ? 1.0f : 0.0f;
-    
-    // Send as float array
-    ds_forward_queue.push_back(DataPoint("eyetracking/results", 
-                                         DataserverForwarder::FLOAT, 
-                                         batch, 
+    batch[9] = blink_detector_.isInBlink() ? 1.0 : 0.0;
+    batch[10] = purkinje.p1_detected ? 1.0 : 0.0;
+    batch[11] = purkinje.p4_detected ? 1.0 : 0.0;
+
+    // Send as double array (96 bytes: exceeds the fixed 128-byte '>' frame
+    // once the name and header are counted, so the forwarder sends it as a
+    // length-prefixed '}' message)
+    ds_forward_queue.push_back(DataPoint("eyetracking/results",
+                                         DataserverForwarder::DOUBLE,
+                                         batch,
                                          sizeof(batch)));
   }
 
