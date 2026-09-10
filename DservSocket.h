@@ -23,6 +23,9 @@
 #include <sys/uio.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <sys/time.h>
+#include <poll.h>
+#include <errno.h>
 #else
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -61,6 +64,9 @@ public:
   int dsport;
   char myIP[16];
 
+  // bound on connect + request/reply for the short-lived command sockets
+  static constexpr int CONNECT_TIMEOUT_MS = 2000;
+
   std::string dsaddr;
   
   std::mutex mutex;
@@ -72,6 +78,15 @@ public:
   // (socket/bind/listen — e.g. the port held by another instance) that
   // returned without notifying at all, leaving start_server blocked forever.
   int server_state = 0;
+
+  // Live connect-back sockets from dserv.  dserv opens exactly one
+  // persistent connection per %reg (add_new_send_client connects at
+  // registration time) and closes it when it reaps the client after a hard
+  // error or send stall, or when dserv itself restarts.  It never
+  // reconnects, and nothing tells the client -- so a registered client
+  // with zero live connections has silently lost its subscriptions.
+  std::atomic<int> inbound_connections{0};
+  int connections() const { return inbound_connections.load(); }
 
   // CHANGED: Added DservSocket* instance parameter
   static void ds_client_process(DservSocket* instance, int sock);
@@ -264,6 +279,43 @@ public:
     return n;
   }
 #ifndef _MSC_VER
+  // Bounded connect.  These command sockets (%get/%reg/%match/%touch) are
+  // opened from the Tcl thread, which is the display/main loop; a plain
+  // blocking connect() to a host that is down or unplugged sits in SYN
+  // retries for the OS default (~75 s) and freezes the tracker.  The
+  // subscription watch in tracker.tcl re-registers every few seconds
+  // while dserv is unreachable, so that must fail fast, not hang.
+  static int connect_with_timeout(int fd, const struct sockaddr *addr,
+				  socklen_t len, int timeout_ms)
+  {
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    int rc = connect(fd, addr, len);
+    if (rc < 0 && errno != EINPROGRESS) {
+      fcntl(fd, F_SETFL, flags);
+      return -1;
+    }
+    if (rc < 0) {
+      struct pollfd pfd = { fd, POLLOUT, 0 };
+      if (poll(&pfd, 1, timeout_ms) <= 0) {
+	fcntl(fd, F_SETFL, flags);
+	return -1;                       // timeout or poll error
+      }
+      int err = 0;
+      socklen_t elen = sizeof(err);
+      if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) < 0 || err != 0) {
+	fcntl(fd, F_SETFL, flags);
+	return -1;                       // refused / unreachable
+      }
+    }
+    fcntl(fd, F_SETFL, flags);           // back to blocking for the exchange
+    // and bound the request/reply too, so a wedged dserv cannot park us
+    struct timeval tv = { timeout_ms / 1000, (timeout_ms % 1000) * 1000 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    return 0;
+  }
+
   int client_socket(const char *host, int port)
   {
     struct addrinfo hints, *result, *rp;
@@ -288,7 +340,8 @@ public:
             continue;
         }
         
-        if (connect(client_fd, rp->ai_addr, rp->ai_addrlen) == 0) {
+        if (connect_with_timeout(client_fd, rp->ai_addr, rp->ai_addrlen,
+                                 CONNECT_TIMEOUT_MS) == 0) {
             break;  // Success
         }
         

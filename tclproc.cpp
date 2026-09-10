@@ -34,6 +34,9 @@
 #include "WidgetManager.h"
 
 #include "VideoStream.h"
+#include "AnalysisPluginRegistry.h"
+
+extern AnalysisPluginRegistry g_pluginRegistry;
 
 #ifdef WIN32
 static int strcasecmp(char *a,char *b) { return stricmp(a,b); }
@@ -1755,6 +1758,30 @@ static int dsCmdCmd(ClientData clientData, Tcl_Interp *interp,
     }
 }
 
+// vstream::dsConnections
+//   Number of live connect-back sockets from dserv (one per registration
+//   dserv still considers active).  Zero while registered means dserv has
+//   reaped us or restarted: the subscriptions are gone and nothing will
+//   arrive until we register again.
+static int dsConnectionsCmd(ClientData clientData, Tcl_Interp *interp,
+                            int objc, Tcl_Obj *const objv[]) {
+    proginfo_t *p = (proginfo_t *)clientData;
+    DservSocket* ds = p->dservSocket;
+    Tcl_SetObjResult(interp, Tcl_NewIntObj(ds ? ds->connections() : 0));
+    return TCL_OK;
+}
+
+// vstream::resetPlugins
+//   Reset every analysis plugin's per-session state (for eyetracking: the
+//   anchor that makes eyetracking/results frame_id/time relative to the
+//   session).  Called by tracker.tcl on every new ESS datafile, so the
+//   reset no longer depends on the video recording actually opening.
+static int resetPluginsCmd(ClientData clientData, Tcl_Interp *interp,
+                           int objc, Tcl_Obj *const objv[]) {
+    g_pluginRegistry.resetAll();
+    return TCL_OK;
+}
+
 static int jsonToTclDictCmd(ClientData clientData, Tcl_Interp *interp,
                             int objc, Tcl_Obj *const objv[]) {
     if (objc != 2) {
@@ -1968,9 +1995,17 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
                         (Tcl_ObjCmdProc *)dsTouchCmd, 
                         (ClientData)p, NULL);
     
-    Tcl_CreateObjCommand(interp, "vstream::dsCmd", 
-                        (Tcl_ObjCmdProc *)dsCmdCmd, 
+    Tcl_CreateObjCommand(interp, "vstream::dsCmd",
+                        (Tcl_ObjCmdProc *)dsCmdCmd,
                         (ClientData)p, NULL);
+
+    Tcl_CreateObjCommand(interp, "vstream::dsConnections",
+                        (Tcl_ObjCmdProc *)dsConnectionsCmd,
+                        (ClientData)p, NULL);
+
+    Tcl_CreateObjCommand(interp, "vstream::resetPlugins",
+                        (Tcl_ObjCmdProc *)resetPluginsCmd,
+                        (ClientData)NULL, NULL);
 
     Tcl_CreateObjCommand(interp, "jsonToTclDict", 
                      (Tcl_ObjCmdProc *)jsonToTclDictCmd, 

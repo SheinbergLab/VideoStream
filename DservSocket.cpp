@@ -13,7 +13,9 @@ void DservSocket::ds_client_process(DservSocket* instance, int sockfd)
   //  std::cout << "starting tcp_client_process: " << std::to_string(sockfd) << std::endl;
 
   std::string dpoint_str;
-#ifndef _MSC_VER  
+  // one live connect-back from dserv (see DservSocket::connections)
+  instance->inbound_connections++;
+#ifndef _MSC_VER
   while ((rval = read(sockfd, buf, sizeof(buf))) > 0) {
 #else
     while ((rval = recv(sockfd, buf, sizeof(buf), 0)) > 0) {
@@ -35,7 +37,10 @@ void DservSocket::ds_client_process(DservSocket* instance, int sockfd)
       }
     }
   }
-  
+
+  // EOF or error: dserv dropped this connect-back (reaped us, or restarted)
+  instance->inbound_connections--;
+
   // Close the socket
 #ifndef _MSC_VER
   close(sockfd);

@@ -16,7 +16,10 @@ namespace eval ::Registry {
     variable paused 0
     variable camera_initialized 0
     variable ds_host {}
+    variable ds_port 4620
     variable ds_connected 0
+    variable ds_watch_ms 2000     ;# subscription liveness check period
+    variable ds_lost_logged 0
     variable datafile {}
     variable datafile_indicator -1
     variable video_folder /home/lab/Videos
@@ -116,6 +119,43 @@ proc close_datafile {} {
     datafile_indicator {}
 }
 
+# The ESS datafile changed (subscription push, or the reconcile poll below).
+#
+# The analysis plugins' per-session state -- for eyetracking, the anchor
+# that makes eyetracking/results frame_id/time relative to the datafile --
+# used to reset ONLY inside vstream::fileOpen, i.e. only if the video
+# recording actually opened.  Anything that kept the video from opening
+# (recording off, folder missing, a stale Registry::datafile after a missed
+# close) left the anchor aging since some earlier session.  Now every
+# transition to a NEW datafile name resets the plugins first,
+# unconditionally; opening the video file is a separate, optional
+# consequence (its own fileOpen reset is then redundant but harmless).
+#
+# A repeat of the same name (dserv re-delivery, a reconcile that finds
+# nothing changed) is a no-op: a mid-session reset would split the anchor.
+proc datafile_changed { data } {
+    set current $::Registry::datafile
+    if { $data eq $current } { return }
+
+    if { $data ne "" } {
+	if { $current ne "" } {
+	    # the previous file's close never reached us (dead subscription,
+	    # dserv restart between sessions): finish it before the new one
+	    ds_log "datafile '$current' closed without notice; closing it before '$data'"
+	    set ::Registry::datafile {}
+	    close_datafile
+	}
+	set ::Registry::datafile $data
+	vstream::resetPlugins
+	ds_log "datafile open: $data (plugins reset)"
+	open_datafile $data
+    } else {
+	set ::Registry::datafile {}
+	close_datafile
+	ds_log "datafile closed"
+    }
+}
+
 proc handle_dpoint {event_name event_data} {
     set dict_data [jsonToTclDict $event_data]
     set name [dict get $dict_data name]
@@ -128,16 +168,7 @@ proc handle_dpoint {event_name event_data} {
 	    #set ::vstream::dsInObs $data
 	}
 	"ess/datafile" {
-	    if { $data != "" } {
-		if {$::Registry::datafile == ""} {
-		    open_datafile [set Registry::datafile $data]
-		}
-	    } else {
-		if {$::Registry::datafile != ""} {
-		    set Registry::datafile {}		    
-		    close_datafile
-		}
-	    }
+	    datafile_changed $data
 	}
     }
 }
@@ -746,22 +777,73 @@ proc live_mode { } {
 # DATA SERVER CONNECTION
 # ============================================================================
 
-proc connect_to_dataserver { host } {
-    # Setup dataserver connections
-    if [vstream::dsRegister $::ds_server] {
-	set ::Registry::ds_connected 1
-	set ::Resistry::ds_host $host
-    } else {
+#
+# dserv delivers subscriptions over ONE persistent connect-back socket per
+# registration, opened by %reg and closed if dserv reaps us (send stall,
+# hard error) or restarts.  It never reconnects on its own and nothing
+# tells the client.  On 2026-09-10 this tracker ran ~10 days with a dead
+# subscription, never heard about a datafile open, and four sessions of eye
+# timing were logged against a 10-day-old anchor.  vstream::dsConnections
+# counts the live connect-back sockets; a registered tracker with zero of
+# them has lost its subscriptions, so ds_watch re-registers and then asks
+# dserv for the current datafile (what the push would have said).
+
+proc ds_log { msg } {
+    puts "\[[clock format [clock seconds] -format %H:%M:%S]\] dserv: $msg"
+}
+
+proc ds_subscribe { host port } {
+    if { ![vstream::dsRegister $host $port] } {
 	set ::Registry::ds_connected 0
-	set ::Resistry::ds_host {}
 	return 0
     }
-    
     # Obs period controls
-    vstream::dsAddMatch $::ds_server ess/in_obs
-    
+    vstream::dsAddMatch $host ess/in_obs $port
     # Datafile controls
-    vstream::dsAddMatch $::ds_server ess/datafile
+    vstream::dsAddMatch $host ess/datafile $port
+    set ::Registry::ds_connected 1
+    return 1
+}
+
+# Ask dserv for the datafile right now and act on any difference from what
+# we believe -- catches an open (or close) that happened while the
+# subscription was dead, and a tracker started mid-session.
+proc ds_reconcile_datafile {} {
+    if { [catch { vstream::dsGet $::Registry::ds_host ess/datafile \
+		      $::Registry::ds_port } df] } {
+	return
+    }
+    datafile_changed $df
+}
+
+proc ds_watch {} {
+    after $::Registry::ds_watch_ms ds_watch
+    if { $::Registry::ds_host eq "" } { return }
+
+    if { $::Registry::ds_connected && [vstream::dsConnections] > 0 } {
+	set ::Registry::ds_lost_logged 0
+	return
+    }
+    if { !$::Registry::ds_lost_logged } {
+	ds_log "subscription to $::Registry::ds_host lost (no live connect-back); re-registering"
+	set ::Registry::ds_lost_logged 1
+    }
+    if { [ds_subscribe $::Registry::ds_host $::Registry::ds_port] } {
+	ds_log "re-registered with $::Registry::ds_host"
+	set ::Registry::ds_lost_logged 0
+	ds_reconcile_datafile
+    }
+}
+
+proc connect_to_dataserver { host {port 4620} } {
+    set ::Registry::ds_host $host
+    set ::Registry::ds_port $port
+    if { [ds_subscribe $host $port] } {
+	ds_reconcile_datafile
+    } else {
+	ds_log "registration with $host:$port failed; will keep retrying"
+    }
+    ds_watch
 }
 
 # ============================================================================
@@ -784,9 +866,7 @@ eyetracking::resetP4Model
 vstream::onlySaveInObs 0
 
 if { $vstream::dsHost != "" } {
-    vstream::dsRegister $vstream::dsHost 4620
-    vstream::dsAddMatch $vstream::dsHost ess/in_obs
-    vstream::dsAddMatch $vstream::dsHost ess/datafile
+    connect_to_dataserver $vstream::dsHost 4620
 }
 
 live_mode
