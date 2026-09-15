@@ -847,7 +847,64 @@ private:
     float p4_max_prediction_error = 13.0f;
     std::string detection_mode = "pupil_p1";
   } settings_;
-  
+
+  // Every knob that changes what the detector does, as of one frame. Written
+  // to eyetracking_settings so a recorded run can be reproduced later: the
+  // detections and the P4 model are already stored per frame, but without
+  // these the parameters that produced them were lost when the app exited.
+  // Compared frame-to-frame so a slider moved mid-recording lands as a new
+  // row rather than being silently averaged into one.
+  struct SettingsSnapshot {
+    int   pupil_threshold        = 0;
+    float pupil_min_area         = 0;
+    float pupil_max_area         = 0;
+    float pupil_min_extent       = 0;
+    float pupil_max_aspect       = 0;
+    int   p1_min_intensity       = 0;
+    float p1_max_jump            = 0;
+    float p1_min_area            = 0;
+    float p1_max_area            = 0;
+    float p1_pupil_radius_max    = 0;
+    int   p4_min_intensity       = 0;
+    float p4_max_jump            = 0;
+    int   p4_search_width        = 0;
+    int   p4_search_height       = 0;
+    float p4_max_prediction_error = 0;
+    float p4_pupil_margin        = 0;
+    int   roi_enabled            = 0;
+    int   roi_x = 0, roi_y = 0, roi_width = 0, roi_height = 0;
+    float frame_rate             = 0;
+    std::string detection_mode;
+
+    bool operator==(const SettingsSnapshot& o) const {
+      return pupil_threshold == o.pupil_threshold &&
+             pupil_min_area == o.pupil_min_area &&
+             pupil_max_area == o.pupil_max_area &&
+             pupil_min_extent == o.pupil_min_extent &&
+             pupil_max_aspect == o.pupil_max_aspect &&
+             p1_min_intensity == o.p1_min_intensity &&
+             p1_max_jump == o.p1_max_jump &&
+             p1_min_area == o.p1_min_area &&
+             p1_max_area == o.p1_max_area &&
+             p1_pupil_radius_max == o.p1_pupil_radius_max &&
+             p4_min_intensity == o.p4_min_intensity &&
+             p4_max_jump == o.p4_max_jump &&
+             p4_search_width == o.p4_search_width &&
+             p4_search_height == o.p4_search_height &&
+             p4_max_prediction_error == o.p4_max_prediction_error &&
+             p4_pupil_margin == o.p4_pupil_margin &&
+             roi_enabled == o.roi_enabled &&
+             roi_x == o.roi_x && roi_y == o.roi_y &&
+             roi_width == o.roi_width && roi_height == o.roi_height &&
+             frame_rate == o.frame_rate &&
+             detection_mode == o.detection_mode;
+    }
+    bool operator!=(const SettingsSnapshot& o) const { return !(*this == o); }
+  };
+
+  SettingsSnapshot last_settings_;
+  bool             last_settings_valid_ = false;
+
   // Frame-rate-dependent timing thresholds (in frames)
   struct TimingThresholds {
     int p1_loss_threshold;        // Frames without P1 before reset
@@ -4628,6 +4685,13 @@ button.secondary:hover {
     return true;
   }
 
+  // Host calls this once per recording, after the tables exist and before the
+  // first frame — forget the previous run's settings so this run records its
+  // own starting parameters on frame one.
+  void beginStorageBatch(sqlite3* db) override {
+    last_settings_valid_ = false;
+  }
+
   // Host calls this once per recording, before closing the db — release the
   // cached INSERT statement so the db can close cleanly.
   void endStorageBatch(sqlite3* db) override {
@@ -4637,7 +4701,106 @@ button.secondary:hover {
       store_stmt_db_ = nullptr;
     }
   }
-  
+
+  // Read every detector parameter that a reprocess would have to set by hand.
+  // Caller must already hold results_mutex_; roi_mutex_ is taken here, which
+  // is the results -> roi order used elsewhere (drawOverlay, analyzeFrame).
+  SettingsSnapshot captureSettings() {
+    SettingsSnapshot s;
+    s.pupil_threshold         = pupil_threshold_;
+    s.pupil_min_area          = pupil_min_area_;
+    s.pupil_max_area          = pupil_max_area_;
+    s.pupil_min_extent        = pupil_min_extent_;
+    s.pupil_max_aspect        = pupil_max_aspect_;
+    s.p1_min_intensity        = settings_.p1_min_intensity;
+    s.p1_max_jump             = settings_.p1_max_jump;
+    s.p1_min_area             = settings_.p1_min_area;
+    s.p1_max_area             = settings_.p1_max_area;
+    s.p1_pupil_radius_max     = p1_pupil_radius_max_;
+    s.p4_min_intensity        = p4_min_intensity_;
+    s.p4_max_jump             = settings_.p4_max_jump;
+    s.p4_search_width         = p4_search_roi_size_.width;
+    s.p4_search_height        = p4_search_roi_size_.height;
+    s.p4_max_prediction_error = p4_max_prediction_error_;
+    s.p4_pupil_margin         = p4_pupil_search_margin_;
+    s.detection_mode          = settings_.detection_mode;
+    s.frame_rate              = getCurrentFrameRate();
+    {
+      std::lock_guard<std::mutex> lock(roi_mutex_);
+      s.roi_enabled  = roi_enabled_ ? 1 : 0;
+      s.roi_x        = current_roi_.x;
+      s.roi_y        = current_roi_.y;
+      s.roi_width    = current_roi_.width;
+      s.roi_height   = current_roi_.height;
+    }
+    return s;
+  }
+
+  // One row per distinct parameter set, keyed by the frame it took effect at.
+  // A run that was never touched mid-recording therefore has exactly one row.
+  bool writeSettingsRow(sqlite3* db, int frame_number, const SettingsSnapshot& s) {
+    const char* sql = R"(
+        INSERT OR REPLACE INTO eyetracking_settings (
+            frame_number,
+            pupil_threshold, pupil_min_area, pupil_max_area,
+            pupil_min_extent, pupil_max_aspect,
+            p1_min_intensity, p1_max_jump, p1_min_area, p1_max_area,
+            p1_pupil_radius_max,
+            p4_min_intensity, p4_max_jump,
+            p4_search_width, p4_search_height,
+            p4_max_prediction_error, p4_pupil_margin,
+            detection_mode,
+            roi_enabled, roi_x, roi_y, roi_width, roi_height,
+            frame_rate
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    )";
+
+    // Not cached: this fires once per recording in the common case.
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+      if (debug_level_ >= DEBUG_CRITICAL) {
+        std::cerr << "Failed to prepare eyetracking settings insert: "
+                  << sqlite3_errmsg(db) << std::endl;
+      }
+      return false;
+    }
+
+    int i = 1;
+    sqlite3_bind_int   (stmt, i++, frame_number);
+    sqlite3_bind_int   (stmt, i++, s.pupil_threshold);
+    sqlite3_bind_double(stmt, i++, s.pupil_min_area);
+    sqlite3_bind_double(stmt, i++, s.pupil_max_area);
+    sqlite3_bind_double(stmt, i++, s.pupil_min_extent);
+    sqlite3_bind_double(stmt, i++, s.pupil_max_aspect);
+    sqlite3_bind_int   (stmt, i++, s.p1_min_intensity);
+    sqlite3_bind_double(stmt, i++, s.p1_max_jump);
+    sqlite3_bind_double(stmt, i++, s.p1_min_area);
+    sqlite3_bind_double(stmt, i++, s.p1_max_area);
+    sqlite3_bind_double(stmt, i++, s.p1_pupil_radius_max);
+    sqlite3_bind_int   (stmt, i++, s.p4_min_intensity);
+    sqlite3_bind_double(stmt, i++, s.p4_max_jump);
+    sqlite3_bind_int   (stmt, i++, s.p4_search_width);
+    sqlite3_bind_int   (stmt, i++, s.p4_search_height);
+    sqlite3_bind_double(stmt, i++, s.p4_max_prediction_error);
+    sqlite3_bind_double(stmt, i++, s.p4_pupil_margin);
+    sqlite3_bind_text  (stmt, i++, s.detection_mode.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int   (stmt, i++, s.roi_enabled);
+    sqlite3_bind_int   (stmt, i++, s.roi_x);
+    sqlite3_bind_int   (stmt, i++, s.roi_y);
+    sqlite3_bind_int   (stmt, i++, s.roi_width);
+    sqlite3_bind_int   (stmt, i++, s.roi_height);
+    sqlite3_bind_double(stmt, i++, s.frame_rate);
+
+    bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
+    if (!ok && debug_level_ >= DEBUG_CRITICAL) {
+      std::cerr << "Failed to store eyetracking settings: "
+                << sqlite3_errmsg(db) << std::endl;
+    }
+    sqlite3_finalize(stmt);
+    return ok;
+  }
+
+
   std::string getTableSchema() const override {
     return R"(
         CREATE TABLE IF NOT EXISTS eyetracking_frames (
@@ -4666,6 +4829,33 @@ button.secondary:hover {
             tracking_lost INTEGER
         );
         
+        CREATE TABLE IF NOT EXISTS eyetracking_settings (
+            frame_number INTEGER PRIMARY KEY,
+            pupil_threshold INTEGER,
+            pupil_min_area REAL,
+            pupil_max_area REAL,
+            pupil_min_extent REAL,
+            pupil_max_aspect REAL,
+            p1_min_intensity INTEGER,
+            p1_max_jump REAL,
+            p1_min_area REAL,
+            p1_max_area REAL,
+            p1_pupil_radius_max REAL,
+            p4_min_intensity INTEGER,
+            p4_max_jump REAL,
+            p4_search_width INTEGER,
+            p4_search_height INTEGER,
+            p4_max_prediction_error REAL,
+            p4_pupil_margin REAL,
+            detection_mode TEXT,
+            roi_enabled INTEGER,
+            roi_x INTEGER,
+            roi_y INTEGER,
+            roi_width INTEGER,
+            roi_height INTEGER,
+            frame_rate REAL
+        );
+
        CREATE INDEX IF NOT EXISTS idx_eyetracking_obs
             ON eyetracking_frames(obs_id);
         
@@ -4679,10 +4869,22 @@ button.secondary:hover {
   }
   bool storeFrameData(sqlite3* db, int frame_number, int obs_id) override {
     std::lock_guard<std::mutex> lock(results_mutex_);
-    
+
+    // Record the detector parameters on the first frame of the recording, and
+    // again whenever they change (a slider moved mid-run). The comparison is a
+    // couple of dozen scalars against a sqlite INSERT we are doing anyway.
+    {
+      SettingsSnapshot now = captureSettings();
+      if (!last_settings_valid_ || now != last_settings_) {
+        writeSettingsRow(db, frame_number, now);
+        last_settings_ = now;
+        last_settings_valid_ = true;
+      }
+    }
+
     // ALWAYS store a row - even without valid results
     // This keeps eyetracking_frames synchronized with video frames
-    
+
     const char* sql = R"(
         INSERT INTO eyetracking_frames (
             frame_number, obs_id, in_blink,
