@@ -47,8 +47,12 @@
 #include "WebcamSource.h"
 #include "VideoFileSource.h"
 #include "ReviewModeSource.h"
+#include "CameraControl.h"
 #ifdef USE_FLIR
 #include "FlirCameraSource.h"
+#endif
+#ifdef USE_LUCID
+#include "LucidCameraSource.h"
 #endif
 
 #include "Widget.h"
@@ -1139,28 +1143,27 @@ public:
       }
 
 
-#ifdef USE_FLIR
-if (g_frameSource) {
-    FlirCameraSource* flir_source = dynamic_cast<FlirCameraSource*>(g_frameSource);
-    if (flir_source) {      
-	CameraSettings cam_settings;
-	cam_settings.binning_horizontal = flir_source->getBinningH();
-	cam_settings.binning_vertical = flir_source->getBinningV();
-	cam_settings.roi_offset_x = flir_source->getOffsetX();
-	cam_settings.roi_offset_y = flir_source->getOffsetY();
-	cam_settings.roi_width = flir_source->getWidth();
-	cam_settings.roi_height = flir_source->getHeight();
-	cam_settings.exposure_time = flir_source->getExposureTime();
-	cam_settings.frame_rate = flir_source->getFrameRate();
-	cam_settings.gain = flir_source->getGain();
-	cam_settings.pixel_format = "Mono8";  // Or detect from camera
-        
-	if (!storage_manager_.storeCameraSettings(cam_settings)) {
-	  std::cerr << "Warning: Failed to store camera settings" << std::endl;
+      // Record the camera configuration (FLIR or Lucid) with the session
+      if (g_frameSource) {
+	ICameraControl* cam = dynamic_cast<ICameraControl*>(g_frameSource);
+	if (cam) {
+	  CameraSettings cam_settings;
+	  cam_settings.binning_horizontal = cam->getBinningH();
+	  cam_settings.binning_vertical = cam->getBinningV();
+	  cam_settings.roi_offset_x = cam->getOffsetX();
+	  cam_settings.roi_offset_y = cam->getOffsetY();
+	  cam_settings.roi_width = cam->getWidth();
+	  cam_settings.roi_height = cam->getHeight();
+	  cam_settings.exposure_time = cam->getExposureTime();
+	  cam_settings.frame_rate = cam->getFrameRate();
+	  cam_settings.gain = cam->getGain();
+	  cam_settings.pixel_format = "Mono8";  // both sources deliver Mono8
+
+	  if (!storage_manager_.storeCameraSettings(cam_settings)) {
+	    std::cerr << "Warning: Failed to store camera settings" << std::endl;
+	  }
 	}
       }
- }
-#endif      
       
       // allow plugins to store data in our db
       storage_manager_.initializePluginStorage();
@@ -1918,10 +1921,19 @@ int setupTcl(proginfo_t *p)
     // core commands
     addTclCommands(interp, p);
 
-    // subsystem specific commands
+    // camera commands: camera::* works with whichever camera backend is
+    // active; flir::* / lucid::* are the same commands under the vendor
+    // name (flir::* is what the existing scripts call)
+    bool flir_available = false, lucid_available = false;
 #ifdef USE_FLIR
-    add_flir_commands(interp);
+    flir_available = true;
+    add_camera_commands(interp, "flir", true);
 #endif
+#ifdef USE_LUCID
+    lucid_available = true;
+    add_camera_commands(interp, "lucid", true);
+#endif
+    add_camera_commands(interp, "camera", flir_available || lucid_available);
     
     Tcl_SourceRCFile(interp);
   }
@@ -2318,6 +2330,7 @@ int main(int argc, char **argv)
   bool verbose = false;
   bool use_webcam = false;
   bool use_flir = false;
+  bool use_lucid = false;
   int display_every = 1;
   bool help = false;
   bool init_display = false;
@@ -2356,6 +2369,7 @@ int main(int argc, char **argv)
     ("ws-port", "WebSocket server port", cxxopts::value<int>()->default_value("8080"))    
     ("w,webcam", "Use webcam", cxxopts::value<bool>(use_webcam))
     ("flir", "Use flir", cxxopts::value<bool>(use_flir))
+    ("lucid", "Use Lucid (Arena SDK) camera", cxxopts::value<bool>(use_lucid))
     ("d,display", "Start with display", cxxopts::value<bool>(init_display))
     ("p,port", "TCP/IP server port", cxxopts::value<int>(port))
     ("c,camera_id", "Camera ID", cxxopts::value<int>(camera_id))
@@ -2477,6 +2491,17 @@ int main(int argc, char **argv)
     std::cerr << "FLIR support not compiled. Use --webcam, or rebuild with -DWITH_FLIR=ON (requires the Spinnaker SDK)." << std::endl;
     return -1;
 #endif
+  } else if (use_lucid) {
+#ifdef USE_LUCID
+    source_type = "lucid";
+    source_params["id"] = std::to_string(camera_id);
+    use_webcam = false;
+    use_flir = false;
+    no_source = false;
+#else
+    std::cerr << "Lucid support not compiled. Use --webcam, or rebuild with -DWITH_LUCID=ON (requires the Arena SDK)." << std::endl;
+    return -1;
+#endif
   }
 
   if (!no_source) {
@@ -2549,6 +2574,12 @@ int main(int argc, char **argv)
   std::thread ds_thread = dservSocket.start_server();
 
   setupTcl(&programInfo);
+
+  // --flir / --lucid also pick the camera backend for the tracker scripts,
+  // which read ::camera_type (default flir) before going live
+  if (source_type == "flir" || source_type == "lucid") {
+    Tcl_SetVar2(interp, "camera_type", NULL, source_type.c_str(), TCL_GLOBAL_ONLY);
+  }
 
   if (startup_file) {
     if (sourceFile(startup_file) != TCL_OK) {

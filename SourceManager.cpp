@@ -4,6 +4,9 @@
 #ifdef USE_FLIR
 #include "FlirCameraSource.h"
 #endif
+#ifdef USE_LUCID
+#include "LucidCameraSource.h"
+#endif
 #include "ReviewModeSource.h"
 #include "SamplingManager.h"
 #include "FrameBufferManager.h"
@@ -68,7 +71,32 @@ std::unique_ptr<IFrameSource> SourceManager::createSourceFromParams(
         return std::make_unique<FlirCameraSource>(camera_id, width, height);
     }
 #endif
-    
+#ifdef USE_LUCID
+    else if (type == "lucid") {
+        // id = index in the Arena device list; serial = select by serial
+        // number instead. width/height (optional) set a startup ROI.
+        int camera_id = 0;
+        std::string serial;
+        int width = 0;
+        int height = 0;
+
+        if (params.count("id")) {
+            camera_id = std::stoi(params.at("id"));
+        }
+        if (params.count("serial")) {
+            serial = params.at("serial");
+        }
+        if (params.count("width")) {
+            width = std::stoi(params.at("width"));
+        }
+        if (params.count("height")) {
+            height = std::stoi(params.at("height"));
+        }
+
+        return std::make_unique<LucidCameraSource>(camera_id, serial, width, height);
+    }
+#endif
+
     throw std::runtime_error("Unknown source type: " + type);
 }
 
@@ -172,11 +200,14 @@ bool SourceManager::startSource(const std::string& type,
       status_data["file"] = current_params_["file"];
       status_data["speed"] = current_params_.count("speed") ? current_params_["speed"] : "1.0";
       status_data["loop"] = current_params_.count("loop") ? current_params_["loop"] : "1";
-    } else if (type == "flir" || type == "webcam") {
+    } else if (type == "flir" || type == "lucid" || type == "webcam") {
       status_data["id"] = current_params_.count("id") ? current_params_["id"] : "0";
-      if (type == "flir") {
+      if (type == "flir" || type == "lucid") {
         status_data["width"] = current_params_.count("width") ? current_params_["width"] : std::to_string(new_width);
         status_data["height"] = current_params_.count("height") ? current_params_["height"] : std::to_string(new_height);
+      }
+      if (type == "lucid" && current_params_.count("serial")) {
+        status_data["serial"] = current_params_["serial"];
       }
     }
     

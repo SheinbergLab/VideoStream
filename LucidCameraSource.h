@@ -1,33 +1,40 @@
-#ifndef FLIR_CAMERA_SOURCE_H
-#define FLIR_CAMERA_SOURCE_H
+#ifndef LUCID_CAMERA_SOURCE_H
+#define LUCID_CAMERA_SOURCE_H
 
 #include "IFrameSource.h"
 #include "CameraControl.h"
 
-#ifdef USE_FLIR
-#include "Spinnaker.h"
-#include "SpinGenApi/SpinnakerGenApi.h"
+#ifdef USE_LUCID
+#include <memory>
+#include <string>
 
-class FlirCameraSource : public IFrameSource, public ICameraControl {
+// Lucid Vision Labs GigE camera (Arena SDK). Mirrors FlirCameraSource: the
+// GenICam node names (ExposureTime, Gain, OffsetX, BinningHorizontal, ...)
+// are the same, only the system/device/stream lifecycle differs.
+//
+// The Arena SDK headers are confined to LucidCameraSource.cpp (pimpl) so
+// this header can be included next to the Spinnaker headers without the
+// two GenICam distributions colliding.
+class LucidCameraSource : public IFrameSource, public ICameraControl {
 private:
-  Spinnaker::SystemPtr system;
-  Spinnaker::CameraList camList;
-  Spinnaker::CameraPtr pCam;
-  Spinnaker::GenApi::INodeMap* nodeMapPtr;
-  Spinnaker::ImageProcessor processor;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 
   int camera_id;
+  std::string serial_;   // optional: select device by serial instead of index
   float fps;
   int width, height;
   bool color;
   int offset_x, offset_y;
-  int binning_h;  // horizontal binning
-  int binning_v;  // vertical binning
+  int binning_h, binning_v;
 
   // I/O line whose state stamps each frame's metadata.lineStatus
-  // (bit index into ExposureEndLineStatusAll; -1 = unresolved -> polled fallback)
+  // (bit index into ChunkLineStatusAll; -1 = unresolved -> polled fallback)
   int ttl_line_;
-  bool chunk_line_status_ok_;  // ExposureEndLineStatusAll chunk enabled on this camera
+  bool chunk_line_status_ok_;  // LineStatusAll chunk enabled on this camera
+
+  unsigned int image_timeout_ms_;
+  bool packet_size_negotiated_;  // auto-negotiation done on the first StartStream
 
   // Cache for pause
   cv::Mat last_frame_;
@@ -35,13 +42,16 @@ private:
   bool has_last_frame_;
 
   bool initializeCamera();
-  void configureCameraDefaults();
+  bool configureStreamDefaults();
+  bool configureChunkData(bool enable, bool verbose = false);
   void resolveTTLLine();
-  bool readFrameLineStatus(Spinnaker::ChunkData& chunkData);
+  bool getLineStatus();
+  void refreshGeometry();
 
 public:
-  FlirCameraSource(int cameraId = 0, int width = 1920, int height = 1200);
-  ~FlirCameraSource();
+  LucidCameraSource(int cameraId = 0, const std::string& serial = "",
+                    int width = 0, int height = 0);
+  ~LucidCameraSource();
 
   // IFrameSource
   bool getNextFrame(cv::Mat& frame, FrameMetadata& metadata) override;
@@ -49,15 +59,15 @@ public:
   int getWidth() const override { return width; }
   int getHeight() const override { return height; }
   bool isColor() const override { return color; }
-  float getFrameRate() const override;  // reads from camera, falls back to cache
+  float getFrameRate() const override;
   void close() override;
   bool supportsPause() const override { return true; }
 
-  // ICameraControl (Tcl commands: camera::* / flir::*, see CameraCommands.cpp)
-  const char* vendorName() const override { return "flir"; }
+  // ICameraControl
+  const char* vendorName() const override { return "lucid"; }
   bool startAcquisition() override;
   bool stopAcquisition() override;
-  bool isStreaming() const override { return pCam && pCam->IsStreaming(); }
+  bool isStreaming() const override;
 
   int getOffsetX() const override { return offset_x; }
   int getOffsetY() const override { return offset_y; }
@@ -78,12 +88,7 @@ public:
   bool setTTLLine(int line) override;
   int getTTLLine() const override { return ttl_line_; }
   int64_t getLineStatusAll() override;
-
-  // FLIR-specific
-  bool configureChunkData(bool enable, bool verbose = false);
-  bool getLineStatus();
-  Spinnaker::GenApi::INodeMap* getNodeMap() { return nodeMapPtr; }
 };
 
-#endif // USE_FLIR
-#endif // FLIR_CAMERA_SOURCE_H
+#endif // USE_LUCID
+#endif // LUCID_CAMERA_SOURCE_H

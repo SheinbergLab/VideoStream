@@ -110,6 +110,54 @@ Without `-D WITH_FLIR=ON`, passing `--flir` prints a message and exits — use
 
 FLIR support is currently Linux/Windows only; macOS builds are webcam/file only.
 
+## Building with Lucid (Arena SDK) support
+
+Lucid Vision Labs GigE cameras (e.g. Triton) are driven through the **Arena
+SDK**, which is also proprietary and **not redistributable**, so it is off by
+default. Linux only.
+
+1. Extract the Arena SDK tarball somewhere, e.g. `~/ArenaSDK_Linux_x64` or
+   `/opt/ArenaSDK_Linux_x64`. The SDK's `Arena_SDK_Linux_x64.conf` (ld.so.conf)
+   step is **not** required: the binary carries an rpath to the SDK directory.
+   `libibverbs1` and `librdmacm1` must be installed (`apt install`).
+2. Configure with Lucid enabled and build:
+
+   ```sh
+   cmake -B build -D WITH_LUCID=ON -D ARENA_SDK_DIR=$HOME/ArenaSDK_Linux_x64
+   cmake --build build -j
+   ```
+
+   `ARENA_SDK_DIR` may be omitted if the SDK is in one of the two locations
+   above. FLIR and Lucid can be enabled in the same build.
+
+3. Run with a Lucid source, e.g. `./build/VideoStream --lucid -f tcl/tracker.tcl`,
+   or from Tcl `vstream::startSource lucid ?id N? ?serial S?` (device index in
+   the Arena device list, or a serial number). `--flir` / `--lucid` also set
+   `::camera_type`, which the tracker scripts use when they (re)start the live
+   source.
+
+For a GigE camera the receiving interface should allow jumbo frames (MTU 9000)
+and the kernel receive buffers should be raised (`net.core.rmem_max` /
+`net.core.rmem_default`, e.g. 32 MB); the SDK's `.conf` script sets the sysctls.
+The stream is configured to auto-negotiate the packet size and request packet
+resends, so it also works at MTU 1500 with a small amount of resend traffic.
+
+## Camera functions
+
+Both camera backends expose the same commands under `camera::`; `flir::` and
+`lucid::` are the same commands under the vendor name (the tracker scripts use
+`camera::`, and pick the backend with `set ::camera_type flir|lucid`).
+```
+camera::isAvailable            camera::vendor
+camera::startAcquisition       camera::stopAcquisition       camera::isStreaming
+camera::configureExposure ?us? camera::configureGain ?dB?
+camera::configureFrameRate ?hz? camera::getFrameRateRange
+camera::configureBinning ?h v? camera::configureImageOrientation reverseX reverseY
+camera::configureROI ?w h x y? camera::getROI  camera::setROIOffset ?x y?  camera::getROIConstraints
+camera::ttlLine ?line?         camera::lineStatusAll
+camera::getSettings            camera::refreshSettings
+```
+
 ## General functions
 ```
  vstream::fileOpen
@@ -124,10 +172,3 @@ FLIR support is currently Linux/Windows only; macOS builds are webcam/file only.
  vstream::displayClose
 ```
 
-## FLIR camera functions
-```
-vstream::configureExposure
-vstream::configureGain
-vstream::configureFrameRate
-vstream::configureROI
-```

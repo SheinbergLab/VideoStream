@@ -23,6 +23,12 @@ project( VideoStream VERSION ${PROJECT_VERSION} )
 # that has the Spinnaker SDK installed to build the camera-acquisition path.
 option(WITH_FLIR "Build with FLIR Spinnaker camera support (requires Spinnaker SDK; not redistributable)" OFF)
 
+# Lucid Vision Labs (GigE) cameras use the Arena SDK, likewise proprietary and
+# not redistributable, so it is OFF by default. Point ARENA_SDK_DIR at the
+# extracted ArenaSDK_Linux_x64 directory (or export ARENA_SDK_DIR); Linux only.
+option(WITH_LUCID "Build with Lucid Arena SDK camera support (requires Arena SDK; not redistributable)" OFF)
+set(ARENA_SDK_DIR "$ENV{ARENA_SDK_DIR}" CACHE PATH "Root of the extracted Arena SDK (contains include/Arena, lib64, GenICam)")
+
 # macOS only: build a self-contained VideoStream.app / .dmg (dylibbundler + DragNDrop).
 # OFF by default so local dev keeps the plain ./build/VideoStream binary; CI/packaging
 # turns it ON.
@@ -160,6 +166,37 @@ else()  # Linux
 	    set(FLIR_INCLUDE_DIR /opt/spinnaker/include)
 	endif()
 
+	if(WITH_LUCID)
+	    if(NOT ARENA_SDK_DIR)
+	        foreach(_d /opt/ArenaSDK_Linux_x64 $ENV{HOME}/ArenaSDK_Linux_x64)
+	            if(EXISTS "${_d}/include/Arena/ArenaApi.h")
+	                set(ARENA_SDK_DIR "${_d}")
+	            endif()
+	        endforeach()
+	    endif()
+	    if(NOT EXISTS "${ARENA_SDK_DIR}/include/Arena/ArenaApi.h")
+	        message(FATAL_ERROR "WITH_LUCID=ON but the Arena SDK was not found; pass -DARENA_SDK_DIR=/path/to/ArenaSDK_Linux_x64")
+	    endif()
+	    set(ARENA_LIB_DIR "${ARENA_SDK_DIR}/lib64")
+	    set(ARENA_GENICAM_LIB_DIR "${ARENA_SDK_DIR}/GenICam/library/lib/Linux64_x64")
+	    set(ARENA_INCLUDE_DIRS
+	        "${ARENA_SDK_DIR}/include/Arena"
+	        "${ARENA_SDK_DIR}/include/GenTL"
+	        "${ARENA_SDK_DIR}/GenICam/library/CPP/include")
+	    # Only the acquisition libraries: the Save API (libsave) drags in the
+	    # SDK's private ffmpeg copies, whose sonames collide with OpenCV's.
+	    find_library(ARENA_LIBRARY NAMES arena PATHS "${ARENA_LIB_DIR}" NO_DEFAULT_PATH REQUIRED)
+	    find_library(ARENA_GENTL_LIBRARY NAMES gentl PATHS "${ARENA_LIB_DIR}" NO_DEFAULT_PATH REQUIRED)
+	    find_library(ARENA_LUCIDLOG_LIBRARY NAMES lucidlog PATHS "${ARENA_LIB_DIR}" NO_DEFAULT_PATH REQUIRED)
+	    file(GLOB ARENA_GENICAM_LIBRARIES "${ARENA_GENICAM_LIB_DIR}/lib*_LUCID.so")
+	    set(ARENA_LIBRARIES ${ARENA_LIBRARY} ${ARENA_GENTL_LIBRARY} ${ARENA_LUCIDLOG_LIBRARY} ${ARENA_GENICAM_LIBRARIES})
+	    # libarena's own dependencies (GenICam, Metavision, lucidlog) resolve
+	    # through the executable's DT_RPATH; a DT_RUNPATH is not consulted for
+	    # transitive loads, hence --disable-new-dtags below. This avoids needing
+	    # the SDK's ld.so.conf install step (Arena_SDK_Linux_x64.conf).
+	    set(ARENA_RPATH "${ARENA_LIB_DIR}:${ARENA_GENICAM_LIB_DIR}:${ARENA_SDK_DIR}/Metavision/lib")
+	endif()
+
 	# Try to find Tcl 9 first
 	find_path(TCL_INCLUDE_DIR tcl.h
 	    PATHS /usr/include/tcl9.0 /usr/include/tcl9 /usr/include/tcl8.6 /usr/local/include
@@ -189,6 +226,17 @@ if(WITH_FLIR)
     message(STATUS "FLIR Spinnaker camera support: ENABLED")
 else()
     message(STATUS "FLIR Spinnaker camera support: disabled (default). Use -DWITH_FLIR=ON to enable.")
+endif()
+
+# Lucid define (source is guarded by #ifdef USE_LUCID); Linux only.
+if(WITH_LUCID)
+    if(NOT UNIX OR APPLE)
+        message(FATAL_ERROR "WITH_LUCID is only supported on Linux")
+    endif()
+    add_definitions(-DUSE_LUCID=1)
+    message(STATUS "Lucid Arena camera support: ENABLED (${ARENA_SDK_DIR})")
+else()
+    message(STATUS "Lucid Arena camera support: disabled (default). Use -DWITH_LUCID=ON -DARENA_SDK_DIR=... to enable.")
 endif()
 
 
@@ -330,14 +378,24 @@ set_source_files_properties(external/sqlite/sqlite3.c
     PROPERTIES COMPILE_DEFINITIONS "SQLITE_ENABLE_COLUMN_METADATA=1"
 )
 
-include_directories( ${OpenCV_INCLUDE_DIRS} ${TCL_INCLUDE_DIR} ${FLIR_INCLUDE_DIR} )
+include_directories( ${OpenCV_INCLUDE_DIRS} ${TCL_INCLUDE_DIR} ${FLIR_INCLUDE_DIR} ${ARENA_INCLUDE_DIRS} )
 
 add_executable( VideoStream VideoStream.cpp FrameBufferManager.cpp DservSocket.cpp
 		SourceManager.cpp Widget.cpp WidgetManager.cpp KeyboardCallbackRegistry.cpp
 		SamplingManager.cpp ReviewModeSource.cpp WebcamSource.cpp
-		FlirCameraSource.cpp VideoFileSource.cpp StorageManager.cpp
+		FlirCameraSource.cpp LucidCameraSource.cpp CameraCommands.cpp
+		VideoFileSource.cpp StorageManager.cpp
 		AnalysisPluginRegistry.cpp tclproc.cpp
 		external/sqlite/sqlite3.c)
+
+if(WITH_LUCID)
+    # Arena headers use MSVC pragmas
+    set_source_files_properties(LucidCameraSource.cpp PROPERTIES COMPILE_OPTIONS "-Wno-unknown-pragmas")
+    target_link_options(VideoStream PRIVATE "-Wl,--disable-new-dtags")
+    set_target_properties(VideoStream PROPERTIES
+        BUILD_RPATH "${ARENA_RPATH}"
+        INSTALL_RPATH "${ARENA_RPATH}")
+endif()
 
 
 # Make VideoStream depend on header generation (AFTER add_executable)
@@ -357,8 +415,9 @@ target_link_libraries( VideoStream
     ${OpenCV_LIBS} 
     ${TCL_LIBRARY}    # Use the found library instead of hardcoded name
     ${LIBPTHREAD} 
-    ${FLIR_LIBRARY} 
-    ${LIBDL} 
+    ${FLIR_LIBRARY}
+    ${ARENA_LIBRARIES}
+    ${LIBDL}
     ${LIBJANSSON} 
     ${DGLIB}
     usockets

@@ -368,6 +368,7 @@
                             <option value="playback">Video File</option>
                             <option value="review">Review Mode</option>
 			    <option value="flir">FLIR Camera</option>
+			    <option value="lucid">Lucid Camera</option>
                         </select>
                     </div>
 
@@ -609,6 +610,9 @@ sourceTypeSelect.addEventListener('change', (e) => {
         document.getElementById('flir-id-group').style.display = 'flex';
         document.getElementById('flir-width-group').style.display = 'flex';
         document.getElementById('flir-height-group').style.display = 'flex';
+    } else if (type === 'lucid') {
+        // geometry comes from the camera / camera::configureROI
+        document.getElementById('flir-id-group').style.display = 'flex';
     }
 });      
 
@@ -708,6 +712,9 @@ function toggleEventPause() {
     const width = document.getElementById('flir-width').value;
     const height = document.getElementById('flir-height').value;
     command = `vstream::startSource flir id ${cameraId} width ${width} height ${height}`;
+} else if (sourceType === 'lucid') {
+    const cameraId = document.getElementById('flir-id').value;
+    command = `vstream::startSource lucid id ${cameraId}`;
 }
 
             sendCommand(command);
@@ -958,7 +965,7 @@ function updateUIForSource(sourceType, sourceData) {
         if (sourceData.id !== undefined) {
             document.getElementById('webcam-id').value = sourceData.id;
         }
-    } else if (sourceType === 'flir' && sourceData) {
+    } else if ((sourceType === 'flir' || sourceType === 'lucid') && sourceData) {
         if (sourceData.id !== undefined) {
             document.getElementById('flir-id').value = sourceData.id;
         }

@@ -5,6 +5,10 @@
 
 source [file join [file dirname [info script]] et_keys.tcl]
 
+# Camera backend for live mode: flir (Spinnaker) or lucid (Arena SDK).
+# Override before sourcing this file, or from the console.
+if {![info exists ::camera_type]} { set ::camera_type flir }
+
 namespace eval ::Registry {
     variable widgets
     set widgets [dict create]
@@ -581,7 +585,7 @@ namespace eval ::ROI {
         variable step
         
         # Get increment from camera
-        if {[catch {flir::getROIConstraints} c]} {
+        if {[catch {camera::getROIConstraints} c]} {
             puts "Warning: Could not get ROI constraints, using default step=8"
             set step 8
             return
@@ -608,7 +612,7 @@ namespace eval ::ROI {
         set dx [expr {$dx * $step}]
         set dy [expr {$dy * $step}]
         
-        set roi [flir::getROI]
+        set roi [camera::getROI]
         set x [dict get $roi offset_x]
         set y [dict get $roi offset_y]
         
@@ -617,7 +621,7 @@ namespace eval ::ROI {
         
         # Use the offset-only command (safe during streaming)
         if {[catch {
-            flir::setROIOffset $new_x $new_y
+            camera::setROIOffset $new_x $new_y
         } err]} {
             # Silently fail
         }
@@ -632,7 +636,7 @@ namespace eval ::ROI {
         set step [get_step]
         
         # Get current ROI
-        set roi [flir::getROI]
+        set roi [camera::getROI]
         set w [dict get $roi width]
         set h [dict get $roi height]
         set current_offset_x [dict get $roi offset_x]
@@ -673,7 +677,7 @@ namespace eval ::ROI {
         puts "Centering pupil..."
         
         if {[catch {
-            flir::setROIOffset $new_offset_x $new_offset_y
+            camera::setROIOffset $new_offset_x $new_offset_y
         } err]} {
             puts "ROI center failed: $err"
         } else {
@@ -686,20 +690,20 @@ proc go_live {} {
     set initialized $::Registry::camera_initialized
     
     if { !$initialized } {
-        flir::configureExposure 700.0
-        flir::configureGain 8.5
-        flir::configureImageOrientation 1 0; # flip image horizontal
-	flir::configureBinning 2 2
-	flir::configureFrameRate 250.0
+        camera::configureExposure 700.0
+        camera::configureGain 8.5
+        camera::configureImageOrientation 1 0; # flip image horizontal
+	camera::configureBinning 2 2
+	camera::configureFrameRate 250.0
         set ::Registry::camera_initialized 1
     }
     
-    flir::startAcquisition
+    camera::startAcquisition
 
     # ROI control buttons (compact arrows)
     set use_roi 0
     if { $use_roi } {
-        flir::configureROI 720 450 24 24; # width, height, offsetx, offsety
+        camera::configureROI 720 450 24 24; # width, height, offsetx, offsety
 	
 	add_button -320 -50 30 30 "v" {::ROI::nudgeDown}
 	add_button -320 -85 30 30 "^" {::ROI::nudgeUp}
@@ -723,7 +727,7 @@ proc live_mode { } {
         stop_metadata_recording
     }
 
-    vstream::startSource flir
+    vstream::startSource $::camera_type
     
     set ::Registry::paused 0  ;# Reset pause state
     
