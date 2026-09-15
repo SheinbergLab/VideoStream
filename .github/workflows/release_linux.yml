@@ -91,3 +91,128 @@ jobs:
           body: VideoStream ${{ github.ref_name }} (Linux)
           generateReleaseNotes: true
           allowUpdates: true
+
+  # Lucid (Arena SDK) enabled package: videostream-lucid_<tag>_amd64_<distro>.deb,
+  # self-contained (the Arena runtime libraries are installed next to the binary).
+  # The Arena SDK is not public, so CI pulls a private headers+runtime bundle made
+  # by scripts/make-arena-runtime-bundle.sh from a release in the repo named by the
+  # ARENA_SDK_REPO variable (default SheinbergLab/arena-sdk-runtime; ARENA_SDK_TAG
+  # selects a release, default latest), using the ARENA_SDK_TOKEN secret (a
+  # fine-grained PAT with read access to that repo's contents). Without the secret
+  # (forks) the job runs but skips every step. amd64 only: the SDK needs glibc 2.35+.
+  release-lucid:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            container: debian:12
+            distro: bookworm
+            arch: amd64
+          - runner: ubuntu-22.04
+            container: debian:13
+            distro: trixie
+            arch: amd64
+          - runner: ubuntu-22.04
+            container: ubuntu:22.04
+            distro: jammy
+            arch: amd64
+          - runner: ubuntu-24.04
+            container: ubuntu:24.04
+            distro: noble
+            arch: amd64
+
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+
+    permissions:
+      contents: write
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      ARENA_SDK_TOKEN: ${{ secrets.ARENA_SDK_TOKEN }}
+      ARENA_SDK_REPO: ${{ vars.ARENA_SDK_REPO || 'SheinbergLab/arena-sdk-runtime' }}
+      ARENA_SDK_TAG: ${{ vars.ARENA_SDK_TAG || 'latest' }}
+
+    steps:
+
+      - name: Check for the Arena SDK bundle token
+        id: sdk
+        run: |
+          if [ -n "$ARENA_SDK_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ARENA_SDK_TOKEN not set; skipping the Lucid package"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build dependencies
+        if: steps.sdk.outputs.enabled == 'true'
+        run: |
+          apt update
+          apt install -y sudo wget curl git ca-certificates jq build-essential cmake pkg-config
+          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev libibverbs1 librdmacm1
+
+      - name: Check out our code for the current tag
+        if: steps.sdk.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          submodules: true       # deps/tcl is built from source on Linux
+          fetch-depth: 0
+
+      - name: Build and install Tcl 9 from the deps/tcl submodule
+        if: steps.sdk.outputs.enabled == 'true'
+        run: |
+          cd deps/tcl/unix
+          ./configure
+          make -j
+          make install
+          ldconfig || true
+
+      - name: Install dlsh (libdg + df.h)
+        if: steps.sdk.outputs.enabled == 'true'
+        run: |
+          DLSH_VERSION=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/SheinbergLab/dlsh/releases/latest | jq -r '.tag_name')
+          wget -q "https://github.com/SheinbergLab/dlsh/releases/download/${DLSH_VERSION}/dlsh-dg_${DLSH_VERSION}_${{ matrix.arch }}.deb"
+          dpkg --install "dlsh-dg_${DLSH_VERSION}_${{ matrix.arch }}.deb" || apt -f install -y
+
+      - name: Fetch the Arena SDK bundle (private release asset)
+        if: steps.sdk.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          if [ "$ARENA_SDK_TAG" = "latest" ]; then
+            REL="https://api.github.com/repos/${ARENA_SDK_REPO}/releases/latest"
+          else
+            REL="https://api.github.com/repos/${ARENA_SDK_REPO}/releases/tags/${ARENA_SDK_TAG}"
+          fi
+          ASSET_URL=$(curl -sf -H "Authorization: Bearer ${ARENA_SDK_TOKEN}" \
+            -H "Accept: application/vnd.github+json" "$REL" \
+            | jq -r '.assets[] | select(.name | test("^arena-sdk-runtime-.*-linux-x64\\.tar\\.gz$")) | .url' | head -1)
+          [ -n "$ASSET_URL" ] || { echo "no arena-sdk-runtime-*-linux-x64.tar.gz asset in ${ARENA_SDK_REPO} (${ARENA_SDK_TAG})"; exit 1; }
+          curl -sfL -H "Authorization: Bearer ${ARENA_SDK_TOKEN}" -H "Accept: application/octet-stream" \
+            -o arena-sdk.tar.gz "$ASSET_URL"
+          mkdir -p "$HOME/arena-sdk"
+          tar -xzf arena-sdk.tar.gz -C "$HOME/arena-sdk" --strip-components=1
+          ls "$HOME/arena-sdk"
+
+      - name: Build and package (.deb, Lucid enabled)
+        if: steps.sdk.outputs.enabled == 'true'
+        run: |
+          cmake -B build \
+            -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D DISTRO_SUFFIX=${{ matrix.distro }} \
+            -D WITH_LUCID=ON \
+            -D ARENA_SDK_DIR="$HOME/arena-sdk"
+          cmake --build build -j
+          cpack --config build/CPackConfig.cmake
+          ls -la videostream-lucid_*.deb
+
+      - name: Upload release artifacts
+        if: steps.sdk.outputs.enabled == 'true'
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "./videostream-lucid_*.deb"
+          body: VideoStream ${{ github.ref_name }} (Linux)
+          generateReleaseNotes: true
+          allowUpdates: true

@@ -136,6 +136,31 @@ default. Linux only.
    `::camera_type`, which the tracker scripts use when they (re)start the live
    source.
 
+### Lucid-enabled .deb (`videostream-lucid`)
+
+CI also publishes `videostream-lucid_<version>_amd64_<distro>.deb` (Debian
+Bookworm/Trixie, Ubuntu Jammy/Noble). It is self-contained: the unmodified Arena
+runtime libraries are installed under `/usr/local/videostream/lib/arena` and the
+binary finds them by rpath, so no SDK install is needed on the target machine.
+It conflicts with the plain `videostream` package (same install location).
+
+```sh
+sudo apt install ./videostream-lucid_<version>_amd64_<distro>.deb
+/usr/local/videostream/VideoStream --lucid -f /usr/local/videostream/tcl/tracker.tcl
+```
+
+Because the SDK is not public, the release job pulls a private headers+runtime
+bundle instead of the SDK itself. To set that up once:
+
+1. On a machine with the SDK, run
+   `scripts/make-arena-runtime-bundle.sh /path/to/ArenaSDK_Linux_x64` (produces
+   `arena-sdk-runtime-<ver>-linux-x64.tar.gz`, ~80 MB).
+2. Upload it as a release asset in a **private** repo (default
+   `SheinbergLab/arena-sdk-runtime`; override with the `ARENA_SDK_REPO` and
+   `ARENA_SDK_TAG` repository variables).
+3. Add a fine-grained token with read access to that repo as the
+   `ARENA_SDK_TOKEN` secret. Without it the Lucid job skips itself.
+
 For a GigE camera the receiving interface should allow jumbo frames (MTU 9000)
 and the kernel receive buffers should be raised (`net.core.rmem_max` /
 `net.core.rmem_default`, e.g. 32 MB); the SDK's `.conf` script sets the sysctls.

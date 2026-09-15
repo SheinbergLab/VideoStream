@@ -28,6 +28,11 @@ option(WITH_FLIR "Build with FLIR Spinnaker camera support (requires Spinnaker S
 # extracted ArenaSDK_Linux_x64 directory (or export ARENA_SDK_DIR); Linux only.
 option(WITH_LUCID "Build with Lucid Arena SDK camera support (requires Arena SDK; not redistributable)" OFF)
 set(ARENA_SDK_DIR "$ENV{ARENA_SDK_DIR}" CACHE PATH "Root of the extracted Arena SDK (contains include/Arena, lib64, GenICam)")
+# With WITH_LUCID, install the Arena runtime libraries next to VideoStream so the
+# .deb is self-contained (the Arena EULA permits distributing the runtime library
+# files in their original form to support Lucid hardware). OFF keeps the
+# installed binary pointing at ARENA_SDK_DIR instead.
+option(LUCID_BUNDLE_RUNTIME "Install the Arena runtime libraries with VideoStream (self-contained package)" ON)
 
 # macOS only: build a self-contained VideoStream.app / .dmg (dylibbundler + DragNDrop).
 # OFF by default so local dev keeps the plain ./build/VideoStream binary; CI/packaging
@@ -392,9 +397,18 @@ if(WITH_LUCID)
     # Arena headers use MSVC pragmas
     set_source_files_properties(LucidCameraSource.cpp PROPERTIES COMPILE_OPTIONS "-Wno-unknown-pragmas")
     target_link_options(VideoStream PRIVATE "-Wl,--disable-new-dtags")
+    # Build tree: find the SDK where it is. Installed: the runtime travels with
+    # the binary in <prefix>/videostream/lib/arena (see the packaging rules), so
+    # the package does not depend on the SDK path. DT_RPATH (not RUNPATH) so
+    # libarena's own dependencies resolve there too.
+    if(LUCID_BUNDLE_RUNTIME)
+        set(_vs_lucid_install_rpath "\$ORIGIN/lib/arena")
+    else()
+        set(_vs_lucid_install_rpath "${ARENA_RPATH}")
+    endif()
     set_target_properties(VideoStream PROPERTIES
         BUILD_RPATH "${ARENA_RPATH}"
-        INSTALL_RPATH "${ARENA_RPATH}")
+        INSTALL_RPATH "${_vs_lucid_install_rpath}")
 endif()
 
 
@@ -650,6 +664,24 @@ elseif(NOT APPLE)
     install(DIRECTORY www DESTINATION videostream COMPONENT videostream
             REGEX "\\.DS_Store$" EXCLUDE)
 
+    if(WITH_LUCID AND LUCID_BUNDLE_RUNTIME)
+        # Arena runtime, unmodified (not stripped): only the acquisition closure
+        # VideoStream links or loads — no Save/ffmpeg, no .cti (the GigE producer
+        # is built into libgentl), no Metavision HAL. Verified by running the
+        # installed layout with the SDK tree removed.
+        install(DIRECTORY "${ARENA_LIB_DIR}/" DESTINATION videostream/lib/arena COMPONENT videostream
+                FILES_MATCHING
+                PATTERN "libarena.so*" PATTERN "libgentl.so*" PATTERN "liblucidlog.so*")
+        install(DIRECTORY "${ARENA_GENICAM_LIB_DIR}/" DESTINATION videostream/lib/arena COMPONENT videostream
+                FILES_MATCHING PATTERN "*_LUCID.so")
+        install(DIRECTORY "${ARENA_SDK_DIR}/Metavision/lib/" DESTINATION videostream/lib/arena COMPONENT videostream
+                FILES_MATCHING
+                PATTERN "libmetavision_sdk_core.so*" PATTERN "libmetavision_sdk_base.so*"
+                PATTERN "hdf5" EXCLUDE)
+        install(DIRECTORY "${ARENA_SDK_DIR}/licenses/" DESTINATION videostream/lib/arena/licenses
+                COMPONENT videostream OPTIONAL)
+    endif()
+
     set(CPACK_GENERATOR "DEB")
     set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")  # -> /usr/local/videostream
 
@@ -666,6 +698,20 @@ elseif(NOT APPLE)
     if(_vs_tcl9_idx GREATER_EQUAL 0)
         set(_vs_deb_deps "${_vs_deb_deps}, libtcl9.0")
     endif()
+
+    # The Lucid-enabled build is a separate package (videostream-lucid) that
+    # installs to the same place, so the two exclude each other.
+    if(WITH_LUCID)
+        set(CPACK_PACKAGE_NAME videostream-lucid)
+        set(_vs_deb_deps "${_vs_deb_deps}, libibverbs1, librdmacm1")  # libarena/libgentl
+        set(CPACK_DEBIAN_PACKAGE_CONFLICTS "videostream")
+        set(CPACK_DEBIAN_PACKAGE_REPLACES "videostream")
+        set(CPACK_DEBIAN_PACKAGE_PROVIDES "videostream")
+        set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+            "${CPACK_PACKAGE_DESCRIPTION_SUMMARY} (with Lucid Arena camera support)")
+    else()
+        set(CPACK_DEBIAN_PACKAGE_CONFLICTS "videostream-lucid")
+    endif()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "${_vs_deb_deps}")
 
     execute_process(COMMAND dpkg --print-architecture
@@ -674,7 +720,7 @@ elseif(NOT APPLE)
         set(PACKAGE_ARCH amd64)
     endif()
     if(DISTRO_SUFFIX)
-        set(CPACK_DEBIAN_FILE_NAME "videostream_${PROJECT_VERSION}_${PACKAGE_ARCH}_${DISTRO_SUFFIX}.deb")
+        set(CPACK_DEBIAN_FILE_NAME "${CPACK_PACKAGE_NAME}_${PROJECT_VERSION}_${PACKAGE_ARCH}_${DISTRO_SUFFIX}.deb")
     else()
         set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
     endif()
