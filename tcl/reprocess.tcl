@@ -764,6 +764,8 @@ proc playback_mode { { filename {} } } {
     bind_key $::keys::LEFT step_backward   ;# Arrow to step when paused
     bind_key "I" show_frame_info           ;# 'i' for info
     bind_key "i" toggle_insets
+    bind_key "g" ::et::toggle_ghosts       ;# reference run under the live one
+    bind_key "P" ::et::snapshot            ;# figure panels of the paused frame
     bind_key $::keys::ENTER accept_p4_sample
     eyetracking::resetP4Model
     
@@ -776,7 +778,10 @@ proc playback_mode { { filename {} } } {
     puts "←/→   - Step forward/backward (when paused)"
     puts "I     - Show current frame info"
     puts "s     - Start/stop recording"
-    puts "r     - Rewind to beginning"
+    puts "r     - Reset P4 model (back to pupil_p1)"
+    puts "m     - Calibrate P4 model from marked samples"
+    puts "g     - Toggle reference ghosts (::et::use_run <run.db> to load)"
+    puts "P     - Save figure panels of this frame (raw + overlay PNGs)"
     puts ""
     puts "Metadata Recording:"
     puts "1. Adjust parameters with sliders"
@@ -816,16 +821,60 @@ proc connect_to_dataserver { host } {
 # INITIALIZATION
 # ============================================================================
 
-puts "argc == $argc, argv = $argv"
-
-if { [llength $argv] < 1 } {
-    puts "usage reprocess.tcl filename"
+if { [llength [lsearch -all -inline -not -glob $argv -*]] < 1 } {
+    puts "usage: reprocess.tcl <video|name|run.db> ?reference.db? ?-nomodel|-freeze?"
+    puts ""
+    puts "  video      full path to an .mp4 (or a bare name under the vstream folder)"
+    puts "  run.db     a previous run - its source video is replayed and its"
+    puts "             detections/P4 model are loaded as the starting point"
+    puts "  reference  a .db whose detections are drawn as ghosts under the live ones"
+    puts "  -nomodel   keep the ghosts and parameters, but start with no P4 model"
+    puts "  -freeze    pin the adopted P4 model instead of letting it adapt"
     vstream::exit
     return
 }
 
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
+source [file join [file dirname [info script]] et_keys.tcl]
+source [file join [file dirname [info script]] et_reference.tcl]
+
 set vstream_folder /Users/sheinb/src/dserv/data/vstream
+
+# Resolve argv[0]: an existing path is used as-is, a .db names the run whose
+# video we replay, a bare name is looked up under the vstream folder.
+proc resolve_video { arg } {
+    if { [file exists $arg] && [string equal -nocase [file extension $arg] .db] } {
+        set src [::et::db_source $arg]
+        if { $src eq "" } {
+            error "[file tail $arg] records no source video"
+        }
+        if { [file exists $src] } { return [file normalize $src] }
+
+        # A run recorded on the rig stores the rig's path (/home/lab/Videos/...).
+        # The video usually travelled to this machine under the same name, so
+        # look beside the .db and in the vstream folder before giving up.
+        set base [file tail $src]
+        foreach dir [list [file dirname $arg] $::vstream_folder] {
+            set try [file join $dir $base]
+            if { [file exists $try] } {
+                puts "note: [file tail $arg] was recorded as \"$src\";"
+                puts "      using [file normalize $try]"
+                return [file normalize $try]
+            }
+        }
+        error "[file tail $arg] names source \"$src\", which is not on this\
+               machine, and no \"$base\" beside it or in $::vstream_folder\
+               (pass the video path explicitly, with the .db as the second\
+               argument)"
+    }
+    if { [file exists $arg] } { return [file normalize $arg] }
+
+    set candidate [file join $::vstream_folder $arg]
+    if { [file extension $candidate] eq "" } { append candidate .mp4 }
+    if { [file exists $candidate] } { return [file normalize $candidate] }
+
+    error "no such video: $arg (also tried $candidate)"
+}
 
 # Default parameters
 eyetracking::setROI 160 80 430 365
@@ -852,11 +901,32 @@ if { $vstream::dsHost != "" } {
 }
 
 # Start with specific video
-set fname [file join $::vstream_folder [lindex $argv 0].mp4]
-if { ![file exists $fname] } {
-    puts "$argv0: file \"$fname\" not found"
+if { [catch {resolve_video [lindex $argv 0]} fname] } {
+    puts "$argv0: $fname"
     vstream::exit
     return
 }
 playback_mode $fname
+
+# A .db as argv[0] means "pick up where that run left off"; an explicit second
+# argument is a reference run to ghost. Either way this runs after
+# playback_mode, which resets the P4 model and rebinds the keys.
+set ref_flags {}
+foreach flag {-nomodel -freeze} {
+    if { [lsearch -exact $argv $flag] >= 0 } { lappend ref_flags $flag }
+}
+set positional [lsearch -all -inline -not -glob $argv -*]
+
+set reference_db {}
+if { [llength $positional] >= 2 } {
+    set reference_db [lindex $positional 1]
+} elseif { [string equal -nocase [file extension [lindex $positional 0]] .db] } {
+    set reference_db [lindex $positional 0]
+}
+
+if { $reference_db ne "" } {
+    if { [catch {::et::use_run $reference_db {*}$ref_flags} err] } {
+        puts "reference: $err"
+    }
+}
 

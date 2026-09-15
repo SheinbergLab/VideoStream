@@ -602,8 +602,16 @@ eyetracking::setPupilThreshold 45
 eyetracking::setDetectionMode pupil_p1
 eyetracking::resetP4Model
 
-# Start with first video
-playback_mode [lindex $files 1]
+# Start with the video named after "--" on the command line, else the default
+if { [llength $argv] } {
+    set startup_video [file normalize [lindex $argv 0]]
+    if { ![file exists $startup_video] } {
+	error "review.tcl: no such video file: $startup_video"
+    }
+} else {
+    set startup_video [lindex $files 1]
+}
+playback_mode $startup_video
 
 # We have already calibrated this P4 model
 #eyetracking::setP4Model .421 169.5
