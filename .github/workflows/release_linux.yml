@@ -217,3 +217,145 @@ jobs:
           body: VideoStream ${{ github.ref_name }} (Linux)
           generateReleaseNotes: true
           allowUpdates: true
+
+  # FLIR (Spinnaker) enabled package: videostream-flir_<tag>_amd64_<distro>.deb,
+  # self-contained (Spinnaker runtime libraries installed next to the binary;
+  # postinst sets up the udev group and usbfs memory for USB3 cameras).
+  #
+  # The Spinnaker SDK license does not permit giving the SDK to third parties, so
+  # unlike the Lucid package this one is NOT published on the public release: the
+  # job reads its SDK bundle from, and uploads the package to, a PRIVATE repo
+  # (VIDEOSTREAM_PRIVATE_REPO variable, default SheinbergLab/videostream-private)
+  # with the VIDEOSTREAM_PRIVATE_TOKEN secret (fine-grained PAT with contents
+  # read/write on that repo). Bundles come from
+  # scripts/make-spinnaker-runtime-bundle.sh, attached to the release tagged
+  # SPINNAKER_SDK_TAG (default spinnaker-sdk-runtime) there, one per libstdc++
+  # ABI: FLIR's 24.04 build (gcc13) for noble/trixie, the 22.04 build (gcc11) for
+  # jammy/bookworm. Skipped without the secret.
+  release-flir:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            container: debian:12
+            distro: bookworm
+            arch: amd64
+            spinnaker_abi: gcc11
+          - runner: ubuntu-22.04
+            container: debian:13
+            distro: trixie
+            arch: amd64
+            spinnaker_abi: gcc13
+          - runner: ubuntu-22.04
+            container: ubuntu:22.04
+            distro: jammy
+            arch: amd64
+            spinnaker_abi: gcc11
+          - runner: ubuntu-24.04
+            container: ubuntu:24.04
+            distro: noble
+            arch: amd64
+            spinnaker_abi: gcc13
+
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+
+    permissions:
+      contents: read
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      VIDEOSTREAM_PRIVATE_TOKEN: ${{ secrets.VIDEOSTREAM_PRIVATE_TOKEN }}
+      VIDEOSTREAM_PRIVATE_REPO: ${{ vars.VIDEOSTREAM_PRIVATE_REPO || 'SheinbergLab/videostream-private' }}
+      SPINNAKER_SDK_TAG: ${{ vars.SPINNAKER_SDK_TAG || 'spinnaker-sdk-runtime' }}
+
+    steps:
+
+      - name: Check for the private repo token
+        id: priv
+        run: |
+          if [ -n "$VIDEOSTREAM_PRIVATE_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "owner=${VIDEOSTREAM_PRIVATE_REPO%%/*}" >> "$GITHUB_OUTPUT"
+            echo "repo=${VIDEOSTREAM_PRIVATE_REPO##*/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "VIDEOSTREAM_PRIVATE_TOKEN not set; skipping the FLIR package"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build dependencies
+        if: steps.priv.outputs.enabled == 'true'
+        run: |
+          apt update
+          apt install -y sudo wget curl git ca-certificates jq build-essential cmake pkg-config
+          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev libgomp1 libusb-1.0-0
+
+      - name: Check out our code for the current tag
+        if: steps.priv.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          submodules: true       # deps/tcl is built from source on Linux
+          fetch-depth: 0
+
+      - name: Build and install Tcl 9 from the deps/tcl submodule
+        if: steps.priv.outputs.enabled == 'true'
+        run: |
+          cd deps/tcl/unix
+          ./configure
+          make -j
+          make install
+          ldconfig || true
+
+      - name: Install dlsh (libdg + df.h)
+        if: steps.priv.outputs.enabled == 'true'
+        run: |
+          DLSH_VERSION=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/SheinbergLab/dlsh/releases/latest | jq -r '.tag_name')
+          wget -q "https://github.com/SheinbergLab/dlsh/releases/download/${DLSH_VERSION}/dlsh-dg_${DLSH_VERSION}_${{ matrix.arch }}.deb"
+          dpkg --install "dlsh-dg_${DLSH_VERSION}_${{ matrix.arch }}.deb" || apt -f install -y
+
+      - name: Fetch the Spinnaker SDK bundle (private release asset)
+        if: steps.priv.outputs.enabled == 'true'
+        shell: bash   # the containers' sh is dash; older dash has no pipefail
+        run: |
+          set -euo pipefail
+          REL="https://api.github.com/repos/${VIDEOSTREAM_PRIVATE_REPO}/releases/tags/${SPINNAKER_SDK_TAG}"
+          ASSET_URL=$(curl -sf -H "Authorization: Bearer ${VIDEOSTREAM_PRIVATE_TOKEN}" \
+            -H "Accept: application/vnd.github+json" "$REL" \
+            | jq -r '.assets[] | select(.name | test("^spinnaker-sdk-runtime-.*-${{ matrix.spinnaker_abi }}-linux-x64\\.tar\\.gz$")) | .url' | head -1)
+          [ -n "$ASSET_URL" ] || { echo "no spinnaker-sdk-runtime-*-${{ matrix.spinnaker_abi }}-linux-x64.tar.gz asset in ${VIDEOSTREAM_PRIVATE_REPO} release ${SPINNAKER_SDK_TAG}"; exit 1; }
+          curl -sfL -H "Authorization: Bearer ${VIDEOSTREAM_PRIVATE_TOKEN}" -H "Accept: application/octet-stream" \
+            -o spinnaker-sdk.tar.gz "$ASSET_URL"
+          mkdir -p "$HOME/spinnaker-sdk"
+          tar -xzf spinnaker-sdk.tar.gz -C "$HOME/spinnaker-sdk" --strip-components=1
+          ls "$HOME/spinnaker-sdk"
+
+      - name: Build and package (.deb, FLIR enabled)
+        if: steps.priv.outputs.enabled == 'true'
+        run: |
+          cmake -B build \
+            -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D DISTRO_SUFFIX=${{ matrix.distro }} \
+            -D WITH_FLIR=ON \
+            -D SPINNAKER_SDK_DIR="$HOME/spinnaker-sdk"
+          cmake --build build -j
+          cpack --config build/CPackConfig.cmake
+          ls -la videostream-flir_*.deb
+
+      - name: Upload to the private repo release
+        if: steps.priv.outputs.enabled == 'true'
+        uses: ncipollo/release-action@v1
+        with:
+          owner: ${{ steps.priv.outputs.owner }}
+          repo: ${{ steps.priv.outputs.repo }}
+          token: ${{ secrets.VIDEOSTREAM_PRIVATE_TOKEN }}
+          tag: ${{ github.ref_name }}
+          name: VideoStream ${{ github.ref_name }} (FLIR, org-internal)
+          body: |
+            videostream-flir packages for VideoStream ${{ github.ref_name }} (see the public
+            SheinbergLab/VideoStream release for notes). Contains Teledyne FLIR Spinnaker
+            SDK runtime libraries: for this organisation's machines and cameras only; do
+            not redistribute.
+          artifacts: "./videostream-flir_*.deb"
+          allowUpdates: true

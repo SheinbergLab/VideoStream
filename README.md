@@ -110,6 +110,32 @@ Without `-D WITH_FLIR=ON`, passing `--flir` prints a message and exits — use
 
 FLIR support is currently Linux/Windows only; macOS builds are webcam/file only.
 
+### FLIR-enabled .deb (`videostream-flir`, org-internal)
+
+The Spinnaker license does **not** allow passing the SDK to third parties (only
+OEMs may redistribute the libraries, and only if they prevent any further
+redistribution), so there is no public FLIR package. For the lab's own rigs, CI
+builds a self-contained `videostream-flir_<version>_amd64_<distro>.deb` and
+uploads it to a **private** repo release instead (default
+`SheinbergLab/videostream-private`, release named after the VideoStream tag).
+Its postinst creates the `flirimaging` udev group, installs the USB udev rule
+and sets the usbfs memory limit that USB3 cameras need, and adds the installing
+user to the group; other camera users need `sudo usermod -aG flirimaging USER`.
+
+```sh
+sudo apt install ./videostream-flir_<version>_amd64_<distro>.deb   # log out/in once
+/usr/local/videostream/VideoStream --flir -f /usr/local/videostream/tcl/tracker.tcl
+```
+
+Setup, once: make one bundle per libstdc++ ABI with
+`scripts/make-spinnaker-runtime-bundle.sh` (FLIR's Ubuntu 24.04 SDK build,
+`gcc13`, serves noble/trixie; the 22.04 build, `gcc11`, serves jammy/bookworm),
+attach both to a release tagged `spinnaker-sdk-runtime` in the private repo,
+and add a fine-grained token with contents read/write on that repo as the
+`VIDEOSTREAM_PRIVATE_TOKEN` secret. `-D SPINNAKER_SDK_DIR=` points a local build
+at a bundle instead of `/opt/spinnaker`; `-D FLIR_BUNDLE_RUNTIME=OFF` installs
+without the libraries.
+
 ## Building with Lucid (Arena SDK) support
 
 Lucid Vision Labs GigE cameras (e.g. Triton) are driven through the **Arena

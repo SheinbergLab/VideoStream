@@ -1,0 +1,10 @@
+This directory contains unmodified runtime libraries from the Teledyne FLIR
+Spinnaker SDK. Copyright (c) FLIR Integrated Imaging Solutions, Inc. All Rights
+Reserved. They are licensed under the FLIR Spinnaker SDK License Agreement (see
+the copyright file alongside this notice) and may be used only in conjunction
+with FLIR cameras owned by the licensee and the images derived from them.
+
+The videostream-flir package is for use within the organisation that holds the
+SDK license, on its own machines. It must not be redistributed or made
+available to third parties. Third-party open-source components of the SDK are
+covered by the licenses in the licenses/ directory.

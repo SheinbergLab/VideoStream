@@ -1,0 +1,15 @@
+#!/bin/sh
+# videostream-flir: undo the postinst setup on purge (the flirimaging group is
+# left in place; other software may use it)
+set -e
+
+case "$1" in
+    purge)
+        rm -f /etc/udev/rules.d/40-videostream-flir.rules /etc/tmpfiles.d/videostream-flir.conf
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules 2>/dev/null || true
+        fi
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,45 @@
+#!/bin/sh
+# videostream-flir: USB3 camera access setup (what the Spinnaker SDK's
+# configure_spinnaker.sh / configure_usbfs.sh do interactively).
+set -e
+
+case "$1" in
+    configure)
+        # FLIR USB devices are owned by group flirimaging (same group the SDK
+        # uses, so an SDK install can coexist)
+        if ! getent group flirimaging >/dev/null; then
+            groupadd --system flirimaging
+        fi
+        cat > /etc/udev/rules.d/40-videostream-flir.rules <<'EOF'
+# installed by videostream-flir: FLIR / Point Grey USB cameras
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e10", GROUP="flirimaging"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1724", GROUP="flirimaging"
+EOF
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules 2>/dev/null || true
+            udevadm trigger --subsystem-match=usb 2>/dev/null || true
+        fi
+
+        # USB3 cameras need more usbfs buffer memory than the 16 MB default
+        # (the SDK's configure_usbfs.sh puts usbcore.usbfs_memory_mb=1000 on the
+        # kernel command line); tmpfiles applies it at every boot, and once now.
+        mkdir -p /etc/tmpfiles.d
+        cat > /etc/tmpfiles.d/videostream-flir.conf <<'EOF'
+# installed by videostream-flir: usbfs memory for USB3 cameras
+w /sys/module/usbcore/parameters/usbfs_memory_mb - - - - 1000
+EOF
+        if [ -w /sys/module/usbcore/parameters/usbfs_memory_mb ]; then
+            echo 1000 > /sys/module/usbcore/parameters/usbfs_memory_mb || true
+        fi
+
+        # convenience: the person installing usually runs the camera
+        if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && \
+           ! id -nG "$SUDO_USER" 2>/dev/null | grep -qw flirimaging; then
+            usermod -aG flirimaging "$SUDO_USER" && \
+                echo "videostream-flir: added $SUDO_USER to group flirimaging (log out and in for it to take effect)"
+        fi
+        echo "videostream-flir: camera users must be in group flirimaging (sudo usermod -aG flirimaging USER)"
+        ;;
+esac
+
+exit 0

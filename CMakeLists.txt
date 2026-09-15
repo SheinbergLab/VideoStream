@@ -34,6 +34,15 @@ set(ARENA_SDK_DIR "$ENV{ARENA_SDK_DIR}" CACHE PATH "Root of the extracted Arena 
 # installed binary pointing at ARENA_SDK_DIR instead.
 option(LUCID_BUNDLE_RUNTIME "Install the Arena runtime libraries with VideoStream (self-contained package)" ON)
 
+# Spinnaker location (Linux): /opt/spinnaker as installed by the SDK's .debs, or a
+# bundle from scripts/make-spinnaker-runtime-bundle.sh (include/ + lib/).
+set(SPINNAKER_SDK_DIR "$ENV{SPINNAKER_SDK_DIR}" CACHE PATH "Root of the Spinnaker SDK (include/, lib/); default /opt/spinnaker")
+# With WITH_FLIR, install the Spinnaker runtime libraries next to VideoStream so
+# the .deb (videostream-flir) is self-contained. NOTE the Spinnaker license does
+# not allow giving the SDK to third parties: such packages are for the
+# organisation's own machines only and must stay in a private repository.
+option(FLIR_BUNDLE_RUNTIME "Install the Spinnaker runtime libraries with VideoStream (org-internal package only)" ON)
+
 # macOS only: build a self-contained VideoStream.app / .dmg (dylibbundler + DragNDrop).
 # OFF by default so local dev keeps the plain ./build/VideoStream binary; CI/packaging
 # turns it ON.
@@ -163,12 +172,17 @@ else()  # Linux
 	find_library(LIBPTHREAD pthread)
 
 	if(WITH_FLIR)
+	    if(NOT SPINNAKER_SDK_DIR)
+	        set(SPINNAKER_SDK_DIR /opt/spinnaker)
+	    endif()
 	    find_library(FLIR_LIBRARY
 	      NAMES Spinnaker
-	      PATHS /opt/spinnaker/lib
+	      PATHS "${SPINNAKER_SDK_DIR}/lib"
+	      NO_DEFAULT_PATH
 	      REQUIRED
 	    )
-	    set(FLIR_INCLUDE_DIR /opt/spinnaker/include)
+	    set(FLIR_INCLUDE_DIR "${SPINNAKER_SDK_DIR}/include")
+	    set(FLIR_LIB_DIR "${SPINNAKER_SDK_DIR}/lib")
 	endif()
 
 	if(WITH_LUCID)
@@ -393,22 +407,36 @@ add_executable( VideoStream VideoStream.cpp FrameBufferManager.cpp DservSocket.c
 		AnalysisPluginRegistry.cpp tclproc.cpp
 		external/sqlite/sqlite3.c)
 
+# Camera SDK rpaths (Linux). Build tree: find each SDK where it is. Installed:
+# with *_BUNDLE_RUNTIME the runtime libraries travel with the binary under
+# <prefix>/videostream/lib/{arena,spinnaker} (see the packaging rules), so the
+# package does not depend on the SDK paths. DT_RPATH (not RUNPATH) so the SDK
+# libraries' own dependencies resolve there too.
+set(_vs_build_rpath "")
+set(_vs_install_rpath "")
 if(WITH_LUCID)
     # Arena headers use MSVC pragmas
     set_source_files_properties(LucidCameraSource.cpp PROPERTIES COMPILE_OPTIONS "-Wno-unknown-pragmas")
-    target_link_options(VideoStream PRIVATE "-Wl,--disable-new-dtags")
-    # Build tree: find the SDK where it is. Installed: the runtime travels with
-    # the binary in <prefix>/videostream/lib/arena (see the packaging rules), so
-    # the package does not depend on the SDK path. DT_RPATH (not RUNPATH) so
-    # libarena's own dependencies resolve there too.
+    list(APPEND _vs_build_rpath "${ARENA_RPATH}")
     if(LUCID_BUNDLE_RUNTIME)
-        set(_vs_lucid_install_rpath "\$ORIGIN/lib/arena")
+        list(APPEND _vs_install_rpath "\$ORIGIN/lib/arena")
     else()
-        set(_vs_lucid_install_rpath "${ARENA_RPATH}")
+        list(APPEND _vs_install_rpath "${ARENA_RPATH}")
     endif()
+endif()
+if(WITH_FLIR AND UNIX AND NOT APPLE)
+    list(APPEND _vs_build_rpath "${FLIR_LIB_DIR}")
+    if(FLIR_BUNDLE_RUNTIME)
+        list(APPEND _vs_install_rpath "\$ORIGIN/lib/spinnaker")
+    else()
+        list(APPEND _vs_install_rpath "${FLIR_LIB_DIR}")
+    endif()
+endif()
+if(_vs_install_rpath)
+    target_link_options(VideoStream PRIVATE "-Wl,--disable-new-dtags")
     set_target_properties(VideoStream PROPERTIES
-        BUILD_RPATH "${ARENA_RPATH}"
-        INSTALL_RPATH "${_vs_lucid_install_rpath}")
+        BUILD_RPATH "${_vs_build_rpath}"
+        INSTALL_RPATH "${_vs_install_rpath}")
 endif()
 
 
@@ -682,6 +710,29 @@ elseif(NOT APPLE)
                 COMPONENT videostream OPTIONAL)
     endif()
 
+    if(WITH_FLIR AND FLIR_BUNDLE_RUNTIME)
+        # Spinnaker runtime, unmodified: libSpinnaker plus its GenICam and OpenMP
+        # dependencies. No SpinVideo/SpinUpdate/C API/GenTL producer. The package
+        # is org-internal only (see FLIR_BUNDLE_RUNTIME above); NOTICE + the SDK
+        # license text ship with the libraries. postinst sets up the udev group
+        # and usbfs memory that USB3 cameras need.
+        install(DIRECTORY "${FLIR_LIB_DIR}/" DESTINATION videostream/lib/spinnaker COMPONENT videostream
+                FILES_MATCHING
+                PATTERN "libSpinnaker.so*" PATTERN "lib*_gcc*_v3_0.so" PATTERN "libiomp5.so"
+                PATTERN "spinnaker-gentl" EXCLUDE)
+        install(DIRECTORY "${SPINNAKER_SDK_DIR}/licenses/" DESTINATION videostream/lib/spinnaker/licenses
+                COMPONENT videostream OPTIONAL)
+        install(FILES packaging/flir/NOTICE DESTINATION videostream/lib/spinnaker COMPONENT videostream)
+        foreach(_c "${SPINNAKER_SDK_DIR}/copyright" /usr/share/doc/libspinnaker/copyright)
+            if(EXISTS "${_c}")
+                install(FILES "${_c}" DESTINATION videostream/lib/spinnaker COMPONENT videostream)
+                break()
+            endif()
+        endforeach()
+        set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+            "${CMAKE_SOURCE_DIR}/packaging/flir/postinst;${CMAKE_SOURCE_DIR}/packaging/flir/postrm")
+    endif()
+
     set(CPACK_GENERATOR "DEB")
     set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")  # -> /usr/local/videostream
 
@@ -699,18 +750,30 @@ elseif(NOT APPLE)
         set(_vs_deb_deps "${_vs_deb_deps}, libtcl9.0")
     endif()
 
-    # The Lucid-enabled build is a separate package (videostream-lucid) that
-    # installs to the same place, so the two exclude each other.
+    # Camera-enabled builds are separate packages (videostream-flir,
+    # videostream-lucid, videostream-flir-lucid) that install to the same place,
+    # so all variants exclude each other.
+    set(_vs_pkg videostream)
+    set(_vs_pkg_summary "${CPACK_PACKAGE_DESCRIPTION_SUMMARY}")
+    if(WITH_FLIR)
+        string(APPEND _vs_pkg "-flir")
+        string(APPEND _vs_pkg_summary " (with FLIR Spinnaker camera support; org-internal)")
+        set(_vs_deb_deps "${_vs_deb_deps}, libgomp1, libusb-1.0-0")  # libSpinnaker
+    endif()
     if(WITH_LUCID)
-        set(CPACK_PACKAGE_NAME videostream-lucid)
+        string(APPEND _vs_pkg "-lucid")
+        string(APPEND _vs_pkg_summary " (with Lucid Arena camera support)")
         set(_vs_deb_deps "${_vs_deb_deps}, libibverbs1, librdmacm1")  # libarena/libgentl
-        set(CPACK_DEBIAN_PACKAGE_CONFLICTS "videostream")
+    endif()
+    set(CPACK_PACKAGE_NAME "${_vs_pkg}")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${_vs_pkg_summary}")
+    set(_vs_variants videostream videostream-flir videostream-lucid videostream-flir-lucid)
+    list(REMOVE_ITEM _vs_variants "${_vs_pkg}")
+    list(JOIN _vs_variants ", " _vs_conflicts)
+    set(CPACK_DEBIAN_PACKAGE_CONFLICTS "${_vs_conflicts}")
+    if(NOT _vs_pkg STREQUAL "videostream")
         set(CPACK_DEBIAN_PACKAGE_REPLACES "videostream")
         set(CPACK_DEBIAN_PACKAGE_PROVIDES "videostream")
-        set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
-            "${CPACK_PACKAGE_DESCRIPTION_SUMMARY} (with Lucid Arena camera support)")
-    else()
-        set(CPACK_DEBIAN_PACKAGE_CONFLICTS "videostream-lucid")
     endif()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "${_vs_deb_deps}")
 
