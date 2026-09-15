@@ -34,10 +34,31 @@ proc ::et::toggle_ghosts {args} {
     puts "reference ghosts: [eyetracking::toggleReference]"
 }
 
+# Figure panels: the raw frame and the same frame with the detector overlay,
+# named by video frame number so a pair stays matched. Pause first (SPACE) and
+# step to the frame you want - this writes whatever is on screen now.
+namespace eval ::et {
+    variable figure_dir [pwd]
+}
+proc ::et::snapshot {args} {
+    variable figure_dir
+    set base [file join $figure_dir frame]
+    if {[catch {
+        set n [vstream::saveFrame ${base}_tmp.png -clean]
+        file rename -force ${base}_tmp.png ${base}_${n}_clean.png
+        vstream::saveFrame ${base}_${n}_raw.png -raw
+    } err]} {
+        puts "snapshot: $err"
+        return
+    }
+    puts "snapshot: frame $n -> ${base}_${n}_{raw,clean}.png"
+}
+
 proc ::et::bind_overlay_keys {} {
     bind_key "i" ::et::toggle_insets
     bind_key "f" ::et::cycle_focus
     bind_key "c" ::et::center_roi
     bind_key "g" ::et::toggle_ghosts
+    bind_key "P" ::et::snapshot
     # New overlay toggles: add a proc above + a bind_key here, once.
 }

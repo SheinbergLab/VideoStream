@@ -1568,6 +1568,10 @@ static void updateWidgetVariables(int frame_idx)
 }
 
 
+// Defined below, after DisplayThread; declared here because the non-Apple
+// display path inside the class calls it.
+void note_displayed_frame(const cv::Mat& raw, int video_frame, bool in_obs);
+
 class DisplayThread
 {
   int show_frames;
@@ -1788,6 +1792,74 @@ public:
 };
 
 DisplayThread displayThread;
+
+// The frame the display last put on screen, kept unannotated so that a
+// snapshot taken later - while paused, typically - composites the overlay onto
+// exactly those pixels.
+//
+// Re-reading the ring buffer at curFrame instead does NOT work: curFrame is a
+// slot index, and by the time a Tcl command runs, that slot holds the frame
+// from a full lap earlier (nFrames back), while the overlay always reflects
+// the most recent analysis. The two then disagree by the buffer depth, which
+// on a moving eye shows up as an overlay that misses the pupil.
+static std::mutex last_display_mutex;
+static cv::Mat    last_display_frame;
+static int        last_display_video_frame = -1;
+static bool       last_display_in_obs = false;
+
+void note_displayed_frame(const cv::Mat& raw, int video_frame, bool in_obs)
+{
+  std::lock_guard<std::mutex> lock(last_display_mutex);
+  raw.copyTo(last_display_frame);
+  last_display_video_frame = video_frame;
+  last_display_in_obs = in_obs;
+}
+
+// Write one frame to an image file. For figures: the window has no export path
+// of its own, and a screen grab gives you window scale and whatever the desktop
+// does to colors rather than the pixels the detector saw.
+//
+// mode 0 (raw)   source pixels alone
+// mode 1 (clean) detector overlay only - no sliders, buttons or status text,
+//                which is what a figure panel wants
+// mode 2 (full)  exactly what the display window shows
+//
+// Returns false if the frame is no longer in the ring buffer or the write
+// fails (unwritable path, or an extension OpenCV has no encoder for).
+bool save_frame_image(const std::string& path, int mode, int *frame_out)
+{
+  cv::Mat frame_copy;
+  bool in_obs = false;
+  int frame_idx = -1;
+
+  {
+    std::lock_guard<std::mutex> lock(last_display_mutex);
+    if (last_display_frame.empty()) return false;
+    last_display_frame.copyTo(frame_copy);
+    frame_idx = last_display_video_frame;
+    in_obs = last_display_in_obs;
+  }
+  if (frame_copy.empty()) return false;
+  if (frame_out) *frame_out = frame_idx;
+
+  if (mode == 2) {
+    updateWidgetVariables(frame_idx);
+    DisplayThread::annotate_frame(frame_copy, in_obs, frame_idx);
+  } else if (mode == 1) {
+    // The plugin half of annotate_frame, without g_widgetManager.drawAll.
+    if (frame_copy.channels() == 1) {
+      cv::cvtColor(frame_copy, frame_copy, cv::COLOR_GRAY2BGR);
+    }
+    DisplayThread::draw_plugin_overlays(frame_copy, frame_idx);
+  }
+
+  try {
+    return cv::imwrite(path, frame_copy);
+  } catch (const cv::Exception& e) {
+    std::cerr << "saveFrame: " << e.what() << std::endl;
+    return false;
+  }
+}
 
 int show_display(proginfo_t *p)
 {
@@ -2647,6 +2719,18 @@ int main(int argc, char **argv)
 	  }	  
 #endif	  
 	  if (curFrame % displayEvery == 0) {
+	    // Stash the unscaled, unannotated frame with the video frame number
+	    // these pixels actually are, for vstream::saveFrame. Done whether or
+	    // not a window is open, so panels can be scripted headless.
+	    {
+	      int vf = curFrame;
+	      IFrameSource *src = g_sourceManager.getCurrentSource();
+	      if (src && src->isPlaybackMode()) {
+		VideoFileSource *fs = dynamic_cast<VideoFileSource *>(src);
+		if (fs) vf = fs->getCurrentFrameIndex();
+	      }
+	      note_displayed_frame(frame, vf, in_obs);
+	    }
 #if !defined(__APPLE__)
 	    display_queue.push_back(curFrame);
 #else

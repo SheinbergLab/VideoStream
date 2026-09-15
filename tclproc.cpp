@@ -976,6 +976,56 @@ static int reviewClearCmd(ClientData data, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+// vstream::saveFrame path ?-raw|-clean|-full?
+//
+// Write the frame currently being shown to an image file. Pair it with
+// vstream::pause and vstream::step to land on the frame you want.
+//
+//   -clean (default)  detections drawn on the frame, no sliders or buttons
+//   -raw              source pixels alone, for a before/after pair
+//   -full             exactly what the display window shows, chrome included
+//
+// Returns the video frame number written, so a batch of panels can be labelled.
+static int saveFrameCmd(ClientData data, Tcl_Interp *interp,
+                        int objc, Tcl_Obj *const objv[])
+{
+  extern bool save_frame_image(const std::string& path, int mode, int *frame_out);
+
+  if (objc < 2 || objc > 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "path ?-raw|-clean|-full?");
+    return TCL_ERROR;
+  }
+
+  int mode = 1;
+  if (objc == 3) {
+    const char *opt = Tcl_GetString(objv[2]);
+    if (!strcmp(opt, "-raw"))         mode = 0;
+    else if (!strcmp(opt, "-clean"))  mode = 1;
+    else if (!strcmp(opt, "-full"))   mode = 2;
+    else {
+      Tcl_AppendResult(interp, "saveFrame: expected -raw, -clean or -full,"
+                       " got \"", opt, "\"", NULL);
+      return TCL_ERROR;
+    }
+  }
+
+  const char *path = Tcl_GetString(objv[1]);
+
+  // The pixels and the frame number both come from what the display last put
+  // on screen, so the overlay, the image and the reported number all refer to
+  // the same frame.
+  int reported = -1;
+  if (!save_frame_image(path, mode, &reported)) {
+    Tcl_AppendResult(interp, "saveFrame: could not write \"", path,
+                     "\" (nothing displayed yet, bad path, or an extension"
+                     " with no encoder)", NULL);
+    return TCL_ERROR;
+  }
+
+  Tcl_SetObjResult(interp, Tcl_NewIntObj(reported));
+  return TCL_OK;
+}
+
 static int reviewSampleCmd(ClientData data, Tcl_Interp *interp,
 			   int objc, Tcl_Obj *const objv[])
 {
@@ -1876,6 +1926,8 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateObjCommand(interp, "::vstream::stopSource", stopSourceCmd, p, NULL);
   Tcl_CreateObjCommand(interp, "::vstream::getSourceType", getSourceTypeCmd, p, NULL);
   Tcl_CreateObjCommand(interp, "::vstream::getSourceStatus", getSourceStatusCmd, p, NULL);
+
+  Tcl_CreateObjCommand(interp, "::vstream::saveFrame", saveFrameCmd, p, NULL);
 
   Tcl_CreateObjCommand(interp, "vstream::getPixelIntensity",
 		       getPixelIntensityCmd,
