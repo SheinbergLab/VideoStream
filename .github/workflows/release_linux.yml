@@ -179,6 +179,7 @@ jobs:
 
       - name: Fetch the Arena SDK bundle (private release asset)
         if: steps.sdk.outputs.enabled == 'true'
+        shell: bash   # the containers' sh is dash; older dash has no pipefail
         run: |
           set -euo pipefail
           if [ "$ARENA_SDK_TAG" = "latest" ]; then
