@@ -207,7 +207,28 @@ camera::configureBinning ?h v? camera::configureImageOrientation reverseX revers
 camera::configureROI ?w h x y? camera::getROI  camera::setROIOffset ?x y?  camera::getROIConstraints
 camera::ttlLine ?line?         camera::lineStatusAll
 camera::getSettings            camera::refreshSettings
+camera::node name ?value?      camera::nodeInfo name         camera::nodes ?pattern?
+camera::configureLine line ?mode? ?source? ?inverter?
 ```
+
+`camera::node` reads or writes any GenICam feature by name (integers and
+floats as numbers, booleans as 1/0, enumerations by entry name; commands
+execute), `camera::nodeInfo` returns its type, access, range and enumeration
+entries, and `camera::nodes Line*` lists feature names. Features the camera
+locks while streaming are written with a brief stream pause.
+`camera::configureLine` selects an I/O line and sets its mode, source and
+inverter, e.g. a strobe output that follows the exposure so a light source is
+synced to the shutter (what the Lucid rig does on Line1):
+
+```tcl
+camera::configureLine 1 Output ExposureActive 1   ;# LineSelector Line1, LineMode Output,
+                                                  ;# LineSource ExposureActive, LineInverter 1
+camera::configureExposure 430
+camera::node AcquisitionFrameTime 4001            ;# or camera::configureFrameRate 250
+```
+
+The tracker scripts keep such settings per backend in `::camera_live_settings`
+(see `tcl/et_camera.tcl`), applied once when going live.
 
 ## General functions
 ```

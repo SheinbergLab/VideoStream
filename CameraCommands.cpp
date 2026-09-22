@@ -509,6 +509,160 @@ static int vendorCmd(ClientData clientData, Tcl_Interp *interp,
 }
 
 /*********************************************************************/
+/*              generic GenICam node access commands                 */
+/*********************************************************************/
+
+static Tcl_Obj* nodeInfoDict(Tcl_Interp* interp, const ICameraControl::NodeInfo& info)
+{
+  Tcl_Obj* d = Tcl_NewDictObj();
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("name", -1), Tcl_NewStringObj(info.name.c_str(), -1));
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("type", -1), Tcl_NewStringObj(info.type.c_str(), -1));
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("access", -1), Tcl_NewStringObj(info.access.c_str(), -1));
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("value", -1), Tcl_NewStringObj(info.value.c_str(), -1));
+  if (!info.unit.empty())
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("unit", -1), Tcl_NewStringObj(info.unit.c_str(), -1));
+  if (info.has_range) {
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("min", -1), Tcl_NewDoubleObj(info.min));
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("max", -1), Tcl_NewDoubleObj(info.max));
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("inc", -1), Tcl_NewDoubleObj(info.inc));
+  }
+  if (info.type == "enumeration") {
+    Tcl_Obj* entries = Tcl_NewListObj(0, NULL);
+    for (const std::string& e : info.entries)
+      Tcl_ListObjAppendElement(interp, entries, Tcl_NewStringObj(e.c_str(), -1));
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("entries", -1), entries);
+  }
+  if (!info.description.empty())
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj("description", -1),
+                   Tcl_NewStringObj(info.description.c_str(), -1));
+  return d;
+}
+
+// <ns>::node name ?value? -> read a GenICam feature by name, or write it and
+// return the value read back (enumerations by entry name, booleans 1/0)
+static int nodeCmd(ClientData clientData, Tcl_Interp *interp,
+                   int objc, Tcl_Obj *const objv[])
+{
+  ICameraControl* cam = requireCamera(clientData, interp, Tcl_GetString(objv[0]));
+  if (!cam) return TCL_ERROR;
+
+  if (objc != 2 && objc != 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "name ?value?");
+    return TCL_ERROR;
+  }
+  std::string name = Tcl_GetString(objv[1]);
+  std::string err;
+
+  if (objc == 3) {
+    if (!cam->setNodeValue(name, Tcl_GetString(objv[2]), err)) {
+      Tcl_SetObjResult(interp, Tcl_NewStringObj(err.c_str(), -1));
+      return TCL_ERROR;
+    }
+  }
+
+  ICameraControl::NodeInfo info;
+  if (!cam->getNodeInfo(name, info, err)) {
+    Tcl_SetObjResult(interp, Tcl_NewStringObj(err.c_str(), -1));
+    return TCL_ERROR;
+  }
+  Tcl_SetObjResult(interp, Tcl_NewStringObj(info.value.c_str(), -1));
+  return TCL_OK;
+}
+
+// <ns>::nodeInfo name -> dict: name type access value ?unit min max inc entries description?
+static int nodeInfoCmd(ClientData clientData, Tcl_Interp *interp,
+                       int objc, Tcl_Obj *const objv[])
+{
+  ICameraControl* cam = requireCamera(clientData, interp, Tcl_GetString(objv[0]));
+  if (!cam) return TCL_ERROR;
+
+  if (objc != 2) {
+    Tcl_WrongNumArgs(interp, 1, objv, "name");
+    return TCL_ERROR;
+  }
+  ICameraControl::NodeInfo info;
+  std::string err;
+  if (!cam->getNodeInfo(Tcl_GetString(objv[1]), info, err)) {
+    Tcl_SetObjResult(interp, Tcl_NewStringObj(err.c_str(), -1));
+    return TCL_ERROR;
+  }
+  Tcl_SetObjResult(interp, nodeInfoDict(interp, info));
+  return TCL_OK;
+}
+
+// <ns>::nodes ?pattern? -> feature node names (glob pattern, e.g. Line*)
+static int nodesCmd(ClientData clientData, Tcl_Interp *interp,
+                    int objc, Tcl_Obj *const objv[])
+{
+  ICameraControl* cam = requireCamera(clientData, interp, Tcl_GetString(objv[0]));
+  if (!cam) return TCL_ERROR;
+
+  if (objc > 2) {
+    Tcl_WrongNumArgs(interp, 1, objv, "?pattern?");
+    return TCL_ERROR;
+  }
+  const char* pattern = objc == 2 ? Tcl_GetString(objv[1]) : NULL;
+
+  std::vector<std::string> names;
+  cam->listNodes(names);
+  Tcl_Obj* list = Tcl_NewListObj(0, NULL);
+  for (const std::string& n : names) {
+    if (pattern && !Tcl_StringMatch(n.c_str(), pattern)) continue;
+    Tcl_ListObjAppendElement(interp, list, Tcl_NewStringObj(n.c_str(), -1));
+  }
+  Tcl_SetObjResult(interp, list);
+  return TCL_OK;
+}
+
+// <ns>::configureLine line ?mode? ?source? ?inverter? -> select an I/O line
+// (0..7 or LineN) and optionally set LineMode / LineSource / LineInverter
+// ("-" leaves one unchanged); returns the line's settings as a dict. E.g. a
+// strobe that follows the exposure: configureLine 1 Output ExposureActive 1
+static int configureLineCmd(ClientData clientData, Tcl_Interp *interp,
+                            int objc, Tcl_Obj *const objv[])
+{
+  ICameraControl* cam = requireCamera(clientData, interp, Tcl_GetString(objv[0]));
+  if (!cam) return TCL_ERROR;
+
+  if (objc < 2 || objc > 5) {
+    Tcl_WrongNumArgs(interp, 1, objv, "line ?mode? ?source? ?inverter?");
+    return TCL_ERROR;
+  }
+
+  std::string line = Tcl_GetString(objv[1]);
+  int n;
+  if (Tcl_GetIntFromObj(NULL, objv[1], &n) == TCL_OK) line = "Line" + std::to_string(n);
+
+  std::string err;
+  if (!cam->setNodeValue("LineSelector", line, err)) {
+    Tcl_SetObjResult(interp, Tcl_NewStringObj(err.c_str(), -1));
+    return TCL_ERROR;
+  }
+
+  const char* setters[] = {"LineMode", "LineSource", "LineInverter"};
+  for (int i = 0; i < 3 && 2 + i < objc; i++) {
+    std::string v = Tcl_GetString(objv[2 + i]);
+    if (v == "-" || v.empty()) continue;
+    if (!cam->setNodeValue(setters[i], v, err)) {
+      Tcl_SetObjResult(interp, Tcl_NewStringObj((line + ": " + err).c_str(), -1));
+      return TCL_ERROR;
+    }
+  }
+
+  Tcl_Obj* d = Tcl_NewDictObj();
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("line", -1), Tcl_NewStringObj(line.c_str(), -1));
+  const char* getters[] = {"LineMode", "LineSource", "LineInverter", "LineStatus", "LineFormat"};
+  const char* keys[] = {"mode", "source", "inverter", "status", "format"};
+  for (int i = 0; i < 5; i++) {
+    ICameraControl::NodeInfo info;
+    if (cam->getNodeInfo(getters[i], info, err) && !info.value.empty())
+      Tcl_DictObjPut(interp, d, Tcl_NewStringObj(keys[i], -1), Tcl_NewStringObj(info.value.c_str(), -1));
+  }
+  Tcl_SetObjResult(interp, d);
+  return TCL_OK;
+}
+
+/*********************************************************************/
 /*                        registration                               */
 /*********************************************************************/
 
@@ -548,5 +702,10 @@ int add_camera_commands(Tcl_Interp *interp, const char* ns, bool available)
 
   objcmd("ttlLine", ttlLineCmd);
   objcmd("lineStatusAll", lineStatusAllCmd);
+
+  objcmd("node", nodeCmd);
+  objcmd("nodeInfo", nodeInfoCmd);
+  objcmd("nodes", nodesCmd);
+  objcmd("configureLine", configureLineCmd);
   return TCL_OK;
 }

@@ -7,6 +7,9 @@
 #include <cstring>
 #include <cctype>
 #include <cstdlib>
+#include <stdexcept>
+#include <string>
+#include <vector>
 #include "VstreamEvent.h"
 #include <tcl.h>
 #include "FlirCameraSource.h"
@@ -811,6 +814,44 @@ bool FlirCameraSource::configureChunkData(bool enable, bool verbose) {
 
 FlirCameraSource::~FlirCameraSource() {
     close();
+}
+
+/*********************************************************************/
+/*                 Generic GenICam node access                       */
+/*********************************************************************/
+
+namespace {
+using namespace Spinnaker::GenApi;
+using namespace Spinnaker::GenICam;
+#include "GenICamNodeOps.inl"
+}
+
+bool FlirCameraSource::getNodeInfo(const std::string& name, NodeInfo& info,
+                                   std::string& error) {
+    if (!nodeMapPtr) { error = "camera not open"; return false; }
+    return genicamNodeInfo(nodeMapPtr, name, info, error);
+}
+
+bool FlirCameraSource::setNodeValue(const std::string& name, const std::string& value,
+                                    std::string& error) {
+    if (!nodeMapPtr) { error = "camera not open"; return false; }
+
+    // Some features are locked while streaming; pause the stream for those
+    bool restart = false;
+    try {
+        INode* node = nodeMapPtr->GetNode(name.c_str());
+        restart = pCam && pCam->IsStreaming() && node && !IsWritable(node);
+    } catch (...) {}
+    if (restart) stopAcquisition();
+
+    bool ok = genicamSetNode(nodeMapPtr, name, value, error);
+
+    if (restart) startAcquisition();
+    return ok;
+}
+
+void FlirCameraSource::listNodes(std::vector<std::string>& names) {
+    if (nodeMapPtr) genicamListNodes(nodeMapPtr, names);
 }
 
 

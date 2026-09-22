@@ -8,6 +8,15 @@ source [file join [file dirname [info script]] et_keys.tcl]
 # Camera backend for live mode: flir (Spinnaker) or lucid (Arena SDK).
 # Override before sourcing this file, or from the console.
 if {![info exists ::camera_type]} { set ::camera_type flir }
+source [file join [file dirname [info script]] et_camera.tcl]
+
+# Live-camera settings per backend, applied once by go_live (see et_camera.tcl).
+# Lucid: Line1 strobes the IR source for the exposure (inverted, active-low driver).
+set ::camera_live_settings {
+    flir  {exposure_us 700.0 gain_db 8.0 orientation {1 0} binning {2 2} fps 200.0}
+    lucid {exposure_us 430.0 gain_db 8.0 orientation {1 0} binning {2 2} frame_time_us 4001
+           strobe {line 1 mode Output source ExposureActive inverter 1}}
+}
 
 namespace eval ::Registry {
     variable widgets
@@ -718,11 +727,8 @@ proc go_live {} {
     vstream::startSource $::camera_type
 
     if { !$initialized } {
-        camera::configureExposure 700.0
-        camera::configureGain 8.0
-        camera::configureImageOrientation 1 0; # flip image horizontal
-	camera::configureBinning 2 2
-	camera::configureFrameRate 200.0
+        ::et_camera::apply_live_settings \
+            [::et_camera::settings_for_backend $::camera_live_settings]
         set ::Registry::camera_initialized 1
     }
     

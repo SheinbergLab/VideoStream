@@ -799,4 +799,49 @@ bool LucidCameraSource::configureChunkData(bool enable, bool verbose) {
   }
 }
 
+/*********************************************************************/
+/*                 Generic GenICam node access                       */
+/*********************************************************************/
+
+namespace {
+using namespace GenApi;
+using namespace GenICam;
+#include "GenICamNodeOps.inl"
+}
+
+bool LucidCameraSource::getNodeInfo(const std::string& name, NodeInfo& info,
+                                    std::string& error) {
+  GenApi::INodeMap* nm = impl_->nodeMap;
+  if (!nm) { error = "camera not open"; return false; }
+  return genicamNodeInfo(nm, name, info, error);
+}
+
+bool LucidCameraSource::setNodeValue(const std::string& name, const std::string& value,
+                                     std::string& error) {
+  GenApi::INodeMap* nm = impl_->nodeMap;
+  if (!nm) { error = "camera not open"; return false; }
+
+  // The Triton reports stale access modes after a stream stop (see
+  // setAutoOff); refresh before deciding whether the node is locked
+  try { nm->InvalidateNodes(); } catch (...) {}
+
+  // Features locked while streaming (Width, OffsetX, PixelFormat, ...):
+  // pause the stream around the write
+  bool restart = false;
+  try {
+    GenApi::INode* node = nm->GetNode(name.c_str());
+    restart = impl_->streaming && node && !GenApi::IsWritable(node);
+  } catch (...) {}
+  if (restart) stopAcquisition();
+
+  bool ok = genicamSetNode(nm, name, value, error);
+
+  if (restart) startAcquisition();
+  return ok;
+}
+
+void LucidCameraSource::listNodes(std::vector<std::string>& names) {
+  if (impl_->nodeMap) genicamListNodes(impl_->nodeMap, names);
+}
+
 #endif // USE_LUCID

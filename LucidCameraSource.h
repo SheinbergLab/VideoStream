@@ -88,6 +88,9 @@ public:
   bool setTTLLine(int line) override;
   int getTTLLine() const override { return ttl_line_; }
   int64_t getLineStatusAll() override;
+  bool getNodeInfo(const std::string& name, NodeInfo& info, std::string& error) override;
+  bool setNodeValue(const std::string& name, const std::string& value, std::string& error) override;
+  void listNodes(std::vector<std::string>& names) override;
 };
 
 #endif // USE_LUCID

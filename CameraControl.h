@@ -2,6 +2,7 @@
 #define CAMERA_CONTROL_H
 
 #include <string>
+#include <vector>
 #include <cstdint>
 #include <tcl.h>
 
@@ -63,6 +64,27 @@ public:
   virtual int getTTLLine() const = 0;
   // live bitfield of all I/O lines (bit N = LineN); -1 if unavailable
   virtual int64_t getLineStatusAll() = 0;
+
+  // Generic GenICam feature access by node name (LineSelector, LineSource,
+  // AcquisitionFrameTime, ...): camera::node / nodeInfo / nodes / configureLine
+  // build on these. Values are strings: integers and floats as numbers,
+  // booleans as 1/0, enumerations by entry name, commands execute on set.
+  struct NodeInfo {
+    std::string name;
+    std::string type;        // integer float boolean enumeration string command other
+    std::string access;      // NI NA WO RO RW
+    std::string value;       // empty if not readable
+    std::string unit;
+    std::string description;
+    bool has_range = false;
+    double min = 0, max = 0, inc = 0;
+    std::vector<std::string> entries;  // enumeration: available entry names
+  };
+  virtual bool getNodeInfo(const std::string& name, NodeInfo& info, std::string& error) = 0;
+  // Writes the node; if the camera locks it while streaming, the stream is
+  // paused and resumed around the write.
+  virtual bool setNodeValue(const std::string& name, const std::string& value, std::string& error) = 0;
+  virtual void listNodes(std::vector<std::string>& names) = 0;
 
   // "<vendor>/settings" events (implemented in CameraCommands.cpp)
   void fireSettingChanged(const std::string& setting_name, const std::string& value);
