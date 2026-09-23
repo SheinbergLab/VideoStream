@@ -389,19 +389,43 @@ bool LucidCameraSource::getLineStatus() {
   return false;
 }
 
-// Default the TTL bit index to the camera's currently selected line
+// Default the TTL bit index to the camera's currently selected line -- unless
+// that line is an output (a strobe left LineSelector on it): then the first
+// input line. camera::ttlLine / the ttl_line setting override either way.
 void LucidCameraSource::resolveTTLLine() {
   GenApi::INodeMap* nm = impl_->nodeMap;
   if (!nm) return;
   try {
     GenApi::CEnumerationPtr lineSelector = nm->GetNode("LineSelector");
-    if (lineSelector.IsValid() && GenApi::IsReadable(lineSelector)) {
-      GenApi::CEnumEntryPtr current = lineSelector->GetCurrentEntry();
-      if (current.IsValid()) {
-        const char* sym = current->GetSymbolic().c_str();  // e.g. "Line0"
-        if (strncmp(sym, "Line", 4) == 0 && isdigit((unsigned char)sym[4])) {
-          ttl_line_ = atoi(sym + 4);
-        }
+    if (!lineSelector.IsValid() || !GenApi::IsReadable(lineSelector)) return;
+
+    auto lineNumber = [](GenApi::CEnumEntryPtr e) -> int {
+      const char* sym = e->GetSymbolic().c_str();  // e.g. "Line0"
+      return (strncmp(sym, "Line", 4) == 0 && isdigit((unsigned char)sym[4])) ? atoi(sym + 4) : -1;
+    };
+    auto isInput = [&]() -> bool {
+      GenApi::CEnumerationPtr mode = nm->GetNode("LineMode");
+      if (!mode.IsValid() || !GenApi::IsReadable(mode)) return true;  // unknown: accept
+      GenApi::CEnumEntryPtr cur = mode->GetCurrentEntry();
+      return !cur.IsValid() || cur->GetSymbolic() != "Output";
+    };
+
+    GenApi::CEnumEntryPtr current = lineSelector->GetCurrentEntry();
+    if (current.IsValid() && lineNumber(current) >= 0 && isInput()) {
+      ttl_line_ = lineNumber(current);
+      return;
+    }
+
+    // Selected line is an output: take the first input line instead
+    GenApi::NodeList_t entries;
+    lineSelector->GetEntries(entries);
+    for (size_t i = 0; i < entries.size(); i++) {
+      GenApi::CEnumEntryPtr e = entries[i];
+      if (!e.IsValid() || !GenApi::IsAvailable(e) || lineNumber(e) < 0) continue;
+      lineSelector->SetIntValue(e->GetValue());
+      if (isInput()) {
+        ttl_line_ = lineNumber(e);
+        return;
       }
     }
   } catch (GenICam::GenericException& ge) {

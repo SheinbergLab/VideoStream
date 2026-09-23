@@ -20,6 +20,7 @@ set ::camera_live_settings {
     flir  {exposure_us 700.0 gain_db 8.5 orientation {1 0} binning {2 2} fps 250.0}
     lucid {exposure_us 430.0 gain_db 8.5 orientation {1 0} binning {2 2} frame_time_us 4001
            strobe {line 1 mode Output source ExposureActive inverter 1}
+           ttl_line 0
            ptp {slave_only 1 wait_s 20}}
 }
 

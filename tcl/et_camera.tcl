@@ -17,6 +17,10 @@
 #   strobe          {line N mode Output source ExposureActive inverter 0|1}
 #                   -> camera::configureLine, i.e. an output that follows the
 #                   exposure so a light source is synced to the shutter
+#   ttl_line        N: the INPUT line whose state is recorded per frame as
+#                   line_status (obs sync wire) -> camera::ttlLine. Set it
+#                   explicitly when a strobe is configured: the default is
+#                   whatever line the camera's LineSelector was left on.
 #   nodes           {NodeName value ...} any further GenICam features, set last
 #   ptp             {slave_only 1 wait_s 20}: enable IEEE 1588 on the camera
 #                   (Lucid) so frame timestamps are on the LAN grandmaster's
@@ -57,6 +61,10 @@ namespace eval ::et_camera {
             set r [camera::configureLine [dict get $s line] \
                        [dict get $s mode] [dict get $s source] [dict get $s inverter]]
             puts "Strobe line: $r"
+        }
+        if {[dict exists $settings ttl_line]} {
+            camera::ttlLine [dict get $settings ttl_line]
+            puts "TTL input line: Line[camera::ttlLine] (lineStatusAll [camera::lineStatusAll])"
         }
         if {[dict exists $settings nodes]} {
             foreach {name value} [dict get $settings nodes] {
