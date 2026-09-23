@@ -822,10 +822,33 @@ proc ds_subscribe { host port } {
 # subscription was dead, and a tracker started mid-session.
 proc ds_reconcile_datafile {} {
     if { [catch { vstream::dsGet $::Registry::ds_host ess/datafile \
-		      $::Registry::ds_port } df] } {
+		      $::Registry::ds_port } reply] } {
+	return
+    }
+    if { [catch { ds_get_value $reply ess/datafile } df] } {
+	ds_log "unexpected %get reply for ess/datafile: '$reply'"
 	return
     }
     datafile_changed $df
+}
+
+# Value from a dserv %get reply.  dsGet returns the raw reply line,
+#   "<status> <name> <dtype> <timestamp> <length> {<data>}"
+# (e.g. "1 ess/datafile 1 1786666050447124 0 {}" for a closed datafile), so
+# the data is the last field -- NOT the whole line.  Passing the whole line
+# to datafile_changed opened a bogus recording named after it on every start
+# with no datafile open (2026-09-23).  Status 0 means the datapoint does not
+# exist; treat that as empty.
+proc ds_get_value { reply name } {
+    if { ![string is list -strict $reply] || [llength $reply] < 6 } {
+	error "not a %get reply"
+    }
+    lassign $reply status dpname
+    if { $dpname ne $name } {
+	error "reply is for '$dpname', not '$name'"
+    }
+    if { $status == 0 } { return "" }
+    return [lindex $reply 5]
 }
 
 proc ds_watch {} {

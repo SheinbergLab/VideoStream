@@ -1082,14 +1082,22 @@ public:
 	std::remove(output_file.c_str());
       }
       
+      // FFmpeg explicitly: with the default backend order a failed open
+      // (bad path, unsupported codec) falls back to GStreamer, whose plugins
+      // may drag Qt into the recording thread -- fatal on builds whose
+      // highgui is Qt-based (Debian), where the display thread owns Qt.
       video = VideoWriter(output_file,
+			  cv::CAP_FFMPEG,
 			  fourcc,
 			  frame_rate,
 			  Size(fw, fh),
 			  is_color);
-      
+
       if (!video.isOpened()) {
-	std::cerr << "Failed to open video file for writing" << std::endl;
+	std::cerr << "Failed to open video file for writing: " << output_file
+		  << " (" << fw << "x" << fh << " @ " << frame_rate
+		  << " fps; check that the folder exists and the codec is available)"
+		  << std::endl;
 	return false;
       }
     }
