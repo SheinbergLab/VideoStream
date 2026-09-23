@@ -1473,6 +1473,27 @@ static int setInObsCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+// vstream::obsSource ?line|dserv|timestamp? -> where a frame's obs state
+// comes from (see VideoStream.cpp ObsSource); returns the current name
+static int obsSourceCmd(ClientData clientData, Tcl_Interp *interp,
+			int argc, char *argv[])
+{
+  extern int set_obsSource(const char* name);
+  extern const char* obsSourceName();
+
+  if (argc > 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " ?line|dserv|timestamp?", NULL);
+    return TCL_ERROR;
+  }
+  if (argc == 2 && set_obsSource(argv[1]) < 0) {
+    Tcl_AppendResult(interp, argv[0], ": unknown obs source '", argv[1],
+		     "' (line, dserv or timestamp)", NULL);
+    return TCL_ERROR;
+  }
+  Tcl_SetResult(interp, (char*)obsSourceName(), TCL_STATIC);
+  return TCL_OK;
+}
+
 static int setOnlySaveInObsCmd(ClientData clientData, Tcl_Interp *interp,
                int argc, char *argv[])
 {
@@ -2001,6 +2022,8 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateCommand(interp, "vstream::inObs", (Tcl_CmdProc *) setInObsCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::onlySaveInObs", (Tcl_CmdProc *) setOnlySaveInObsCmd,
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "vstream::obsSource", (Tcl_CmdProc *) obsSourceCmd,
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::setReprocessMode", (Tcl_CmdProc *) setReprocessModeCmd,
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);

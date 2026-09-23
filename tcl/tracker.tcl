@@ -11,13 +11,27 @@ if {![info exists ::camera_type]} { set ::camera_type flir }
 source [file join [file dirname [info script]] et_camera.tcl]
 
 # Live-camera settings per backend, applied once by go_live (see et_camera.tcl).
-# Lucid: 430 us exposure at 250 Hz (4001 us frame time), and Line1 drives the
-# IR source for the duration of the exposure (ExposureActive, inverted for the
-# active-low driver input) so illumination and shutter are synced.
+# Lucid: 430 us exposure at 250 Hz (4001 us frame time), Line1 drives the IR
+# source for the duration of the exposure (ExposureActive, inverted for the
+# active-low driver input) so illumination and shutter are synced, and the
+# camera clock follows the LAN's PTP grandmaster (the dserv host) so frame
+# timestamps are comparable with dserv datapoint timestamps.
 set ::camera_live_settings {
     flir  {exposure_us 700.0 gain_db 8.5 orientation {1 0} binning {2 2} fps 250.0}
     lucid {exposure_us 430.0 gain_db 8.5 orientation {1 0} binning {2 2} frame_time_us 4001
-           strobe {line 1 mode Output source ExposureActive inverter 1}}
+           strobe {line 1 mode Output source ExposureActive inverter 1}
+           ptp {slave_only 1 wait_s 20}}
+}
+
+# Where obs on/off comes from (vstream::obsSource):
+#   line       the camera's TTL input, latched per frame (hardware; the FLIR rig)
+#   timestamp  dserv's ess/in_obs datapoints matched to frames by timestamp --
+#              needs the camera on PTP with the dserv host (the Lucid rig)
+#   dserv      ess/in_obs applied on arrival (no wire, no PTP; ~ms late)
+# The TTL bit is recorded per frame whichever source is used, so
+# scripts/obs_compare.py can check timestamp mode against the wire.
+if {![info exists ::obs_source]} {
+    set ::obs_source [expr {$::camera_type eq "lucid" ? "timestamp" : "line"}]
 }
 
 namespace eval ::Registry {
@@ -953,6 +967,7 @@ proc save_detector_settings {} {
 }
 
 vstream::onlySaveInObs 0
+vstream::obsSource $::obs_source
 
 if { $vstream::dsHost != "" } {
     connect_to_dataserver $vstream::dsHost 4620

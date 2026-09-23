@@ -80,7 +80,8 @@ bool StorageManager::createTables() {
             width INTEGER,
             height INTEGER,
             is_color INTEGER,
-            codec TEXT
+            codec TEXT,
+            obs_source TEXT
         );
 
         CREATE TABLE IF NOT EXISTS camera_settings (
@@ -103,14 +104,17 @@ bool StorageManager::createTables() {
             relative_frame_id INTEGER,
             timestamp_us INTEGER,
             system_time_us INTEGER,
-            line_status INTEGER
+            line_status INTEGER,
+            camera_time_us INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_frames_obs ON frames(obs_id);
 
         CREATE TABLE IF NOT EXISTS observations (
             obs_id INTEGER PRIMARY KEY AUTOINCREMENT,
             start_frame INTEGER NOT NULL,
-            stop_frame INTEGER
+            stop_frame INTEGER,
+            start_time_us INTEGER,
+            stop_time_us INTEGER
         );
         
         CREATE INDEX IF NOT EXISTS idx_frames_number ON frames(frame_number);
@@ -124,8 +128,8 @@ bool StorageManager::prepareStatements() {
     // Frame insert statement
     const char* sql_frame = 
         "INSERT INTO frames (frame_number, obs_id, frame_id, relative_frame_id, "
-        "timestamp_us, system_time_us, line_status) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)";
+        "timestamp_us, system_time_us, line_status, camera_time_us) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
     
     if (sqlite3_prepare_v2(db_, sql_frame, -1, &stmt_insert_frame_, nullptr) != SQLITE_OK) {
         std::cerr << "Failed to prepare frame insert statement: " 
@@ -135,8 +139,8 @@ bool StorageManager::prepareStatements() {
     
     // Observation insert statement
     const char* sql_obs = 
-        "INSERT INTO observations (start_frame, stop_frame) "
-        "VALUES (?, ?)";
+        "INSERT INTO observations (start_frame, stop_frame, start_time_us) "
+        "VALUES (?, ?, ?)";
     
     if (sqlite3_prepare_v2(db_, sql_obs, -1, &stmt_insert_obs_, nullptr) != SQLITE_OK) {
         std::cerr << "Failed to prepare observation insert statement: "
@@ -256,7 +260,7 @@ bool StorageManager::openDatabase(const std::string& db_path,
     // Store recording metadata (single row)
     std::ostringstream sql;
     sql << "INSERT INTO recording_metadata "
-        << "(filename, start_time, frame_rate, width, height, is_color, codec) "
+        << "(filename, start_time, frame_rate, width, height, is_color, codec, obs_source) "
         << "VALUES ("
         << "'" << metadata.filename << "', "
         << metadata.start_time << ", "
@@ -264,7 +268,8 @@ bool StorageManager::openDatabase(const std::string& db_path,
         << metadata.width << ", "
         << metadata.height << ", "
         << (metadata.is_color ? 1 : 0) << ", "
-        << "'" << metadata.codec << "')";
+        << "'" << metadata.codec << "', "
+        << "'" << metadata.obs_source << "')";
     
     if (!executeSQL(sql.str().c_str())) {
         std::cerr << "Failed to store recording metadata" << std::endl;
@@ -355,7 +360,8 @@ bool StorageManager::storeFrame(const FrameData& frame) {
     sqlite3_bind_int64(stmt_insert_frame_, 5, frame.timestamp_us);
     sqlite3_bind_int64(stmt_insert_frame_, 6, frame.system_time_us);
     sqlite3_bind_int(stmt_insert_frame_, 7, frame.line_status);
-    
+    sqlite3_bind_int64(stmt_insert_frame_, 8, frame.camera_time_us);
+
     int rc = sqlite3_step(stmt_insert_frame_);
     if (rc != SQLITE_DONE) {
         std::cerr << "Failed to insert frame: " << sqlite3_errmsg(db_) << std::endl;
@@ -366,16 +372,21 @@ bool StorageManager::storeFrame(const FrameData& frame) {
     return true;
 }
 
-bool StorageManager::storeObservationStart(int frame_number) {
+bool StorageManager::storeObservationStart(int frame_number, int64_t camera_time_us) {
     if (!recording_open_ || !stmt_insert_obs_) {
         return false;
     }
-    
+
     sqlite3_reset(stmt_insert_obs_);
-    
+
     // Insert observation with start frame, NULL stop frame
     sqlite3_bind_int(stmt_insert_obs_, 1, frame_number);
     sqlite3_bind_null(stmt_insert_obs_, 2);  // stop_frame is NULL initially
+    if (camera_time_us) {
+        sqlite3_bind_int64(stmt_insert_obs_, 3, camera_time_us);
+    } else {
+        sqlite3_bind_null(stmt_insert_obs_, 3);
+    }
     
     int rc = sqlite3_step(stmt_insert_obs_);
     if (rc != SQLITE_DONE) {
@@ -386,15 +397,18 @@ bool StorageManager::storeObservationStart(int frame_number) {
     return true;
 }
 
-bool StorageManager::storeObservationEnd(int frame_number) {
+bool StorageManager::storeObservationEnd(int frame_number, int64_t camera_time_us) {
     if (!recording_open_) {
         return false;
     }
-    
+
     // Update the most recent observation with NULL stop_frame
     std::ostringstream sql;
-    sql << "UPDATE observations SET stop_frame = " << frame_number
-        << " WHERE obs_id = ("
+    sql << "UPDATE observations SET stop_frame = " << frame_number;
+    if (camera_time_us) {
+        sql << ", stop_time_us = " << camera_time_us;
+    }
+    sql << " WHERE obs_id = ("
         << "SELECT obs_id FROM observations "
         << "WHERE stop_frame IS NULL "
         << "ORDER BY obs_id DESC LIMIT 1)";

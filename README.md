@@ -230,6 +230,35 @@ camera::node AcquisitionFrameTime 4001            ;# or camera::configureFrameRa
 The tracker scripts keep such settings per backend in `::camera_live_settings`
 (see `tcl/et_camera.tcl`), applied once when going live.
 
+### PTP time sync and obs periods without the sync line
+
+With a PTP grandmaster on the camera's LAN (the Lucid rig: `ptp4l` on the
+dserv host), the Lucid settings' `ptp {slave_only 1 wait_s 20}` entry enables
+IEEE 1588 on the camera and waits for it to lock; `::et_camera::ptp_status`
+reports status and offset from master. Frame timestamps are then on the
+grandmaster's clock, so they can be compared directly with dserv's datapoint
+timestamps. Every recorded frame carries its absolute camera clock in
+`frames.camera_time_us` (PTP epoch when synced, camera uptime otherwise), and
+observations carry `start_time_us` / `stop_time_us`.
+
+`vstream::obsSource ?line|dserv|timestamp?` chooses where a frame's obs state
+comes from:
+
+- `line` (default): the camera's TTL input, latched per frame by the camera.
+- `timestamp`: dserv's `ess/in_obs` datapoints matched to frames by
+  timestamp, so a frame is in-obs iff its camera time is at or after the
+  datapoint's time. Exact to the frame when the camera is PTP-synced with
+  dserv; if the two clocks disagree by more than an hour (camera not synced)
+  it warns once and applies datapoints on arrival instead.
+- `dserv`: `ess/in_obs` applied on arrival (no wire, no PTP; a few ms late).
+
+The tracker scripts pick `timestamp` for the Lucid backend and `line` for
+FLIR (`::obs_source`). The TTL bit is recorded per frame (`line_status`)
+whichever source is used, and `recording_metadata.obs_source` records the
+choice, so `scripts/obs_compare.py recording.db` can report, per observation,
+how many frames the used boundaries differ from the wire's transitions before
+the wire is retired.
+
 ## General functions
 ```
  vstream::fileOpen

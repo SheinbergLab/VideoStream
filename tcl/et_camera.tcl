@@ -18,9 +18,14 @@
 #                   -> camera::configureLine, i.e. an output that follows the
 #                   exposure so a light source is synced to the shutter
 #   nodes           {NodeName value ...} any further GenICam features, set last
+#   ptp             {slave_only 1 wait_s 20}: enable IEEE 1588 on the camera
+#                   (Lucid) so frame timestamps are on the LAN grandmaster's
+#                   clock; waits up to wait_s for PtpStatus Slave, printing the
+#                   offset from master. Do this before acquisition starts: the
+#                   clock steps when it locks.
 #
 # Values are applied in that order (geometry before frame rate, so the rate
-# limits are those of the final ROI/binning).
+# limits are those of the final ROI/binning; PTP last).
 
 namespace eval ::et_camera {
 
@@ -58,6 +63,48 @@ namespace eval ::et_camera {
                 camera::node $name $value
             }
         }
+        if {[dict exists $settings ptp]} {
+            ptp_enable [dict get $settings ptp]
+        }
+    }
+
+    # Enable PTP (slave-only unless told otherwise) and wait for the clock to
+    # lock to the grandmaster.  Returns the final status dict.
+    proc ptp_enable {{opts {}}} {
+        set slave_only [expr {[dict exists $opts slave_only] ? [dict get $opts slave_only] : 1}]
+        set wait_s     [expr {[dict exists $opts wait_s] ? [dict get $opts wait_s] : 20}]
+        if {[catch {
+            camera::node PtpSlaveOnly $slave_only
+            camera::node PtpEnable 1
+        } err]} {
+            puts "PTP: cannot enable on this camera ($err)"
+            return {}
+        }
+        set deadline [expr {[clock milliseconds] + int($wait_s * 1000)}]
+        while {1} {
+            set st [ptp_status]
+            set status [dict get $st status]
+            if {$status eq "Slave" || [clock milliseconds] > $deadline} { break }
+            after 500
+        }
+        if {$status eq "Slave"} {
+            puts "PTP: locked to grandmaster, offset [dict get $st offset_ns] ns"
+        } else {
+            puts "PTP: status $status after ${wait_s}s (no grandmaster on the LAN?); timestamps stay on the camera's free-running clock"
+        }
+        return $st
+    }
+
+    # Latched PTP state: status (Disabled/Listening/Uncalibrated/Slave/...),
+    # servo, offset_ns from the master, clock/parent/grandmaster IDs.
+    proc ptp_status {} {
+        set d [dict create enabled [camera::node PtpEnable]]
+        catch { camera::node PtpDataSetLatch 1 }
+        foreach {key node} {status PtpStatus servo PtpServoStatus offset_ns PtpOffsetFromMaster
+                            clock_id PtpClockID parent_id PtpParentClockID grandmaster_id PtpGrandmasterClockID} {
+            if {![catch {camera::node $node} v]} { dict set d $key $v }
+        }
+        return $d
     }
 
     # Settings for the current backend from a dict keyed by camera type

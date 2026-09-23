@@ -23,6 +23,7 @@ struct RecordingMetadata {
     int height;
     bool is_color;
     std::string codec;       // e.g., "XVID"
+    std::string obs_source;  // line | timestamp | dserv (vstream::obsSource)
 };
 
 struct FrameData {
@@ -33,6 +34,7 @@ struct FrameData {
   int64_t timestamp_us;    // Microseconds from start
   int64_t system_time_us;  // System time microseconds from start
   uint8_t line_status;
+  int64_t camera_time_us = 0;  // Absolute camera clock (PTP epoch when synced)
 };
 
 struct CameraSettings {
@@ -124,8 +126,9 @@ public:
   
     // Base table data storage
     bool storeFrame(const FrameData& frame);
-    bool storeObservationStart(int frame_number);
-    bool storeObservationEnd(int frame_number);
+    // camera_time_us: absolute camera clock of the boundary frame (0 = unknown)
+    bool storeObservationStart(int frame_number, int64_t camera_time_us = 0);
+    bool storeObservationEnd(int frame_number, int64_t camera_time_us = 0);
     bool storeCameraSettings(const CameraSettings& settings);
     
     // Plugin storage interface

@@ -48,6 +48,8 @@
 #include "VideoFileSource.h"
 #include "ReviewModeSource.h"
 #include "CameraControl.h"
+#include <deque>
+#include <cstdlib>
 #ifdef USE_FLIR
 #include "FlirCameraSource.h"
 #endif
@@ -149,6 +151,23 @@ bool overwrite = false;
 
 bool in_obs = false;		
 bool ds_in_obs = false;		// dataserver obs status (no line_status)
+
+// Where a frame's obs state comes from (vstream::obsSource):
+//   line       the camera's TTL input latched per frame (hardware)
+//   dserv      the last ess/in_obs datapoint, applied on arrival
+//   timestamp  ess/in_obs datapoints matched to frames by timestamp -- exact
+//              when the camera clock is PTP-synced with the dserv host
+enum ObsSource { OBS_SOURCE_LINE = 0, OBS_SOURCE_DSERV = 1, OBS_SOURCE_TIMESTAMP = 2 };
+std::atomic<int> obs_source{OBS_SOURCE_LINE};
+// ess/in_obs transitions (dserv timestamp in us, state) waiting for the frame
+// they belong to. Only the acquisition thread touches these (processDSCommands
+// runs there too).
+struct ObsTransition { int64_t time_us; bool state; };
+static std::deque<ObsTransition> pending_obs_transitions;
+static bool timestamp_obs_state = false;
+static bool timestamp_obs_warned = false;
+const char* obsSourceName();
+int set_obsSource(const char* name);
 bool only_save_in_obs = true;
 int obs_count = -1;
 
@@ -901,6 +920,7 @@ class ProcessThread
 
   int64_t on_frameID;
   int64_t on_frameTimestamp;
+  int64_t last_stored_cam_us = 0;  // camera clock (us) of the last stored frame
   std::chrono::high_resolution_clock::time_point on_systemTimestamp;
 
   StorageManager storage_manager_;
@@ -1112,7 +1132,8 @@ public:
       metadata.width = frame_width;
       metadata.height = frame_height;
       metadata.is_color = is_color;
-      
+      metadata.obs_source = obsSourceName();
+
       // Convert fourcc to string
       char codec_str[5];
       codec_str[0] = (fourcc & 0xFF);
@@ -1367,6 +1388,15 @@ public:
 	    prev_fr = (processFrame-1);
 	  else prev_fr = nFrames-1;
 
+	  // Copy the frame first: its camera timestamp also stamps the obs
+	  // boundaries below (absolute camera clock; PTP epoch when synced)
+	  cv::Mat frame_copy;
+	  FrameMetadata frame_metadata;
+	  bool copy_in_obs = false;
+	  bool have_frame = frameBufferManager.copyFrame(processFrame, frame_copy,
+							 frame_metadata, copy_in_obs);
+	  int64_t cam_us = have_frame ? frame_metadata.timestamp / 1000 : 0;
+
 	  // Check obs period boundaries
 	  auto obs =
 	    frameBufferManager.getObservationPair(processFrame, prev_fr);
@@ -1382,7 +1412,7 @@ public:
 	    start_obs = (obs.cur_in_obs && !obs.prev_in_obs);
 	    if (start_obs) {
 	      if (use_sqlite_) {
-		storage_manager_.storeObservationStart(frame_count);
+		storage_manager_.storeObservationStart(frame_count, cam_us);
 	      } else {
 		dfuAddDynListLong(obs_starts, frame_count);
 	      }
@@ -1392,19 +1422,18 @@ public:
 	    end_obs = (!obs.cur_in_obs && obs.prev_in_obs);
 	    if (end_obs) {
 	      if (use_sqlite_) {
-		storage_manager_.storeObservationEnd(frame_count - 1);
+		storage_manager_.storeObservationEnd(frame_count - 1, last_stored_cam_us);
 	      } else {
 		dfuAddDynListLong(obs_stops, frame_count - 1);
 	      }
 	    }
 	  }	  
 	  
-	  // Copy frame for processing
-	  cv::Mat frame_copy;
-	  FrameMetadata frame_metadata;
-	  bool frame_in_obs;
+	  // (frame_copy / frame_metadata were fetched above; this local shadows
+	  // the annotation member set in the obs block, as it always did)
+	  bool frame_in_obs = copy_in_obs;
 
-	  if (frameBufferManager.copyFrame(processFrame, frame_copy, frame_metadata, frame_in_obs)) {
+	  if (have_frame) {
 	    if (!only_save_in_obs || (only_save_in_obs && frame_in_obs)) {
 
 	      // Write video frame (unless metadata-only mode)
@@ -1427,6 +1456,7 @@ public:
 		  std::chrono::duration_cast<std::chrono::microseconds>(
 									frame_metadata.systemTime - on_systemTimestamp).count();
 		fdata.line_status = frame_metadata.lineStatus;
+		fdata.camera_time_us = cam_us;
 
 		storage_manager_.storeFrame(fdata);
 		storage_manager_.storeFrameWithPlugins(frame_count, prev_fr);
@@ -1448,7 +1478,8 @@ public:
 		dfuAddDynListChar(frame_linestatus,
 				  (unsigned char) frame_metadata.lineStatus);
 	      }
-	      
+
+	      last_stored_cam_us = cam_us;
 	      frame_count++;
 	    }
 	  }
@@ -1530,6 +1561,61 @@ int set_inObs(int status)
     fireEvent(VstreamEvent("vstream/end_obs"));
   }
   return old;
+}
+
+const char* obsSourceName()
+{
+  switch (obs_source.load()) {
+  case OBS_SOURCE_DSERV: return "dserv";
+  case OBS_SOURCE_TIMESTAMP: return "timestamp";
+  default: return "line";
+  }
+}
+
+// -1 on an unknown name. Pending timestamp transitions are dropped on a change.
+int set_obsSource(const char* name)
+{
+  int mode;
+  if (!strcmp(name, "line")) mode = OBS_SOURCE_LINE;
+  else if (!strcmp(name, "dserv")) mode = OBS_SOURCE_DSERV;
+  else if (!strcmp(name, "timestamp")) mode = OBS_SOURCE_TIMESTAMP;
+  else return -1;
+  obs_source = mode;
+  pending_obs_transitions.clear();
+  timestamp_obs_state = false;
+  timestamp_obs_warned = false;
+  return mode;
+}
+
+// Obs state to stamp on a frame, per vstream::obsSource
+static int obsStateForFrame(const FrameMetadata& m)
+{
+  switch (obs_source.load()) {
+  case OBS_SOURCE_DSERV:
+    return ds_in_obs;
+  case OBS_SOURCE_TIMESTAMP: {
+    int64_t frame_us = m.timestamp / 1000;
+    while (!pending_obs_transitions.empty()) {
+      const ObsTransition& t = pending_obs_transitions.front();
+      // Datapoint and camera clocks an hour or more apart means the camera
+      // is not on PTP with dserv: degrade to applying transitions on arrival
+      bool clocks_agree = t.time_us > 0 &&
+	std::llabs(t.time_us - frame_us) < 3600LL * 1000000LL;
+      if (!clocks_agree && !timestamp_obs_warned) {
+	std::cerr << "obsSource timestamp: camera clock and dserv timestamps "
+		  << "disagree by more than an hour (camera not PTP-synced?); "
+		  << "applying ess/in_obs on arrival" << std::endl;
+	timestamp_obs_warned = true;
+      }
+      if (clocks_agree && t.time_us > frame_us) break;  // belongs to a later frame
+      timestamp_obs_state = t.state;
+      pending_obs_transitions.pop_front();
+    }
+    return timestamp_obs_state;
+  }
+  default:
+    return m.lineStatus;
+  }
 }
 
 int set_onlySaveInObs(int status)
@@ -2194,7 +2280,25 @@ void processDSCommands(void) {
       json_t* name_obj = json_object_get(root, "name");
       if (name_obj && json_is_string(name_obj)) {
 	const char* name = json_string_value(name_obj);
-        
+
+	// ess/in_obs feeds the dserv/timestamp obs sources directly (the
+	// datapoint's timestamp is dserv's clock in microseconds)
+	if (!strcmp(name, "ess/in_obs")) {
+	  json_t* d = json_object_get(root, "data");
+	  json_t* t = json_object_get(root, "timestamp");
+	  int state = -1;
+	  if (json_is_integer(d)) state = json_integer_value(d) != 0;
+	  else if (json_is_string(d) && json_string_value(d)[0])
+	    state = atoi(json_string_value(d)) != 0;
+	  if (state >= 0) {
+	    ds_in_obs = state;
+	    if (obs_source.load() == OBS_SOURCE_TIMESTAMP) {
+	      int64_t ts = json_is_integer(t) ? json_integer_value(t) : 0;
+	      pending_obs_transitions.push_back({ts, state != 0});
+	    }
+	  }
+	}
+
 	// Fire event with namespaced name, JSON data
 	// WebSocket clients get JSON directly
 	// Tcl handlers can call jsonToTclDict() if they want dict format
@@ -2702,8 +2806,8 @@ int main(int argc, char **argv)
 	  frame_width = frame.cols;
 	  frame_height = frame.rows;
 
-	  // Sources are responsible for setting this
-	  set_inObs(metadata.lineStatus);
+	  // TTL line, dserv datapoint, or datapoint-by-timestamp (vstream::obsSource)
+	  set_inObs(obsStateForFrame(metadata));
 	  
 	  // Store in circular buffer (thread-safe)
 	  frameBufferManager.storeFrame(curFrame, frame, metadata, in_obs);	  

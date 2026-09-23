@@ -15,7 +15,8 @@ source [file join [file dirname [info script]] et_camera.tcl]
 set ::camera_live_settings {
     flir  {exposure_us 700.0 gain_db 8.0 orientation {1 0} binning {2 2} fps 200.0}
     lucid {exposure_us 430.0 gain_db 8.0 orientation {1 0} binning {2 2} frame_time_us 4001
-           strobe {line 1 mode Output source ExposureActive inverter 1}}
+           strobe {line 1 mode Output source ExposureActive inverter 1}
+           ptp {slave_only 1 wait_s 20}}
 }
 
 namespace eval ::Registry {
