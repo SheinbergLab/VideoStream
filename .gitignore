@@ -56,3 +56,6 @@ history.txt
 plugins/working/
 plugins/EyeTrackingPlugin.cpp.templates
 settings.tcl
+
+# rig-local detector settings written by save_detector_settings (tracker.tcl)
+tcl/tracker_local.tcl

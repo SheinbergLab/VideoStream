@@ -768,6 +768,11 @@ proc live_mode { } {
     set s [add_float_slider 20 -185 150 40 \
 	       {P1 Max Jump} 5 100 [eyetracking::setP1MaxJump] eyetracking::setP1MaxJump]
     dict set ::Registry::widgets p1_max_jump_slider $s
+
+    # P1 blob area gate (px^2); depends on the camera's focal length
+    set s [add_float_slider 20 -230 150 40 \
+	       {P1 Min Area} 5 200 [eyetracking::setP1MinArea] eyetracking::setP1MinArea]
+    dict set ::Registry::widgets p1_min_area_slider $s
     
     # Key bindings
     bind_key "s" toggle_recording
@@ -897,6 +902,36 @@ eyetracking::setPupilThreshold 32
 eyetracking::setDetectionMode pupil_p1
 eyetracking::setP4MaxPredictionError 40
 eyetracking::resetP4Model
+
+# Per-backend detector defaults: the Lucid rig's shorter focal length makes
+# P1 smaller than on the FLIR rig (plugin default 40 px^2).
+if { $::camera_type eq "lucid" } {
+    eyetracking::setP1MinArea 25
+}
+
+# Rig-local overrides, kept out of git: tracker_local.tcl next to this script
+# is sourced after the defaults above, so per-rig values (thresholds, areas,
+# ROI) survive updates.  save_detector_settings writes the current values there.
+set ::tracker_local_file [file join [file dirname [info script]] tracker_local.tcl]
+if { [file exists $::tracker_local_file] } {
+    puts "Loading rig-local settings from $::tracker_local_file"
+    source $::tracker_local_file
+}
+
+# Write the detector parameters currently in effect (sliders included) to
+# tracker_local.tcl so they are restored at the next start.
+proc save_detector_settings {} {
+    set f [open $::tracker_local_file w]
+    puts $f "# tracker_local.tcl - rig-local detector settings, written by"
+    puts $f "# save_detector_settings on [clock format [clock seconds]]; sourced after the"
+    puts $f "# defaults in tracker.tcl.  Edit freely; not tracked by git."
+    foreach cmd {setPupilThreshold setP1MinIntensity setP1MaxJump setP1MinArea
+	         setP1MaxArea setP4MinIntensity setP4MaxJump setP4MaxPredictionError} {
+	puts $f "eyetracking::$cmd [eyetracking::$cmd]"
+    }
+    close $f
+    puts "Saved detector settings to $::tracker_local_file"
+}
 
 vstream::onlySaveInObs 0
 
