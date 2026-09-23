@@ -1494,6 +1494,39 @@ static int obsSourceCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+// vstream::obsClockOffset ?seconds|auto? -> camera clock minus dserv clock
+// used by the timestamp obs source (auto: learned from the frames; a PTP
+// camera reads +37, the TAI-UTC offset). Returns the value in effect, or
+// "unknown" while auto has not seen an epoch-based camera clock.
+static int obsClockOffsetCmd(ClientData clientData, Tcl_Interp *interp,
+			     int argc, char *argv[])
+{
+  extern int64_t get_obsClockOffset_us();
+  extern bool obsClockOffsetKnown();
+  extern void set_obsClockOffset_auto();
+  extern void set_obsClockOffset_us(int64_t us);
+
+  if (argc > 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " ?seconds|auto?", NULL);
+    return TCL_ERROR;
+  }
+  if (argc == 2) {
+    if (!strcmp(argv[1], "auto")) {
+      set_obsClockOffset_auto();
+    } else {
+      double s;
+      if (Tcl_GetDouble(interp, argv[1], &s) != TCL_OK) return TCL_ERROR;
+      set_obsClockOffset_us((int64_t)(s * 1e6));
+    }
+  }
+  if (!obsClockOffsetKnown()) {
+    Tcl_SetResult(interp, (char*)"unknown", TCL_STATIC);
+  } else {
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(get_obsClockOffset_us() / 1e6));
+  }
+  return TCL_OK;
+}
+
 static int setOnlySaveInObsCmd(ClientData clientData, Tcl_Interp *interp,
                int argc, char *argv[])
 {
@@ -2024,6 +2057,8 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateCommand(interp, "vstream::onlySaveInObs", (Tcl_CmdProc *) setOnlySaveInObsCmd,
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::obsSource", (Tcl_CmdProc *) obsSourceCmd,
+            (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "vstream::obsClockOffset", (Tcl_CmdProc *) obsClockOffsetCmd,
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::setReprocessMode", (Tcl_CmdProc *) setReprocessModeCmd,
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);

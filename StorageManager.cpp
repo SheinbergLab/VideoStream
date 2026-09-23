@@ -81,7 +81,8 @@ bool StorageManager::createTables() {
             height INTEGER,
             is_color INTEGER,
             codec TEXT,
-            obs_source TEXT
+            obs_source TEXT,
+            camera_clock_offset_us INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS camera_settings (
@@ -260,7 +261,7 @@ bool StorageManager::openDatabase(const std::string& db_path,
     // Store recording metadata (single row)
     std::ostringstream sql;
     sql << "INSERT INTO recording_metadata "
-        << "(filename, start_time, frame_rate, width, height, is_color, codec, obs_source) "
+        << "(filename, start_time, frame_rate, width, height, is_color, codec, obs_source, camera_clock_offset_us) "
         << "VALUES ("
         << "'" << metadata.filename << "', "
         << metadata.start_time << ", "
@@ -269,7 +270,8 @@ bool StorageManager::openDatabase(const std::string& db_path,
         << metadata.height << ", "
         << (metadata.is_color ? 1 : 0) << ", "
         << "'" << metadata.codec << "', "
-        << "'" << metadata.obs_source << "')";
+        << "'" << metadata.obs_source << "', "
+        << metadata.camera_clock_offset_us << ")";
     
     if (!executeSQL(sql.str().c_str())) {
         std::cerr << "Failed to store recording metadata" << std::endl;

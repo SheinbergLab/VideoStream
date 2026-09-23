@@ -248,8 +248,16 @@ comes from:
 - `timestamp`: dserv's `ess/in_obs` datapoints matched to frames by
   timestamp, so a frame is in-obs iff its camera time is at or after the
   datapoint's time. Exact to the frame when the camera is PTP-synced with
-  dserv; if the two clocks disagree by more than an hour (camera not synced)
-  it warns once and applies datapoints on arrival instead.
+  dserv. PTP runs on TAI, 37 s ahead of UTC, so the camera stamps frames
+  37 s "later" than dserv stamps datapoints; the offset is learned from the
+  frames themselves (camera minus host clock, rounded to whole seconds) and
+  reported at startup, or set with `vstream::obsClockOffset ?seconds|auto?`.
+  It is stored in `recording_metadata.camera_clock_offset_us`, so
+  `camera_time_us - camera_clock_offset_us` is UTC. A datapoint that is
+  already older than the current frame applies immediately (stale value on
+  subscribe); one more than 10 s ahead of the camera clock means the two
+  are unrelated (camera not synced) and is applied on arrival with a
+  one-time warning.
 - `dserv`: `ess/in_obs` applied on arrival (no wire, no PTP; a few ms late).
 
 The tracker scripts pick `timestamp` for the Lucid backend and `line` for

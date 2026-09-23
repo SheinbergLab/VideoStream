@@ -166,6 +166,14 @@ struct ObsTransition { int64_t time_us; bool state; };
 static std::deque<ObsTransition> pending_obs_transitions;
 static bool timestamp_obs_state = false;
 static bool timestamp_obs_warned = false;
+// camera clock minus dserv (UTC) clock, in us. PTP runs on TAI, 37 s ahead
+// of UTC (2026), so a PTP-synced camera stamps frames 37 s "late" relative
+// to dserv datapoints; the offset is detected from the frames' own camera
+// vs host timestamps (rounded to whole seconds, so host NTP error does not
+// matter) unless set explicitly with vstream::obsClockOffset.
+static int64_t obs_clock_offset_us = 0;
+static bool obs_clock_offset_known = false;
+static bool obs_clock_offset_manual = false;
 const char* obsSourceName();
 int set_obsSource(const char* name);
 bool only_save_in_obs = true;
@@ -1133,6 +1141,7 @@ public:
       metadata.height = frame_height;
       metadata.is_color = is_color;
       metadata.obs_source = obsSourceName();
+      metadata.camera_clock_offset_us = obs_clock_offset_known ? obs_clock_offset_us : 0;
 
       // Convert fourcc to string
       char codec_str[5];
@@ -1584,7 +1593,51 @@ int set_obsSource(const char* name)
   pending_obs_transitions.clear();
   timestamp_obs_state = false;
   timestamp_obs_warned = false;
+  if (!obs_clock_offset_manual) obs_clock_offset_known = false;
   return mode;
+}
+
+// vstream::obsClockOffset: seconds (camera minus dserv clock), or auto
+int64_t get_obsClockOffset_us() { return obs_clock_offset_us; }
+bool obsClockOffsetKnown() { return obs_clock_offset_known; }
+void set_obsClockOffset_auto()
+{
+  obs_clock_offset_manual = false;
+  obs_clock_offset_known = false;
+}
+void set_obsClockOffset_us(int64_t us)
+{
+  obs_clock_offset_us = us;
+  obs_clock_offset_known = true;
+  obs_clock_offset_manual = true;
+}
+
+// Learn the camera-minus-host clock offset from a frame: a PTP-synced camera
+// is an integer number of seconds (the TAI-UTC offset) from a host on UTC; a
+// free-running camera clock (uptime) is nowhere near and leaves it unknown.
+static void learnObsClockOffset(const FrameMetadata& m, int64_t frame_us)
+{
+  if (obs_clock_offset_manual) return;
+  int64_t host_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      m.systemTime.time_since_epoch()).count();
+  int64_t delta_us = frame_us - host_us;
+  int64_t whole_s = (delta_us >= 0 ? delta_us + 500000 : delta_us - 500000) / 1000000;
+  bool epoch_clock = std::llabs(whole_s) <= 120 &&
+    std::llabs(delta_us - whole_s * 1000000) < 300000;   // host NTP slack
+  if (epoch_clock) {
+    int64_t off = whole_s * 1000000;
+    if (!obs_clock_offset_known || off != obs_clock_offset_us) {
+      obs_clock_offset_us = off;
+      obs_clock_offset_known = true;
+      std::cout << "obsSource timestamp: camera clock is " << (whole_s >= 0 ? "+" : "")
+		<< whole_s << " s from host UTC (PTP TAI offset); dserv datapoint "
+		<< "times are shifted by that much" << std::endl;
+    }
+  } else if (obs_clock_offset_known) {
+    obs_clock_offset_known = false;
+    std::cerr << "obsSource timestamp: camera clock no longer epoch-based "
+	      << "(PTP lost?); comparing datapoint times unshifted" << std::endl;
+  }
 }
 
 // Obs state to stamp on a frame, per vstream::obsSource
@@ -1595,19 +1648,24 @@ static int obsStateForFrame(const FrameMetadata& m)
     return ds_in_obs;
   case OBS_SOURCE_TIMESTAMP: {
     int64_t frame_us = m.timestamp / 1000;
+    learnObsClockOffset(m, frame_us);
+    int64_t shift = obs_clock_offset_known ? obs_clock_offset_us : 0;
     while (!pending_obs_transitions.empty()) {
       const ObsTransition& t = pending_obs_transitions.front();
-      // Datapoint and camera clocks an hour or more apart means the camera
-      // is not on PTP with dserv: degrade to applying transitions on arrival
-      bool clocks_agree = t.time_us > 0 &&
-	std::llabs(t.time_us - frame_us) < 3600LL * 1000000LL;
-      if (!clocks_agree && !timestamp_obs_warned) {
-	std::cerr << "obsSource timestamp: camera clock and dserv timestamps "
-		  << "disagree by more than an hour (camera not PTP-synced?); "
-		  << "applying ess/in_obs on arrival" << std::endl;
-	timestamp_obs_warned = true;
+      int64_t due_us = t.time_us + shift;   // datapoint time on the camera clock
+      if (t.time_us > 0 && due_us > frame_us) {
+	// Not yet: unless it is absurdly far ahead, which means the two
+	// clocks are unrelated (camera not PTP-synced) -- then apply now
+	if (due_us - frame_us < 10LL * 1000000LL) break;
+	if (!timestamp_obs_warned) {
+	  std::cerr << "obsSource timestamp: ess/in_obs datapoint is "
+		    << (due_us - frame_us) / 1000000.0 << " s ahead of the camera "
+		    << "clock (camera not PTP-synced with dserv?); applying on arrival"
+		    << std::endl;
+	  timestamp_obs_warned = true;
+	}
       }
-      if (clocks_agree && t.time_us > frame_us) break;  // belongs to a later frame
+      // due (or stale: a datapoint older than the frame just applies)
       timestamp_obs_state = t.state;
       pending_obs_transitions.pop_front();
     }

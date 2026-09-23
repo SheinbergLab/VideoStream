@@ -24,6 +24,7 @@ struct RecordingMetadata {
     bool is_color;
     std::string codec;       // e.g., "XVID"
     std::string obs_source;  // line | timestamp | dserv (vstream::obsSource)
+    int64_t camera_clock_offset_us = 0;  // camera clock minus UTC (PTP: TAI, +37 s); 0 = unknown
 };
 
 struct FrameData {
