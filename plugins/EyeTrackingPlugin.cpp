@@ -664,8 +664,8 @@ private:
   // P1 detection
   P1Validator p1_validator_;
   int p1_min_intensity_;
-  int p1_min_area_;
-  int p1_max_area_;
+  float p1_min_area_;   // px^2; mirrored in settings_ (UI sync + session record)
+  float p1_max_area_;
   cv::Size p1_centroid_roi_size_;
   float last_p1_area_ = -1.0f;
   float p1_pupil_radius_max_;
@@ -1009,6 +1009,10 @@ private:
 			   std::to_string(settings_.p1_pupil_radius_max));
         fireSettingChanged("p1_min_intensity",
 			   std::to_string(settings_.p1_min_intensity));
+        fireSettingChanged("p1_min_area",
+			   std::to_string(settings_.p1_min_area));
+        fireSettingChanged("p1_max_area",
+			   std::to_string(settings_.p1_max_area));
         fireSettingChanged("p4_max_jump",
 			   std::to_string(settings_.p4_max_jump));
         fireSettingChanged("p4_min_intensity",
@@ -3217,8 +3221,12 @@ static int setP1MinAreaCmd(ClientData clientData, Tcl_Interp *interp,
   if (Tcl_GetDoubleFromObj(interp, objv[1], &area) != TCL_OK) {
     return TCL_ERROR;
   }
-  
+
+  // settings_ is what the web panel syncs from and the session record
+  // captures; keep it in step with the live gate
   plugin->p1_min_area_ = area;
+  plugin->settings_.p1_min_area = area;
+  plugin->fireSettingChanged("p1_min_area", std::to_string(area));
   Tcl_SetObjResult(interp, Tcl_NewDoubleObj(area));
   return TCL_OK;
 }
@@ -3239,6 +3247,8 @@ static int setP1MaxAreaCmd(ClientData clientData, Tcl_Interp *interp,
   }
   
   plugin->p1_max_area_ = area;
+  plugin->settings_.p1_max_area = area;
+  plugin->fireSettingChanged("p1_max_area", std::to_string(area));
   Tcl_SetObjResult(interp, Tcl_NewDoubleObj(area));
   return TCL_OK;
 }  
@@ -3622,7 +3632,15 @@ static int getSettingsCmd(ClientData clientData, Tcl_Interp *interp,
     Tcl_DictObjPut(interp, settingsDict,
                    Tcl_NewStringObj("p1_min_intensity", -1),
                    Tcl_NewIntObj(plugin->settings_.p1_min_intensity));
-    
+
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("p1_min_area", -1),
+                   Tcl_NewDoubleObj(plugin->settings_.p1_min_area));
+
+    Tcl_DictObjPut(interp, settingsDict,
+                   Tcl_NewStringObj("p1_max_area", -1),
+                   Tcl_NewDoubleObj(plugin->settings_.p1_max_area));
+
     Tcl_DictObjPut(interp, settingsDict,
                    Tcl_NewStringObj("p1_pupil_radius_max", -1),
                    Tcl_NewDoubleObj(plugin->settings_.p1_pupil_radius_max));
@@ -4032,6 +4050,12 @@ std::string getUIHTML() const override {
                        oninput="etUpdateLabel(this, 'et-p1-intensity-val')"
                        onchange="etApplyP1MinIntensity(this.value)">
             </div>
+            <div class="param-group">
+                <label>Min Area: <span id="et-p1-min-area-val">40</span> px&sup2;</label>
+                <input type="range" id="et-p1-min-area" min="5" max="200" step="1" value="40"
+                       oninput="etUpdateLabel(this, 'et-p1-min-area-val')"
+                       onchange="etApplyP1MinArea(this.value)">
+            </div>
         </div>
         
         <!-- P4 Column -->
@@ -4056,6 +4080,10 @@ std::string getUIHTML() const override {
                        onchange="etApplyP4PredictionError(this.value)">
             </div>
         </div>
+    </div>
+    <div class="button-group" style="margin-top: 8px;">
+        <button class="secondary" onclick="etSaveDetectorSettings()"
+                title="Write the current detector parameters to this rig's tracker_local.tcl so they are restored at the next start">Save to rig</button>
     </div>
 </div>
 
@@ -4173,6 +4201,14 @@ window.etSyncSettingToUI = function(settingName, value) {
                 window.etUpdateLabel(p1IntSlider, 'et-p1-intensity-val');
             }
             break;
+
+        case 'p1_min_area':
+            const p1AreaSlider = document.getElementById('et-p1-min-area');
+            if (p1AreaSlider && p1AreaSlider.value != value) {
+                p1AreaSlider.value = value;
+                window.etUpdateLabel(p1AreaSlider, 'et-p1-min-area-val');
+            }
+            break;
             
         case 'p4_max_jump':
             const p4Slider = document.getElementById('et-p4-max-jump');
@@ -4266,6 +4302,20 @@ window.etApplyP1MaxJump = function(value) {
 window.etApplyP1MinIntensity = function(value) {
     if (window.sendCommand) {
         window.sendCommand('eyetracking::setP1MinIntensity ' + value);
+    }
+};
+
+window.etApplyP1MinArea = function(value) {
+    if (window.sendCommand) {
+        window.sendCommand('eyetracking::setP1MinArea ' + value);
+    }
+};
+
+// Persist the current detector parameters on this rig (tracker.tcl's
+// save_detector_settings -> tracker_local.tcl); a no-op under other scripts.
+window.etSaveDetectorSettings = function() {
+    if (window.sendCommand) {
+        window.sendCommand('if {[llength [info commands save_detector_settings]]} {save_detector_settings} else {puts "save_detector_settings: not available in this script"}');
     }
 };
 
