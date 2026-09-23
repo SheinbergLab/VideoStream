@@ -28,7 +28,13 @@
 #include "VstreamEvent.h"
 
 extern AnalysisPluginRegistry g_pluginRegistry;
-extern SourceManager* g_sourceManager;
+// The host defines this as an OBJECT (VideoStream.cpp: SourceManager
+// g_sourceManager;). It was declared here as a pointer until 2026-09-23,
+// which made getCurrentFrameRate() read the object's first field (the
+// widget-manager pointer) as the manager and then a word inside the widget
+// mutex as the current source: non-zero only while the display thread held
+// that mutex, so storeFrameData segfaulted only with the display up.
+extern SourceManager g_sourceManager;
 
 // ============================================================================
 // DEBUG LEVELS
@@ -3781,13 +3787,11 @@ public:
   // ========================================================================
   
   float getCurrentFrameRate() const {
-    if (g_sourceManager) {
-      IFrameSource* source = g_sourceManager->getCurrentSource();
-      if (source && source->isOpen()) {
-	float fps = source->getFrameRate();
-	if (fps > 0) {
-	  return fps;
-	}
+    IFrameSource* source = g_sourceManager.getCurrentSource();
+    if (source && source->isOpen()) {
+      float fps = source->getFrameRate();
+      if (fps > 0) {
+	return fps;
       }
     }
     return 250.0f;  // Default fallback if source unavailable
