@@ -909,18 +909,37 @@ if { $::camera_type eq "lucid" } {
     eyetracking::setP1MinArea 25
 }
 
-# Rig-local overrides, kept out of git: tracker_local.tcl next to this script
-# is sourced after the defaults above, so per-rig values (thresholds, areas,
-# ROI) survive updates.  save_detector_settings writes the current values there.
-set ::tracker_local_file [file join [file dirname [info script]] tracker_local.tcl]
-if { [file exists $::tracker_local_file] } {
-    puts "Loading rig-local settings from $::tracker_local_file"
-    source $::tracker_local_file
+# Rig-local overrides, kept out of git: tracker_local.tcl is sourced after the
+# defaults above, so per-rig values (thresholds, areas, ROI) survive updates.
+# Looked for next to this script, then in ~/.config/videostream/.
+# save_detector_settings writes the current values to the first of those
+# that is writable (an installed /usr/local/videostream/tcl is root-owned, so
+# that usually means the per-user file).
+set ::tracker_local_candidates \
+    [list [file join [file dirname [info script]] tracker_local.tcl] \
+	  [file join $::env(HOME) .config videostream tracker_local.tcl]]
+set ::tracker_local_file ""
+foreach f $::tracker_local_candidates {
+    if { [file exists $f] } {
+	puts "Loading rig-local settings from $f"
+	source $f
+	set ::tracker_local_file $f
+	break
+    }
+}
+if { $::tracker_local_file eq "" } {
+    foreach f $::tracker_local_candidates {
+	if { [file writable [file dirname $f]] || ![file exists [file dirname $f]] } {
+	    set ::tracker_local_file $f
+	    break
+	}
+    }
 }
 
 # Write the detector parameters currently in effect (sliders included) to
 # tracker_local.tcl so they are restored at the next start.
 proc save_detector_settings {} {
+    file mkdir [file dirname $::tracker_local_file]
     set f [open $::tracker_local_file w]
     puts $f "# tracker_local.tcl - rig-local detector settings, written by"
     puts $f "# save_detector_settings on [clock format [clock seconds]]; sourced after the"
