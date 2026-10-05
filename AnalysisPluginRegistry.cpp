@@ -129,12 +129,18 @@ void AnalysisPluginRegistry::resetAll() {
     }
 }
 
-void AnalysisPluginRegistry::fileOpenAll(const std::string& filename) {
+void AnalysisPluginRegistry::fileOpenAll(const std::string& filename,
+                                           bool haveAnchor,
+                                           int64_t anchorFrameID,
+                                           int64_t anchorTimestamp) {
     std::lock_guard<std::mutex> lock(plugins_mutex_);
     
     for (auto& pair : plugins_) {
         try {
             pair.second->fileOpen(filename);
+            if (haveAnchor) {
+                pair.second->anchorFile(anchorFrameID, anchorTimestamp);
+            }
         } catch (const std::exception& e) {
             std::cerr << "Plugin " << pair.first 
                       << " fileOpen threw exception: " << e.what() << std::endl;

@@ -33,6 +33,10 @@ typedef struct _proginfo_t {
 class WebSocketThread;
 extern WebSocketThread* g_wsServer;
 
+class WebPreview;
+extern WebPreview g_webPreview;
+int web_preview_clients(void);
+
 // thread safe tcl command evals
 int tcl_eval(const std::string& cmd);
 int tcl_eval(const std::string& cmd, std::string& response);
@@ -53,6 +57,13 @@ struct WSPerSocketData {
   std::map<std::string, std::chrono::steady_clock::time_point> last_sent;
   std::map<std::string, int> event_counts;
   std::chrono::steady_clock::time_point rate_window_start;
+
+  // Browser preview stream (opted into with {"cmd":"preview"})
+  bool preview_enabled = false;
+  int preview_fps = 30;
+  int preview_quality = 0;   // 0 = server default (vstream::webPreview quality)
+  std::chrono::steady_clock::time_point preview_next_due{};
+  long long preview_dropped = 0;
 };
 
 // To help manage large WebSocket messages (stimdg -> ess/stiminfo)

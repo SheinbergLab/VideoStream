@@ -218,6 +218,7 @@ bool LucidCameraSource::startAcquisition() {
     }
     impl_->device->StartStream(impl_->num_buffers);
     impl_->streaming = true;
+    incomplete_frames_ = 0;
     packet_size_negotiated_ = true;
     std::cout << "Lucid camera acquisition started" << std::endl;
 
@@ -267,8 +268,10 @@ bool LucidCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
     image = impl_->device->GetImage(image_timeout_ms_);
 
     if (image->IsIncomplete()) {
+      incomplete_frames_++;
       std::cerr << "Image incomplete (frame " << image->GetFrameId()
-                << ", " << image->GetSizeFilled() << " bytes)" << std::endl;
+                << ", " << image->GetSizeFilled() << " bytes, "
+                << incomplete_frames_ << " total)" << std::endl;
       impl_->device->RequeueBuffer(image);
       return false;
     }
@@ -652,21 +655,26 @@ bool LucidCameraSource::configureBinning(int horizontal, int vertical)
 {
   GenApi::INodeMap* nm = impl_->nodeMap;
   if (!nm) return false;
+  bool wasAcquiring = false;
   try {
     // Width/Height/Binning are locked while streaming
-    bool wasAcquiring = impl_->streaming;
+    wasAcquiring = impl_->streaming;
     if (wasAcquiring) stopAcquisition();
 
-    // Reset ROI to maximum before changing binning
+    // Binning and the image size constrain each other. Shrink to the
+    // minimum first so the binning change is legal in either direction,
+    // then expand to the new full sensor after the binning is applied.
+    // Setting the size to GetMax() before the change leaves the binned
+    // size in place when returning to 1x1, because that was the old maximum.
     GenApi::CIntegerPtr ptrWidth = nm->GetNode("Width");
     GenApi::CIntegerPtr ptrHeight = nm->GetNode("Height");
     GenApi::CIntegerPtr ptrOffsetX = nm->GetNode("OffsetX");
     GenApi::CIntegerPtr ptrOffsetY = nm->GetNode("OffsetY");
 
-    if (GenApi::IsWritable(ptrOffsetX)) ptrOffsetX->SetValue(0);
-    if (GenApi::IsWritable(ptrOffsetY)) ptrOffsetY->SetValue(0);
-    if (GenApi::IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMax());
-    if (GenApi::IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMax());
+    if (GenApi::IsWritable(ptrOffsetX)) ptrOffsetX->SetValue(ptrOffsetX->GetMin());
+    if (GenApi::IsWritable(ptrOffsetY)) ptrOffsetY->SetValue(ptrOffsetY->GetMin());
+    if (GenApi::IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMin());
+    if (GenApi::IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMin());
 
     // Prefer on-sensor binning (raises the achievable frame rate); fall
     // back to digital binning on models without it. Binning 1x1 is set
@@ -698,14 +706,19 @@ bool LucidCameraSource::configureBinning(int horizontal, int vertical)
       std::cout << "Set vertical binning to " << v << std::endl;
     }
 
-    // Binning changes the image size: cache what the camera actually
-    // accepted (binning, Width, Height) before restarting
+    // The maximum is the post-binning one, so 1x1 fills the sensor again.
+    if (GenApi::IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMax());
+    if (GenApi::IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMax());
+
     refreshGeometry();
 
     if (wasAcquiring) startAcquisition();
     return true;
   } catch (GenICam::GenericException& ge) {
     std::cerr << "Error setting binning: " << ge.what() << std::endl;
+    if (wasAcquiring && impl_ && !impl_->streaming) {
+      try { startAcquisition(); } catch (...) {}
+    }
     return false;
   }
 }

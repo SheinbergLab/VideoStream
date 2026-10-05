@@ -33,6 +33,7 @@ private:
   cv::Mat last_frame_;
   FrameMetadata last_metadata_;
   bool has_last_frame_;
+  long long incomplete_frames_ = 0;
 
   bool initializeCamera();
   void configureCameraDefaults();
@@ -50,6 +51,7 @@ public:
   int getHeight() const override { return height; }
   bool isColor() const override { return color; }
   float getFrameRate() const override;  // reads from camera, falls back to cache
+  long long incompleteFrameCount() const override { return incomplete_frames_; }
   void close() override;
   bool supportsPause() const override { return true; }
 

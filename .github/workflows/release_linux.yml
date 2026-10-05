@@ -75,6 +75,17 @@ jobs:
           wget -q "https://github.com/SheinbergLab/dlsh/releases/download/${DLSH_VERSION}/dlsh-dg_${DLSH_VERSION}_${{ matrix.arch }}.deb"
           dpkg --install "dlsh-dg_${DLSH_VERSION}_${{ matrix.arch }}.deb" || apt -f install -y
 
+      - name: Set up Node (browser viewer)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the browser viewer (web/dist)
+        run: |
+          cd web
+          npm ci
+          npm run build
+
       - name: Build and package (.deb)
         run: |
           cmake -B build \
@@ -196,6 +207,19 @@ jobs:
           mkdir -p "$HOME/arena-sdk"
           tar -xzf arena-sdk.tar.gz -C "$HOME/arena-sdk" --strip-components=1
           ls "$HOME/arena-sdk"
+
+      - name: Set up Node (browser viewer)
+        if: steps.sdk.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the browser viewer (web/dist)
+        if: steps.sdk.outputs.enabled == 'true'
+        run: |
+          cd web
+          npm ci
+          npm run build
 
       - name: Build and package (.deb, Lucid enabled)
         if: steps.sdk.outputs.enabled == 'true'
@@ -330,6 +354,19 @@ jobs:
           mkdir -p "$HOME/spinnaker-sdk"
           tar -xzf spinnaker-sdk.tar.gz -C "$HOME/spinnaker-sdk" --strip-components=1
           ls "$HOME/spinnaker-sdk"
+
+      - name: Set up Node (browser viewer)
+        if: steps.priv.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the browser viewer (web/dist)
+        if: steps.priv.outputs.enabled == 'true'
+        run: |
+          cd web
+          npm ci
+          npm run build
 
       - name: Build and package (.deb, FLIR enabled)
         if: steps.priv.outputs.enabled == 'true'

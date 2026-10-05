@@ -2,6 +2,8 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <cstring>
 
 #include "opencv2/opencv.hpp"
 
@@ -11,6 +13,7 @@
 #include <algorithm>   // std::max/min, std::remove* (GCC 14 / Debian Trixie: no transitive include)
 #include <thread>
 #include <functional>
+#include <optional>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
@@ -20,6 +23,12 @@
 #include <atomic>
 #include <csignal>
 #include <cmath>
+#include <filesystem>
+#include <iterator>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 
 // Use dgz format to store metadata about frames
 #include <df.h>
@@ -63,6 +72,8 @@
 #include "DataserverForwarder.h"
 
 #include "VideoStream.h"
+#include "WebPreview.h"
+#include "ViewerMediaApi.h"
 
 // our minified html pages (in www/*.html)
 #include "embedded_terminal.h"
@@ -84,8 +95,48 @@ IFrameSource* g_frameSource = nullptr;
 #include "AnalysisPluginRegistry.h"
 AnalysisPluginRegistry g_pluginRegistry;
 
+// True when the browser is on this machine: loopback, or the peer address is
+// one of our own interfaces (opening the page via the LAN address).
+static bool peerIsLocal(const std::string& binary) {
+  if (binary.size() == 4) {
+    const auto* b = reinterpret_cast<const unsigned char*>(binary.data());
+    if (b[0] == 127) return true;
+  } else if (binary.size() == 16) {
+    const auto* b = reinterpret_cast<const unsigned char*>(binary.data());
+    bool v6loop = true;
+    for (int i = 0; i < 15; i++) if (b[i] != 0) v6loop = false;
+    if (v6loop && b[15] == 1) return true;
+    bool mapped = true;
+    for (int i = 0; i < 10; i++) if (b[i] != 0) mapped = false;
+    if (mapped && b[10] == 0xff && b[11] == 0xff) {
+      if (b[12] == 127) return true;
+      return peerIsLocal(std::string(binary.data() + 12, 4));
+    }
+  } else {
+    return false;
+  }
+
+  struct ifaddrs* ifs = nullptr;
+  if (getifaddrs(&ifs) != 0) return false;
+  bool local = false;
+  for (struct ifaddrs* ifa = ifs; ifa && !local; ifa = ifa->ifa_next) {
+    if (!ifa->ifa_addr) continue;
+    if (binary.size() == 4 && ifa->ifa_addr->sa_family == AF_INET) {
+      auto* in = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
+      local = memcmp(&in->sin_addr, binary.data(), 4) == 0;
+    } else if (binary.size() == 16 && ifa->ifa_addr->sa_family == AF_INET6) {
+      auto* in6 = reinterpret_cast<sockaddr_in6*>(ifa->ifa_addr);
+      local = memcmp(&in6->sin6_addr, binary.data(), 16) == 0;
+    }
+  }
+  freeifaddrs(ifs);
+  return local;
+}
+
 class WebSocketThread;
 WebSocketThread* g_wsServer = nullptr;
+
+WebPreview g_webPreview;
 
 std::thread processThreadID;
 SharedQueue<int> process_queue;
@@ -183,6 +234,8 @@ int obs_count = -1;
 // frame fully (analyze inline + store) before capturing the next, so the
 // recorded result for frame N is exactly frame N's analysis. Live = false.
 std::atomic<bool> g_reprocess_serial{false};
+// Last frameID queued for storage in reprocess mode (main thread only).
+static int64_t g_reprocess_last_frame_id = -1;
 
 #ifdef _WIN32
 bool WSA_initialized = false;   // Windows Socket startup needs to be called once
@@ -409,9 +462,35 @@ private:
 class WebSocketThread
 {
 private:
-  std::mutex ws_connections_mutex;
+  // Only touched on the uWS loop thread (handlers and deferred callbacks):
+  // uWebSockets is not thread-safe, so every other thread reaches a socket
+  // through ws_loop->defer().
   std::map<std::string, uWS::WebSocket<false, true, WSPerSocketData>*> ws_connections;
-  uWS::Loop *ws_loop = nullptr;
+  std::atomic<uWS::Loop*> ws_loop{nullptr};
+
+  // Preview demand, recomputed on the loop thread whenever a client changes
+  // its preview settings or disconnects; read by the preview encoder.
+  std::atomic<int> preview_clients{0};
+  std::atomic<int> preview_max_fps{0};
+  std::atomic<int> preview_quality{0};
+
+  // A client further behind than this skips preview frames until it drains:
+  // the newest frame is always the one sent, never a backlog.
+  static constexpr unsigned int PREVIEW_MAX_BUFFERED = 256 * 1024;
+
+  void updatePreviewDemand() {
+    int clients = 0, max_fps = 0, quality = 0;
+    for (auto& [name, conn] : ws_connections) {
+      WSPerSocketData* userData = (WSPerSocketData*) conn->getUserData();
+      if (!userData || !userData->preview_enabled) continue;
+      clients++;
+      max_fps = std::max(max_fps, userData->preview_fps);
+      quality = std::max(quality, userData->preview_quality);
+    }
+    preview_clients = clients;
+    preview_max_fps = max_fps;
+    preview_quality = quality;
+  }
 
   std::vector<std::string> default_subscriptions_ = {
     "vstream/*",             // Plugin, source, recording status
@@ -470,10 +549,66 @@ private:
         return true;
     }
   
+  static const char* mimeType(const std::filesystem::path& p) {
+    std::string ext = p.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    if (ext == ".html") return "text/html; charset=utf-8";
+    if (ext == ".js" || ext == ".mjs") return "text/javascript; charset=utf-8";
+    if (ext == ".css") return "text/css; charset=utf-8";
+    if (ext == ".json" || ext == ".map") return "application/json";
+    if (ext == ".webmanifest") return "application/manifest+json";
+    if (ext == ".svg") return "image/svg+xml";
+    if (ext == ".png") return "image/png";
+    if (ext == ".ico") return "image/x-icon";
+    if (ext == ".woff2") return "font/woff2";
+    return "application/octet-stream";
+  }
+
+  // Serve <app_dir>/<rest> for /app/<rest>. Files are small (a Vite build), so
+  // they are read whole on the loop thread.
+  template <typename Res>
+  void serveAppFile(Res* res, std::string_view url) {
+    std::string rel(url.substr(std::min<size_t>(url.size(), 5)));  // strip "/app/"
+    if (rel.empty()) rel = "index.html";
+    if (rel.find("..") != std::string::npos || rel.find('\\') != std::string::npos ||
+        rel[0] == '/') {
+      res->writeStatus("400 Bad Request")->end("bad path");
+      return;
+    }
+
+    std::filesystem::path root(app_dir);
+    std::filesystem::path file = root / rel;
+    std::error_code ec;
+    if (std::filesystem::is_directory(file, ec)) file /= "index.html";
+
+    std::ifstream in(file, std::ios::binary);
+    if (!in) {
+      if (!std::filesystem::exists(root / "index.html", ec)) {
+        res->writeStatus("404 Not Found")
+           ->writeHeader("Content-Type", "text/plain")
+           ->end("browser viewer not installed (looked in " + root.string() +
+                 "); build web/ or pass --www-dir");
+      } else {
+        res->writeStatus("404 Not Found")->end("not found");
+      }
+      return;
+    }
+    std::string body((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+
+    // Vite puts content-hashed names under assets/, so those never go stale.
+    bool hashed = rel.rfind("assets/", 0) == 0;
+    res->writeHeader("Content-Type", mimeType(file))
+       ->writeHeader("Cache-Control", hashed ? "public, max-age=31536000, immutable"
+                                             : "no-cache")
+       ->end(body);
+  }
+
 public:
   bool m_bDone;
   int port;
   int listening_socket_fd;
+  std::string app_dir;   // browser viewer build (index.html + assets/)
   
   WebSocketThread() : m_bDone(false), port(8080), listening_socket_fd(-1) {}
   
@@ -482,10 +617,41 @@ public:
     // uWebsockets handles cleanup internally
   }
 
+  int previewClients() const { return preview_clients.load(); }
+  int previewMaxFps() const { return preview_max_fps.load(); }
+  int previewQuality() const { return preview_quality.load(); }
+
+  // Send one encoded preview frame to every client that asked for preview,
+  // honouring each client's frame rate and skipping clients that are behind.
+  void broadcastPreview(std::shared_ptr<const std::string> message) {
+    uWS::Loop* loop = ws_loop.load();
+    if (!loop) return;
+    loop->defer([this, message]() {
+      auto now = std::chrono::steady_clock::now();
+      for (auto& [name, conn] : ws_connections) {
+        WSPerSocketData* userData = (WSPerSocketData*) conn->getUserData();
+        if (!userData || !userData->preview_enabled) continue;
+
+        auto interval = std::chrono::microseconds(1000000 / std::max(1, userData->preview_fps));
+        // Fixed per-client schedule with a quarter interval of slack: a client
+        // slower than the encoder gets its own rate, and jitter in frame
+        // arrival doesn't cost frames when the encoder runs at the client's.
+        auto& due = userData->preview_next_due;
+        if (now + interval / 4 < due) continue;
+        due = (now - due > interval) ? now + interval : due + interval;
+
+        if (conn->getBufferedAmount() > PREVIEW_MAX_BUFFERED) {
+          userData->preview_dropped++;
+          continue;
+        }
+        conn->send(std::string_view(*message), uWS::OpCode::BINARY, false);
+      }
+    });
+  }
+
 void broadcastEvent(const VstreamEvent& event) {
-    std::lock_guard<std::mutex> lock(ws_connections_mutex);
-    
-    if (ws_connections.empty()) {
+    uWS::Loop* loop = ws_loop.load();
+    if (!loop) {
         return;
     }
     
@@ -553,24 +719,21 @@ void broadcastEvent(const VstreamEvent& event) {
     }
     
     char* msg_str = json_dumps(event_msg, 0);
-    std::string message(msg_str);
+    auto message = std::make_shared<const std::string>(msg_str);
     free(msg_str);
     json_decref(event_msg);
     
-    // Send to subscribed clients only
-    for (auto& [name, conn] : ws_connections) {
-        WSPerSocketData* userData = (WSPerSocketData*)conn->getUserData();
-        
-        if (!userData || !shouldSendToClient(userData, event)) {
-            continue;
+    // Send to subscribed clients only, on the loop thread
+    loop->defer([this, message, event]() {
+        for (auto& [name, conn] : ws_connections) {
+            WSPerSocketData* userData = (WSPerSocketData*)conn->getUserData();
+            
+            if (!userData || !shouldSendToClient(userData, event)) {
+                continue;
+            }
+            conn->send(std::string_view(*message), uWS::OpCode::TEXT);
         }
-        
-        try {
-            conn->send(message, uWS::OpCode::TEXT);
-        } catch (...) {
-            // Client may have disconnected
-        }
-    }
+    });
 }
   
   void startWebSocketServer(void) {
@@ -589,6 +752,16 @@ void broadcastEvent(const VstreamEvent& event) {
       res->writeHeader("Content-Type", "text/html; charset=utf-8")
          ->writeHeader("Cache-Control", "no-cache")
          ->end(embedded::terminal_html);
+    });
+
+    // Browser viewer (web/ build output)
+    app.get("/app", [](auto *res, auto *req) {
+      res->writeStatus("301 Moved Permanently")
+         ->writeHeader("Location", "/app/")
+         ->end();
+    });
+    app.get("/app/*", [this](auto *res, auto *req) {
+      serveAppFile(res, req->getUrl());
     });
     
     // Health check
@@ -663,17 +836,18 @@ void broadcastEvent(const VstreamEvent& event) {
     userData->rate_window_start = std::chrono::steady_clock::now();
     
     // Store connection for broadcasting
-    {
-        std::lock_guard<std::mutex> lock(this->ws_connections_mutex);
-        this->ws_connections[userData->client_name] = ws;
-    }
+    this->ws_connections[userData->client_name] = ws;
     
-    std::cout << "WebSocket client connected: " << userData->client_name << std::endl;
+    std::string peer(ws->getRemoteAddress());
+    bool local = peerIsLocal(peer);
+    std::cout << "WebSocket client connected: " << userData->client_name
+              << (local ? " (this machine)" : " (remote)") << std::endl;
     
     // Send welcome with subscription info
     json_t *welcome = json_object();
     json_object_set_new(welcome, "type", json_string("welcome"));
     json_object_set_new(welcome, "client_id", json_string(userData->client_name.c_str()));
+    json_object_set_new(welcome, "local", local ? json_true() : json_false());
     
     json_t *subs_array = json_array();
     for (const auto& sub : userData->subscriptions) {
@@ -799,6 +973,67 @@ void broadcastEvent(const VstreamEvent& event) {
             free(response_str);
             json_decref(response);
         }	  
+        else if (strcmp(cmd, "sources") == 0) {
+            json_t* response = viewer_build_sources_json(g_sourceManager);
+            json_t* requestId_obj = json_object_get(root, "requestId");
+            if (requestId_obj && json_is_string(requestId_obj))
+              json_object_set(response, "requestId", requestId_obj);
+            char* response_str = json_dumps(response, 0);
+            ws->send(response_str, uWS::OpCode::TEXT);
+            free(response_str);
+            json_decref(response);
+        }
+        else if (strcmp(cmd, "browse") == 0) {
+            json_t* path_obj = json_object_get(root, "path");
+            std::string path;
+            if (path_obj && json_is_string(path_obj))
+              path = json_string_value(path_obj);
+            std::string err;
+            json_t* response = viewer_browse_media_json(path, g_sourceManager, err);
+            if (!response) {
+              response = json_object();
+              json_object_set_new(response, "type", json_string("browse"));
+              json_object_set_new(response, "status", json_string("error"));
+              json_object_set_new(response, "error", json_string(err.c_str()));
+            }
+            json_t* requestId_obj = json_object_get(root, "requestId");
+            if (requestId_obj && json_is_string(requestId_obj))
+              json_object_set(response, "requestId", requestId_obj);
+            char* response_str = json_dumps(response, 0);
+            ws->send(response_str, uWS::OpCode::TEXT);
+            free(response_str);
+            json_decref(response);
+        }
+        else if (strcmp(cmd, "preview") == 0) {
+            // {"cmd":"preview","enable":true,"fps":30,"quality":80}
+            json_t *enable_obj = json_object_get(root, "enable");
+            json_t *fps_obj = json_object_get(root, "fps");
+            json_t *quality_obj = json_object_get(root, "quality");
+
+            userData->preview_enabled = !enable_obj || json_is_true(enable_obj);
+            userData->preview_next_due = {};
+            if (fps_obj && json_is_number(fps_obj)) {
+                userData->preview_fps =
+                    std::clamp((int) json_number_value(fps_obj), 1, 120);
+            }
+            if (quality_obj && json_is_number(quality_obj)) {
+                int q = (int) json_number_value(quality_obj);
+                userData->preview_quality = q <= 0 ? 0 : std::clamp(q, 10, 100);
+            }
+            userData->preview_dropped = 0;
+            updatePreviewDemand();
+
+            json_t *response = json_object();
+            json_object_set_new(response, "type", json_string("preview"));
+            json_object_set_new(response, "status", json_string("ok"));
+            json_object_set_new(response, "enabled", json_boolean(userData->preview_enabled));
+            json_object_set_new(response, "fps", json_integer(userData->preview_fps));
+            json_object_set_new(response, "quality", json_integer(userData->preview_quality));
+            char *response_str = json_dumps(response, 0);
+            ws->send(response_str, uWS::OpCode::TEXT);
+            free(response_str);
+            json_decref(response);
+        }
 	else if (strcmp(cmd, "eval") == 0) {
             // Handle Tcl script evaluation
             json_t *script_obj = json_object_get(root, "script");
@@ -853,11 +1088,9 @@ void broadcastEvent(const VstreamEvent& event) {
         }
       },
       
-      .drain = [](auto *ws) {
-        if (ws->getBufferedAmount() > 1024 * 1024) {
-          ws->close();
-        }
-      },
+      // A client that falls behind is not disconnected: preview frames are
+      // skipped for it (broadcastPreview) until its send buffer drains.
+      .drain = [](auto *ws) {},
       
       .close = [this](auto *ws, int code, std::string_view message) {
         WSPerSocketData *userData = (WSPerSocketData *) ws->getUserData();
@@ -865,10 +1098,8 @@ void broadcastEvent(const VstreamEvent& event) {
         if (!userData) return;
         
         // Remove from connections map
-        {
-          std::lock_guard<std::mutex> lock(this->ws_connections_mutex);
-          this->ws_connections.erase(userData->client_name);
-        }
+        this->ws_connections.erase(userData->client_name);
+        updatePreviewDemand();
         
         // Cleanup
         delete userData->rqueue;
@@ -887,6 +1118,129 @@ void broadcastEvent(const VstreamEvent& event) {
     }).run();
   }
 };
+
+int web_preview_clients(void)
+{
+  return g_wsServer ? g_wsServer->previewClients() : 0;
+}
+
+static std::string preview_source_label(const std::string& type,
+                                        const std::map<std::string, std::string>& params)
+{
+  if (type == "playback")
+    return "Review";
+  if (type == "lucid") return "Triton2";
+  if (type == "flir") return "Blackfly";
+  if (type.empty()) return "—";
+  return type;
+}
+
+static json_t* preview_source_json(const PreviewFrameInfo& info, int fw, int fh)
+{
+  std::string type = g_sourceManager.getSourceType();
+  auto params = g_sourceManager.getSourceParams();
+  std::string label = preview_source_label(type, params);
+  std::ostringstream tip;
+
+  auto fmt_res = [&]() {
+    tip << fw << "×" << fh << " @ " << (int) (info.src_fps + 0.5) << " fps";
+  };
+
+  if (type == "playback") {
+    auto it = params.find("file");
+    tip << "Recorded file: " << (it != params.end() ? it->second : "?");
+    std::string speed = params.count("speed") ? params.at("speed") : "1.0";
+    std::string loop = params.count("loop") ? params.at("loop") : "1";
+    tip << "\nSpeed: " << speed << "×  Loop: " << (loop == "1" ? "on" : "off");
+    if (params.count("rate_limited") && params.at("rate_limited") == "1")
+      tip << "  (rate-limited)";
+    tip << "\n";
+    fmt_res();
+  } else if (type == "lucid") {
+    tip << "Lucid camera (Triton2)";
+    if (params.count("serial") && !params.at("serial").empty())
+      tip << "\nSerial: " << params.at("serial");
+    else
+      tip << "\nCamera index: " << (params.count("id") ? params.at("id") : "0");
+    tip << "\n";
+    fmt_res();
+  } else if (type == "flir") {
+    tip << "FLIR camera (Blackfly)";
+    tip << "\nCamera index: " << (params.count("id") ? params.at("id") : "0");
+    if (params.count("width") && params.count("height"))
+      tip << "\nConfigured: " << params.at("width") << "×" << params.at("height");
+    tip << "\n";
+    fmt_res();
+  } else if (type.empty()) {
+    tip << "No video source active";
+  } else {
+    tip << "Source type: " << type;
+    for (const auto& [k, v] : params) tip << "\n" << k << ": " << v;
+    tip << "\n";
+    fmt_res();
+  }
+
+  json_t* obj = json_object();
+  json_object_set_new(obj, "type", json_string(type.c_str()));
+  json_object_set_new(obj, "label", json_string(label.c_str()));
+  json_object_set_new(obj, "tooltip", json_string(tip.str().c_str()));
+  if (type == "playback") {
+    float spd = 1.0f;
+    if (params.count("speed")) {
+      try {
+        spd = std::stof(params.at("speed"));
+      } catch (...) {
+      }
+    }
+    json_object_set_new(obj, "speed", json_real(spd));
+  }
+  if (type == "lucid" || type == "flir") {
+    std::string key = type;
+    if (params.count("serial") && !params.at("serial").empty())
+      key += ":" + params.at("serial");
+    else if (params.count("id"))
+      key += ":" + params.at("id");
+    else
+      key += ":0";
+    json_object_set_new(obj, "camera_key", json_string(key.c_str()));
+  }
+  return obj;
+}
+
+static void start_web_preview(void)
+{
+  g_webPreview.start(
+    [](int& fps, int& quality) {
+      WebSocketThread* ws = g_wsServer;
+      if (!ws) return 0;
+      fps = ws->previewMaxFps();
+      quality = ws->previewQuality();
+      return ws->previewClients();
+    },
+    [](std::shared_ptr<const std::string> message) {
+      WebSocketThread* ws = g_wsServer;
+      if (ws) ws->broadcastPreview(std::move(message));
+    },
+    [](const PreviewFrameInfo& info) {
+      json_t* all = json_object();
+      for (const auto& name : g_pluginRegistry.listPlugins()) {
+        IAnalysisPlugin* plugin = g_pluginRegistry.getPlugin(name);
+        if (!plugin) continue;
+        std::string s = plugin->getOverlayJSONForSourceFrame(info.frame_id);
+        if (s.empty()) continue;
+        json_t* obj = json_loads(s.c_str(), 0, nullptr);
+        if (obj) json_object_set_new(all, name.c_str(), obj);
+      }
+      char* out = json_dumps(all, JSON_COMPACT);
+      std::string result(out);
+      free(out);
+      json_decref(all);
+      return result;
+    },
+    [](const PreviewFrameInfo& info, int fw, int fh) {
+      return preview_source_json(info, fw, fh);
+    });
+}
 
 void fireEvent(const VstreamEvent& event) {
     if (events_ready.load()) {
@@ -1130,6 +1484,10 @@ public:
       }
     }
     
+    // Fired only once openfile is set: listeners may start a source right
+    // away, and frames captured before then are not queued for storage.
+    std::optional<VstreamEvent> started_event;
+
     // Open storage
     if (use_sqlite_) {
       RecordingMetadata metadata;
@@ -1163,14 +1521,14 @@ public:
 	  
 	  // Fire event with data
 	  std::string data = "file " + metadata_base_name_ + ".db source " + output_file;
-	  fireEvent(VstreamEvent("vstream/metadata_recording_started", data));
+	  started_event.emplace("vstream/metadata_recording_started", data);
 	}
       } else {
 	storage_ok = storage_manager_.openRecording(output_file, metadata);
 
 	if (storage_ok) {
 	  // Fire event for normal recording
-	  fireEvent(VstreamEvent("vstream/recording_started", "file " + output_file));
+	  started_event.emplace("vstream/recording_started", "file " + output_file);
 	}
       }
       
@@ -1220,6 +1578,7 @@ public:
     }
     
     openfile = true;
+    if (started_event) fireEvent(*started_event);
     return true;
   }  
 
@@ -1372,14 +1731,25 @@ public:
 	  FrameMetadata init_metadata;
 	  bool init_in_obs;
 	  cv::Mat temp_frame;
-	  if (frameBufferManager.copyFrame(processFrame, temp_frame, init_metadata, init_in_obs)) {
+	  bool have_init = frameBufferManager.copyFrame(processFrame, temp_frame,
+							  init_metadata, init_in_obs);
+	  int64_t anchor_id = 0;
+	  int64_t anchor_ts = 0;
+	  if (have_init) {
 	    on_frameID = init_metadata.frameID;
 	    on_frameTimestamp = init_metadata.timestamp;
 	    on_systemTimestamp = init_metadata.systemTime;
+	    anchor_id = init_metadata.frameID;
+	    anchor_ts = init_metadata.timestamp;
 	  }
 
 	  if (g_pluginRegistry.hasPlugins()) {
-	    g_pluginRegistry.fileOpenAll(output_file);
+	    // Anchor to this frame, not to whichever frame is analyzed next.
+	    // Inline analysis has already finished this frame before it is
+	    // queued, so a reset here would otherwise latch the anchor on
+	    // frame 1 and leave every later index one behind.
+	    g_pluginRegistry.fileOpenAll(output_file, have_init,
+					 anchor_id, anchor_ts);
 	  }	  
 	}
 	
@@ -1468,7 +1838,8 @@ public:
 		fdata.camera_time_us = cam_us;
 
 		storage_manager_.storeFrame(fdata);
-		storage_manager_.storeFrameWithPlugins(frame_count, prev_fr);
+		storage_manager_.storeFrameWithPlugins(frame_count, prev_fr,
+						       frame_metadata.frameID);
 	      }
 	      else {
 		// DYN_GROUP format
@@ -1689,6 +2060,7 @@ int set_reprocessMode(int status)
   int old = g_reprocess_serial.load();
   if (status == 0 || status == 1)
     g_reprocess_serial.store(status != 0);
+  if (status == 1) g_reprocess_last_frame_id = -1;
   return old;
 }
 
@@ -2494,6 +2866,34 @@ void processMacOSEvents(proginfo_t* p, float scale = 1.0, Mat* frame_to_display 
 }
 #endif
 
+static std::filesystem::path executable_dir(void)
+{
+  std::error_code ec;
+#if defined(__APPLE__)
+  char buf[4096];
+  uint32_t size = sizeof(buf);
+  if (_NSGetExecutablePath(buf, &size) == 0)
+    return std::filesystem::canonical(buf, ec).parent_path();
+#else
+  auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+  if (!ec) return exe.parent_path();
+#endif
+  return std::filesystem::current_path(ec);
+}
+
+// Installed viewer: <exe_dir>/www/app on Linux, Contents/Resources/www/app
+// in the macOS bundle.
+static std::string default_app_dir(void)
+{
+  std::filesystem::path exe_dir = executable_dir();
+  std::filesystem::path linux_dir = exe_dir / "www" / "app";
+  std::filesystem::path bundle_dir = exe_dir / ".." / "Resources" / "www" / "app";
+  std::error_code ec;
+  if (!std::filesystem::exists(linux_dir, ec) && std::filesystem::exists(bundle_dir, ec))
+    return std::filesystem::weakly_canonical(bundle_dir, ec).string();
+  return linux_dir.string();
+}
+
 int main(int argc, char **argv)
 {
   int camera_id = 0;
@@ -2519,6 +2919,7 @@ int main(int argc, char **argv)
   bool playback_loop = true;
 
   int ws_port = 8080;
+  std::string www_dir;
 
   std::string ds_host = "";  // Empty = disabled
   int ds_port = 4620;
@@ -2537,6 +2938,8 @@ int main(int argc, char **argv)
   options.add_options()
     ("v,verbose", "Verbose mode", cxxopts::value<bool>(verbose))
     ("ws-port", "WebSocket server port", cxxopts::value<int>()->default_value("8080"))    
+    ("www-dir", "Browser viewer build to serve at /app/ (default <exe_dir>/www/app)",
+     cxxopts::value<std::string>(www_dir))
     ("w,webcam", "Use webcam", cxxopts::value<bool>(use_webcam))
     ("flir", "Use flir", cxxopts::value<bool>(use_flir))
     ("lucid", "Use Lucid (Arena SDK) camera", cxxopts::value<bool>(use_lucid))
@@ -2733,11 +3136,13 @@ int main(int argc, char **argv)
 
   WebSocketThread wsServer;
   wsServer.port = ws_port;
+  wsServer.app_dir = www_dir.empty() ? default_app_dir() : www_dir;
   g_wsServer = &wsServer;
  
   if (verbose)
     cout << "Starting WebSocket server on port " << wsServer.port << std::endl;
   std::thread ws_thread(&WebSocketThread::startWebSocketServer, &wsServer);
+  start_web_preview();
   
   if (verbose)
     cout << "Starting ds server on port " << dservSocket.dsport << std::endl;
@@ -2758,6 +3163,7 @@ int main(int argc, char **argv)
     
     // Check if startup script requested shutdown
     if (done) {
+      g_webPreview.stop();
       wsServer.shutdown();
       tcpServer.shutdown();
       dservSocket.shutdown();
@@ -2886,7 +3292,32 @@ int main(int argc, char **argv)
 	    }	    
 	  }
 
-	  if (processThread.fileIsOpen()) {
+	  // Browser preview: returns at once unless a client wants a frame now.
+	  if (web_preview_clients() > 0) {
+	    PreviewFrameInfo pinfo;
+	    pinfo.video_frame = curFrame;
+	    IFrameSource *src = g_sourceManager.getCurrentSource();
+	    if (src && src->isPlaybackMode()) {
+	      VideoFileSource *fs = dynamic_cast<VideoFileSource *>(src);
+	      if (fs) pinfo.video_frame = fs->getCurrentFrameIndex();
+	    }
+	    pinfo.frame_id = metadata.frameID;
+	    pinfo.ring_index = curFrame;
+	    pinfo.ring_size = nFrames;
+	    pinfo.src_fps = g_frameSource->getFrameRate();
+	    pinfo.incomplete_frames = g_frameSource->incompleteFrameCount();
+	    pinfo.in_obs = in_obs;
+	    g_webPreview.offer(frame, pinfo);
+	  }
+
+	  // A paused playback source re-reads the same frame; in reprocess mode
+	  // storing those repeats would break the one-row-per-video-frame mapping.
+	  // Keyed on frameID rather than isPaused(): a pause can land between the
+	  // read and this check, which would drop a real frame.
+	  bool skip_store = g_reprocess_serial.load() &&
+	    metadata.frameID <= g_reprocess_last_frame_id;
+	  if (processThread.fileIsOpen() && !skip_store) {
+	    if (g_reprocess_serial.load()) g_reprocess_last_frame_id = metadata.frameID;
 	    process_queue.push_back(curFrame);
 
 	    // Serial reprocess barrier: wait until the process thread has fully
@@ -3009,6 +3440,7 @@ cleanup:
     watchdog_thread.join();
   }
 
+  g_webPreview.stop();
   g_wsServer = nullptr;
 
   

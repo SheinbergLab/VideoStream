@@ -404,7 +404,7 @@ add_executable( VideoStream VideoStream.cpp FrameBufferManager.cpp DservSocket.c
 		SamplingManager.cpp ReviewModeSource.cpp WebcamSource.cpp
 		FlirCameraSource.cpp LucidCameraSource.cpp CameraCommands.cpp
 		VideoFileSource.cpp StorageManager.cpp
-		AnalysisPluginRegistry.cpp tclproc.cpp
+		AnalysisPluginRegistry.cpp tclproc.cpp WebPreview.cpp ViewerMediaApi.cpp
 		external/sqlite/sqlite3.c)
 
 # Camera SDK rpaths (Linux). Build tree: find each SDK where it is. Installed:
@@ -576,6 +576,9 @@ if(APPLE AND MACOS_APP_BUNDLE)
             REGEX "\\.(NEW|thresholds|BAK|bak|orig|swp)$" EXCLUDE
             REGEX "\\.DS_Store$"                       EXCLUDE
             REGEX "history\\.txt$"                     EXCLUDE)
+    # Browser viewer (npm run build in web/); skipped if it wasn't built.
+    install(DIRECTORY web/dist/ DESTINATION ${APP_BUNDLE}/Contents/Resources/www/app
+            COMPONENT videostream OPTIONAL)
 
     # Bundle the Tcl stdlib so the relocated libtcl finds it at ../lib/tcl9.0
     # (relative to Contents/Frameworks). tcl9.0/ = packages, tcl9/ = Tcl modules.
@@ -691,6 +694,9 @@ elseif(NOT APPLE)
             REGEX "history\\.txt$"                     EXCLUDE)
     install(DIRECTORY www DESTINATION videostream COMPONENT videostream
             REGEX "\\.DS_Store$" EXCLUDE)
+    # Browser viewer (npm run build in web/); skipped if it wasn't built.
+    install(DIRECTORY web/dist/ DESTINATION videostream/www/app COMPONENT videostream
+            OPTIONAL)
 
     if(WITH_LUCID AND LUCID_BUNDLE_RUNTIME)
         # Arena runtime, unmodified (not stripped): only the acquisition closure

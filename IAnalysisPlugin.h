@@ -29,9 +29,27 @@ public:
 
     // FileOpen
     virtual void fileOpen(const std::string &filename) = 0;
+
+    // First frame of the file just opened. The host calls this immediately
+    // after fileOpen(), with that frame's id and timestamp. On the
+    // synchronous path this frame has already been analyzed, so a session
+    // anchor must be taken from here — latching "the next frame" is one
+    // frame late for the rest of the file.
+    virtual void anchorFile(int64_t frameID, int64_t timestampNs) {}
   
     // Visualization
     virtual bool drawOverlay(cv::Mat& frame, int frame_idx) { return false; }
+
+    // The same overlay as structured data (a JSON object, full-frame pixel
+    // coordinates) for clients that draw it themselves, e.g. the browser
+    // viewer. Empty string = nothing to draw.
+    virtual std::string getOverlayJSON(int frame_idx) { return ""; }
+
+    // Overlay for one source frame (metadata.frameID). Default ignores the
+    // id and returns whatever the plugin last produced.
+    virtual std::string getOverlayJSONForSourceFrame(long long /*frame_id*/) {
+        return getOverlayJSON(-1);
+    }
     
     // TCL command registration
     virtual void registerTclCommands(Tcl_Interp* interp) {}
@@ -67,8 +85,13 @@ public:
      * @param frame_number Sequential frame number in output video
      * @return true if data was stored successfully
      */
-    virtual bool storeFrameData(sqlite3* db, int frame_number, int obs_id) { 
-    	return false; 
+    // src_frame_id is metadata.frameID of the image just written. Plugins that
+    // analyze asynchronously must store that frame's detection, not whichever
+    // result happened to finish last. -1 means the caller has no id.
+    virtual bool storeFrameData(sqlite3* db, int frame_number, int obs_id,
+                               int64_t src_frame_id = -1) {
+    	(void)src_frame_id;
+    	return false;
     }
     
     /**

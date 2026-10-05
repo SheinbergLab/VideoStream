@@ -39,8 +39,11 @@ public:
     // Shutdown all plugins
     void shutdownAll();
 
-    // File open callbacks
-    void fileOpenAll(const std::string &filename);
+    // File open callbacks. When haveAnchor is set, anchorFile() is called
+    // with the first stored frame's id and timestamp, still under the
+    // plugin lock, so fileOpen()'s reset and the new anchor are one step.
+    void fileOpenAll(const std::string &filename, bool haveAnchor,
+                     int64_t anchorFrameID, int64_t anchorTimestamp);
   
     // Reset all (called when new datafile is opened)
     void resetAll();

@@ -35,6 +35,8 @@
 
 #include "VideoStream.h"
 #include "AnalysisPluginRegistry.h"
+#include "WebPreview.h"
+#include "ViewerMediaApi.h"
 
 extern AnalysisPluginRegistry g_pluginRegistry;
 
@@ -77,6 +79,29 @@ static int getSourceTypeCmd(ClientData clientData, Tcl_Interp *interp,
   SourceManager* sm = p->sourceManager;
 
   Tcl_SetObjResult(interp, Tcl_NewStringObj(sm->getSourceType().c_str(), -1));
+  return TCL_OK;
+}
+
+static int probeFirstCameraCmd(ClientData /*clientData*/, Tcl_Interp* interp,
+                               int objc, Tcl_Obj* const objv[]) {
+  if (objc != 1) {
+    Tcl_WrongNumArgs(interp, 1, objv, "");
+    return TCL_ERROR;
+  }
+  ViewerCameraPick pick = viewer_probe_first_camera();
+  if (!pick.found) {
+    Tcl_SetResult(interp, (char*)"", TCL_STATIC);
+    return TCL_OK;
+  }
+  Tcl_Obj* list = Tcl_NewListObj(0, nullptr);
+  Tcl_ListObjAppendElement(interp, list,
+                           Tcl_NewStringObj(pick.vendor.c_str(), -1));
+  Tcl_ListObjAppendElement(interp, list, Tcl_NewIntObj(pick.id));
+  if (!pick.serial.empty()) {
+    Tcl_ListObjAppendElement(interp, list,
+                             Tcl_NewStringObj(pick.serial.c_str(), -1));
+  }
+  Tcl_SetObjResult(interp, list);
   return TCL_OK;
 }
 
@@ -133,6 +158,28 @@ static int startSourceCmd(ClientData clientData, Tcl_Interp *interp,
         Tcl_SetObjResult(interp, Tcl_NewStringObj("failed to start source", -1));
         return TCL_ERROR;
     }
+}
+
+static int setPlaybackSpeedCmd(ClientData clientData, Tcl_Interp* interp,
+                               int objc, Tcl_Obj* const objv[]) {
+  if (objc != 2) {
+    Tcl_WrongNumArgs(interp, 1, objv, "speed");
+    return TCL_ERROR;
+  }
+  double speed = 0;
+  if (Tcl_GetDoubleFromObj(interp, objv[1], &speed) != TCL_OK) return TCL_ERROR;
+  if (speed < 0.25 || speed > 2.0) {
+    Tcl_SetResult(interp, (char*) "speed must be between 0.25 and 2.0", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  proginfo_t* p = (proginfo_t*)clientData;
+  SourceManager* sm = p->sourceManager;
+  if (!sm->setPlaybackSpeed((float)speed)) {
+    Tcl_SetResult(interp, (char*) "no active file playback source", TCL_STATIC);
+    return TCL_ERROR;
+  }
+  Tcl_SetObjResult(interp, Tcl_NewStringObj("ok", -1));
+  return TCL_OK;
 }
 
 static int stopSourceCmd(ClientData clientData, Tcl_Interp *interp,
@@ -973,6 +1020,49 @@ static int reviewClearCmd(ClientData data, Tcl_Interp *interp,
 {
   proginfo_t *p = (proginfo_t *)data;
   p->sourceManager->clearSampleFrames();
+  return TCL_OK;
+}
+
+// vstream::webPreview ?maxfps N? ?quality Q?
+//
+// Browser preview stream settings. maxfps caps the encode rate whatever
+// clients ask for; quality is the JPEG quality for clients that did not
+// request one. Returns a dict of the settings and current activity.
+static int webPreviewCmd(ClientData data, Tcl_Interp *interp,
+                         int objc, Tcl_Obj *const objv[])
+{
+  if (objc % 2 != 1) {
+    Tcl_WrongNumArgs(interp, 1, objv, "?maxfps N? ?quality Q?");
+    return TCL_ERROR;
+  }
+  for (int i = 1; i < objc; i += 2) {
+    const char *opt = Tcl_GetString(objv[i]);
+    int val;
+    if (Tcl_GetIntFromObj(interp, objv[i + 1], &val) != TCL_OK) return TCL_ERROR;
+    if (!strcmp(opt, "maxfps"))       g_webPreview.setMaxFps(val);
+    else if (!strcmp(opt, "quality")) g_webPreview.setDefaultQuality(val);
+    else {
+      Tcl_AppendResult(interp, "webPreview: expected maxfps or quality, got \"",
+                       opt, "\"", NULL);
+      return TCL_ERROR;
+    }
+  }
+
+  WebPreview::Stats st = g_webPreview.stats();
+  Tcl_Obj *d = Tcl_NewDictObj();
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("maxfps", -1),
+                 Tcl_NewIntObj(g_webPreview.maxFps()));
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("quality", -1),
+                 Tcl_NewIntObj(g_webPreview.defaultQuality()));
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("clients", -1),
+                 Tcl_NewIntObj(web_preview_clients()));
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("encoded", -1),
+                 Tcl_NewWideIntObj(st.frames_encoded));
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("encode_ms", -1),
+                 Tcl_NewDoubleObj(st.last_encode_ms));
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("bytes", -1),
+                 Tcl_NewWideIntObj((Tcl_WideInt) st.last_bytes));
+  Tcl_SetObjResult(interp, d);
   return TCL_OK;
 }
 
@@ -1980,8 +2070,13 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   Tcl_CreateObjCommand(interp, "::vstream::stopSource", stopSourceCmd, p, NULL);
   Tcl_CreateObjCommand(interp, "::vstream::getSourceType", getSourceTypeCmd, p, NULL);
   Tcl_CreateObjCommand(interp, "::vstream::getSourceStatus", getSourceStatusCmd, p, NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::probeFirstCamera", probeFirstCameraCmd,
+                       p, NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::setPlaybackSpeed", setPlaybackSpeedCmd, p,
+                       NULL);
 
   Tcl_CreateObjCommand(interp, "::vstream::saveFrame", saveFrameCmd, p, NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::webPreview", webPreviewCmd, p, NULL);
 
   Tcl_CreateObjCommand(interp, "vstream::getPixelIntensity",
 		       getPixelIntensityCmd,

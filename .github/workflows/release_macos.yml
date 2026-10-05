@@ -65,6 +65,17 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN"
           security find-identity -p basic -v
 
+      - name: Set up Node (browser viewer)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the browser viewer (web/dist)
+        run: |
+          cd web
+          npm ci
+          npm run build
+
       - name: Build, sign (.app), package (.pkg), sign + notarize the pkg
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}

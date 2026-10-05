@@ -42,6 +42,9 @@ public:
   bool startSource(const std::string& type, const std::map<std::string, std::string>& params);
   bool stopSource();
 
+  /** Live update for active file playback (0.25–2.0). */
+  bool setPlaybackSpeed(float speed);
+
   // Check if current source is compatible with review frames
   bool isCompatibleWithReview() const;
 
