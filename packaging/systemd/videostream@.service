@@ -1,0 +1,38 @@
+# VideoStream as a service, run as the user named after the @:
+#
+#   sudo systemctl link /usr/local/videostream/systemd/videostream@.service
+#   sudo systemctl enable --now videostream@lab     # runs as user "lab"
+#   journalctl -u videostream@lab -f                # its console output
+#
+# With no -f, an installed VideoStream runs that user's
+# ~/.config/videostream/startup.tcl if present, else the bundled
+# tcl/serve.tcl (eye tracking; browser viewer on port 8080). To pass options
+# (another script, --ws-port, ...), override ExecStart with
+# `sudo systemctl edit videostream@lab`.
+
+[Unit]
+Description=VideoStream camera/video server (user %i)
+# Network cameras (GigE) and dserv are found over the network.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=~
+ExecStart=/usr/local/videostream/VideoStream
+# VideoStream shuts down cleanly (closing any open recording) on SIGINT,
+# not on systemd's default SIGTERM.
+KillSignal=SIGINT
+TimeoutStopSec=20
+# Restart after a crash, but not after a deliberate quit (exit 0).
+Restart=on-failure
+RestartSec=5
+# uWS caps request headers at 4 KB; a browser reaching the box by a name in a
+# cookie-heavy domain overruns that (see dserv.service).
+Environment=UWS_HTTP_MAX_HEADERS_SIZE=32768
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

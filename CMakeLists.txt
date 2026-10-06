@@ -730,6 +730,10 @@ elseif(NOT APPLE)
     # ============ Linux: /usr/local/videostream + DEB (A.2a) ============
     install(TARGETS VideoStream  DESTINATION videostream                 COMPONENT videostream)
     install(TARGETS eyetracking  LIBRARY DESTINATION videostream/plugins COMPONENT videostream)
+    # Service template, not enabled by the package: `systemctl link` it, then
+    # `systemctl enable --now videostream@<user>` (see the file).
+    install(FILES packaging/systemd/videostream@.service
+            DESTINATION videostream/systemd COMPONENT videostream)
     install(DIRECTORY tcl DESTINATION videostream COMPONENT videostream
             REGEX "~$"                                 EXCLUDE
             REGEX "\\.(NEW|thresholds|BAK|bak|orig|swp)$" EXCLUDE

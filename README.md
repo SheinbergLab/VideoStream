@@ -50,6 +50,32 @@ Note: the package depends on `libtcl9.0`, which is only available from apt on
 Debian Trixie / newer Ubuntu. On older releases you must provide Tcl 9 yourself
 (or build from source).
 
+#### Running as a service
+
+The package ships a systemd template, not enabled by default. The name after
+the `@` is the user it runs as (that user's `~/.config/videostream` settings
+and `startup.tcl` apply):
+
+```sh
+sudo systemctl link /usr/local/videostream/systemd/videostream@.service
+sudo systemctl enable --now videostream@lab
+journalctl -u videostream@lab -f
+```
+
+With no script given it runs the bundled `serve.tcl`, so the eye-tracking
+viewer is at `http://<host>:8080/eyetracker/`. It stops with SIGINT (closing
+any open recording cleanly) and restarts after a crash but not after a
+deliberate quit. To pass options, `sudo systemctl edit videostream@lab` and
+override `ExecStart`. Only one instance per machine unless the others get
+different ports.
+
+For GigE cameras (Lucid Triton), raise the socket receive buffers once:
+
+```sh
+printf 'net.core.rmem_max=33554432\nnet.core.rmem_default=33554432\n' | sudo tee /etc/sysctl.d/60-gige-camera.conf
+sudo sysctl --system
+```
+
 CI (GitHub Actions) builds these artifacts on every tag; see
 [docs/build-and-release-plan.md](docs/build-and-release-plan.md) for details.
 
