@@ -392,13 +392,16 @@ file(GLOB_RECURSE VIEWER_DIST_FILES CONFIGURE_DEPENDS ${VIEWER_DIST_DIR}/*)
 # Rewritten only when the file list changes, so a deleted file re-embeds too.
 file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/embedded_app.files
      CONTENT "${VIEWER_DIST_FILES}")
-if(EXISTS ${VIEWER_DIST_DIR}/index.html)
+# Each app builds to web/dist/<app>/index.html; the eye-tracking viewer is
+# the one a release must carry.
+set(VIEWER_PAGE ${VIEWER_DIST_DIR}/eyetracker/index.html)
+if(EXISTS ${VIEWER_PAGE})
     message(STATUS "Embedding browser viewer from ${VIEWER_DIST_DIR}")
 elseif(VS_REQUIRE_VIEWER)
-    message(FATAL_ERROR "VS_REQUIRE_VIEWER: ${VIEWER_DIST_DIR}/index.html not found; "
+    message(FATAL_ERROR "VS_REQUIRE_VIEWER: ${VIEWER_PAGE} not found; "
                         "run 'npm ci && npm run build' in web/ first")
 else()
-    message(WARNING "Browser viewer not built (no ${VIEWER_DIST_DIR}/index.html): "
+    message(WARNING "Browser viewer not built (no ${VIEWER_PAGE}): "
                     "/eyetracker/ will only work with --www-dir. Build it with "
                     "'npm ci && npm run build' in web/.")
 endif()
