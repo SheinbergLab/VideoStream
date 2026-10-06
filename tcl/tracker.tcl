@@ -1004,6 +1004,16 @@ proc connect_to_dataserver { host {port 4620} } {
 
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
 
+# Where the viewer's file picker looks for eye-tracking recordings (as in
+# serve.tcl): the lab data share, and under WSL each Windows user's
+# Videos/eye_tracking.
+set places [list "Eye tracking videos" /mnt/analysis/data/eye_tracking]
+foreach d [glob -nocomplain -types d /mnt/c/Users/*/Videos/eye_tracking] {
+    lappend places "Eye tracking videos" $d
+}
+vstream::mediaPlaces $places
+unset -nocomplain places d
+
 # Default detector parameters, in code. The browser's "Reset to defaults"
 # comes back here (apply_default_tuning, below, adds the rig-local file).
 proc apply_code_defaults {} {

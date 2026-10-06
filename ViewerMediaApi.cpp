@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <set>
 #include <vector>
 
@@ -32,6 +33,20 @@ static bool has_video_ext(const fs::path& p) {
   return kVideoExt.count(ext) != 0;
 }
 
+// Set from Tcl on the main thread, read by the web thread.
+static std::mutex g_places_mutex;
+static MediaPlaces g_places;
+
+void viewer_set_media_places(MediaPlaces places) {
+  std::lock_guard<std::mutex> lock(g_places_mutex);
+  g_places = std::move(places);
+}
+
+MediaPlaces viewer_media_places() {
+  std::lock_guard<std::mutex> lock(g_places_mutex);
+  return g_places;
+}
+
 static std::vector<fs::path> allowed_browse_roots(const SourceManager& sm) {
   std::vector<fs::path> roots;
   auto add = [&](const fs::path& p) {
@@ -47,8 +62,8 @@ static std::vector<fs::path> allowed_browse_roots(const SourceManager& sm) {
   };
 
   if (const char* home = std::getenv("HOME")) add(fs::path(home));
-  add(fs::path("/mnt/analysis/data/eye_tracking"));
-  add(fs::path("/mnt/c/Users"));
+  add(fs::path("/mnt/c/Users"));  // WSL: the Windows user folders
+  for (const auto& [label, path] : viewer_media_places()) add(fs::path(path));
   auto params = sm.getSourceParams();
   if (params.count("file")) {
     add(fs::path(params.at("file")).parent_path());
@@ -232,14 +247,9 @@ std::string viewer_default_browse_path(const SourceManager& sm) {
     std::error_code ec;
     if (fs::is_directory(p, ec)) return p.string();
   }
-  const fs::path candidates[] = {
-      fs::path("/mnt/analysis/data/eye_tracking"),
-      fs::path("/mnt/c/Users/ryan/Videos/eye_tracking"),
-      fs::path("/mnt/c/Users/ryan/Videos"),
-  };
-  for (const auto& c : candidates) {
+  for (const auto& [label, path] : viewer_media_places()) {
     std::error_code ec;
-    if (fs::is_directory(c, ec)) return c.string();
+    if (fs::is_directory(path, ec)) return path;
   }
   if (const char* home = std::getenv("HOME")) {
     fs::path v = fs::path(home) / "Videos";
@@ -280,9 +290,7 @@ static json_t* browse_places_json(const SourceManager& sm) {
   auto params = sm.getSourceParams();
   if (params.count("file"))
     add("Current video folder", fs::path(params.at("file")).parent_path());
-  add("Eye tracking videos", "/mnt/analysis/data/eye_tracking");
-  add("Eye tracking videos", "/mnt/c/Users/ryan/Videos/eye_tracking");
-  add("Videos", "/mnt/c/Users/ryan/Videos");
+  for (const auto& [label, path] : viewer_media_places()) add(label, path);
   add("Windows user folders", "/mnt/c/Users");
   if (const char* home = std::getenv("HOME")) {
     add("Linux home", fs::path(home));

@@ -35,6 +35,7 @@
 
 #include "VideoStream.h"
 #include "AnalysisPluginRegistry.h"
+#include "ViewerMediaApi.h"
 #include "WebPreview.h"
 #include "ViewerMediaApi.h"
 
@@ -1427,6 +1428,42 @@ static int openFileCmd(ClientData clientData, Tcl_Interp *interp,
     return TCL_OK;
 }
 
+/*
+ * vstream::mediaPlaces ?{label path ?label path ...?}?
+ *   Folders the browser viewer's file picker offers (and may browse), set by
+ *   the startup script. With an argument, replaces the list; returns it.
+ */
+static int mediaPlacesCmd(ClientData clientData, Tcl_Interp *interp,
+                          int objc, Tcl_Obj *const objv[])
+{
+  if (objc > 2) {
+    Tcl_WrongNumArgs(interp, 1, objv, "?{label path ...}?");
+    return TCL_ERROR;
+  }
+  if (objc == 2) {
+    Tcl_Size n;
+    Tcl_Obj **elems;
+    if (Tcl_ListObjGetElements(interp, objv[1], &n, &elems) != TCL_OK)
+      return TCL_ERROR;
+    if (n % 2) {
+      Tcl_SetResult(interp, (char *) "expected a list of label path pairs",
+                    TCL_STATIC);
+      return TCL_ERROR;
+    }
+    MediaPlaces places;
+    for (Tcl_Size i = 0; i < n; i += 2)
+      places.emplace_back(Tcl_GetString(elems[i]), Tcl_GetString(elems[i + 1]));
+    viewer_set_media_places(std::move(places));
+  }
+  Tcl_Obj *result = Tcl_NewListObj(0, NULL);
+  for (const auto& [label, path] : viewer_media_places()) {
+    Tcl_ListObjAppendElement(interp, result, Tcl_NewStringObj(label.c_str(), -1));
+    Tcl_ListObjAppendElement(interp, result, Tcl_NewStringObj(path.c_str(), -1));
+  }
+  Tcl_SetObjResult(interp, result);
+  return TCL_OK;
+}
+
 static int closeFileCmd(ClientData clientData, Tcl_Interp *interp,
                         int objc, Tcl_Obj *const objv[])
 {
@@ -2092,6 +2129,7 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
 
   Tcl_CreateObjCommand(interp, "::vstream::saveFrame", saveFrameCmd, p, NULL);
   Tcl_CreateObjCommand(interp, "::vstream::webPreview", webPreviewCmd, p, NULL);
+  Tcl_CreateObjCommand(interp, "::vstream::mediaPlaces", mediaPlacesCmd, p, NULL);
 
   Tcl_CreateObjCommand(interp, "vstream::getPixelIntensity",
 		       getPixelIntensityCmd,

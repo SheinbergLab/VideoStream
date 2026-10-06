@@ -39,6 +39,14 @@ set ::S::live_serial ""
 
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
 
+# Where the viewer's file picker looks for eye-tracking recordings: the lab
+# data share, and under WSL each Windows user's Videos/eye_tracking.
+set ::S::places [list "Eye tracking videos" /mnt/analysis/data/eye_tracking]
+foreach d [glob -nocomplain -types d /mnt/c/Users/*/Videos/eye_tracking] {
+    lappend ::S::places "Eye tracking videos" $d
+}
+vstream::mediaPlaces $::S::places
+
 # Settings changed in the browser viewer are kept by the server, here.
 source [file join [file dirname [info script]] viewer_settings.tcl]
 
