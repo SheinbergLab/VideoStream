@@ -132,13 +132,19 @@ elseif(APPLE)
 	# than guessing — otherwise the compiler silently falls back to the macOS SDK's
 	# Tcl 8.6 headers (Tcl_Size unknown, Tcl_LinkVar signature mismatch).
 	find_package(PkgConfig REQUIRED)
+	set(TCL_STDLIB_DIRNAME "tcl9.0")  # overridden from pkg-config below
 	execute_process(COMMAND brew --prefix tcl-tk@9
 	    OUTPUT_VARIABLE BREW_TCL OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 	if(BREW_TCL AND EXISTS "${BREW_TCL}/lib/pkgconfig/tcl.pc")
 	    set(ENV{PKG_CONFIG_PATH} "${BREW_TCL}/lib/pkgconfig")
 	    pkg_check_modules(TCL REQUIRED tcl)
 	    set(TCL_INCLUDE_DIR "${TCL_INCLUDE_DIRS}")
-	    set(TCL_LIBRARY "${BREW_TCL}/lib/libtcl9.0.dylib")
+	    # Don't hardcode the minor version: brew only carries the latest 9.x
+	    # (9.0 -> 9.1 broke this). tcl.pc names the dylib; the stdlib dir follows.
+	    pkg_get_variable(TCL_LIBFILE tcl libfile)
+	    set(TCL_LIBRARY "${TCL_LIBDIR}/${TCL_LIBFILE}")
+	    string(REGEX MATCH "^[0-9]+\\.[0-9]+" _tcl_majmin "${TCL_VERSION}")
+	    set(TCL_STDLIB_DIRNAME "tcl${_tcl_majmin}")
 	    include_directories(${TCL_INCLUDE_DIRS})
 	    link_directories(${TCL_LIBRARY_DIRS})
 	    add_compile_options(${TCL_CFLAGS_OTHER})   # -DTCL_WITH_EXTERNAL_TOMMATH
@@ -580,26 +586,26 @@ if(APPLE AND MACOS_APP_BUNDLE)
     install(DIRECTORY web/dist/ DESTINATION ${APP_BUNDLE}/Contents/Resources/www/app
             COMPONENT videostream OPTIONAL)
 
-    # Bundle the Tcl stdlib so the relocated libtcl finds it at ../lib/tcl9.0
-    # (relative to Contents/Frameworks). tcl9.0/ = packages, tcl9/ = Tcl modules.
+    # Bundle the Tcl stdlib so the relocated libtcl finds it at ../lib/tcl9.x
+    # (relative to Contents/Frameworks). tcl9.x/ = packages, tcl9/ = Tcl modules.
     # Trailing slash on the source + full destination path => install the
     # CONTENTS (dereferencing brew's keg symlinks). Without it, a symlinked
-    # lib/tcl9.0 on the CI runner copies as an empty dir entry. (Matches stim2.)
-    if(LIBTCL_DIR AND EXISTS "${LIBTCL_DIR}/tcl9.0")
-        install(DIRECTORY ${LIBTCL_DIR}/tcl9.0/
-                DESTINATION ${APP_BUNDLE}/Contents/lib/tcl9.0 COMPONENT videostream)
+    # lib/tcl9.x on the CI runner copies as an empty dir entry. (Matches stim2.)
+    if(LIBTCL_DIR AND EXISTS "${LIBTCL_DIR}/${TCL_STDLIB_DIRNAME}")
+        install(DIRECTORY ${LIBTCL_DIR}/${TCL_STDLIB_DIRNAME}/
+                DESTINATION ${APP_BUNDLE}/Contents/lib/${TCL_STDLIB_DIRNAME} COMPONENT videostream)
         install(DIRECTORY ${LIBTCL_DIR}/tcl9/
                 DESTINATION ${APP_BUNDLE}/Contents/lib/tcl9 COMPONENT videostream OPTIONAL)
     else()
-        message(FATAL_ERROR "Tcl stdlib (tcl9.0/) not found under ${LIBTCL_DIR}; cannot build a self-contained .app")
+        message(FATAL_ERROR "Tcl stdlib (${TCL_STDLIB_DIRNAME}/) not found under ${LIBTCL_DIR}; cannot build a self-contained .app")
     endif()
 
     # Fail the build loudly if the stdlib didn't actually land in the bundle
     # (e.g. an empty/symlinked copy) rather than shipping a .app that can't
     # find init.tcl at runtime.
     install(CODE "
-        if(NOT EXISTS \"${APP_BUNDLE}/Contents/lib/tcl9.0/init.tcl\")
-            message(FATAL_ERROR \"Bundled Tcl stdlib is missing Contents/lib/tcl9.0/init.tcl\")
+        if(NOT EXISTS \"${APP_BUNDLE}/Contents/lib/${TCL_STDLIB_DIRNAME}/init.tcl\")
+            message(FATAL_ERROR \"Bundled Tcl stdlib is missing Contents/lib/${TCL_STDLIB_DIRNAME}/init.tcl\")
         endif()
     " COMPONENT videostream)
 
