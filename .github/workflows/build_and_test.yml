@@ -79,9 +79,12 @@ jobs:
       - name: Install build dependencies
         run: |
           brew update
-          # The runner image's openssl@1.1 owns bin/openssl, so linking the
-          # openssl@3 that opencv@4 pulls in fails the install. We use neither.
-          brew unlink openssl@1.1 || true
+          # The runner image leaves symlinks (bin/openssl, ...) into openssl@1.1
+          # that brew doesn't count as linked (`brew unlink` removes 0), so
+          # linking the openssl@3 that opencv@4 pulls in fails the install.
+          # Delete them directly. We use neither openssl.
+          find /opt/homebrew/bin /opt/homebrew/include /opt/homebrew/lib /opt/homebrew/share \
+            -maxdepth 4 -lname '*openssl@1.1*' -print -delete 2>/dev/null || true
           # opencv@4, NOT opencv: the unversioned formula moved to OpenCV 5.0
           # (2026-07), which breaks the imgproc shape API this codebase uses.
           # CMakeLists adds the keg-only opencv@4 prefix to CMAKE_PREFIX_PATH.
