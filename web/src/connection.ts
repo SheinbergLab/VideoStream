@@ -6,6 +6,13 @@ import {
   type SourcesResponse,
 } from "./protocol";
 
+/** One line of the server's console output. */
+export interface LogLine {
+  seq: number;
+  err?: boolean;
+  text: string;
+}
+
 export interface ConnectionOptions {
   fps: number;
   quality?: number;
@@ -13,6 +20,12 @@ export interface ConnectionOptions {
   onStatus: (connected: boolean, url: string) => void;
   /** Welcome from the server: true when this browser is on the server machine. */
   onWelcome?: (local: boolean) => void;
+  /** A server event (`vstream/*`): its name and data, which is a string for the settings events. */
+  onEvent?: (event: string, data: unknown) => void;
+  /** Server console lines, while setLogs(true) is in effect. */
+  onLog?: (lines: LogLine[]) => void;
+  /** The server restarted (its line numbers started over): drop what was shown. */
+  onLogReset?: () => void;
   onEvalError?: (message: string) => void;
   onEvalOk?: () => void;
 }
@@ -42,6 +55,9 @@ export class Connection {
   private reqId = 0;
   private pending = new Map<string, Pending>();
   readonly url = resolveWsUrl();
+  // Console stream state, kept so a reconnect resumes where it left off.
+  private logsWanted = false;
+  private logsLast = 0;
 
   constructor(private opts: ConnectionOptions) {}
 
@@ -76,6 +92,12 @@ export class Connection {
   browsePath(path?: string): Promise<BrowseResponse> {
     const p = path ? { cmd: "browse", path } : { cmd: "browse" };
     return this.request(p).then((j) => j as unknown as BrowseResponse);
+  }
+
+  /** Start or stop the server console stream; it resumes after a reconnect. */
+  setLogs(enable: boolean): void {
+    this.logsWanted = enable;
+    this.sendRaw({ cmd: "logs", enable, since: this.logsLast });
   }
 
   private sendRaw(obj: object): void {
@@ -133,6 +155,22 @@ export class Connection {
         const j = JSON.parse(ev.data) as JsonMsg;
         if (j.type === "welcome") {
           this.opts.onWelcome?.(j.local === true);
+          const latest = typeof j.log_latest === "number" ? j.log_latest : 0;
+          if (latest < this.logsLast) {
+            this.logsLast = 0;
+            this.opts.onLogReset?.();
+          }
+          if (this.logsWanted) this.sendRaw({ cmd: "logs", enable: true, since: this.logsLast });
+          return;
+        }
+        if (j.type === "event" && typeof j.event === "string") {
+          this.opts.onEvent?.(j.event, j.data);
+          return;
+        }
+        if (j.type === "log" && Array.isArray(j.lines)) {
+          const lines = j.lines as LogLine[];
+          if (lines.length) this.logsLast = lines[lines.length - 1].seq;
+          this.opts.onLog?.(lines);
           return;
         }
         const rid = j.requestId;

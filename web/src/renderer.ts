@@ -12,8 +12,8 @@ export type OverlayPainter = (ctx: CanvasRenderingContext2D, header: FrameHeader
 
 // Diameter of the paused-feed loupe, in CSS pixels. Source pixels inside it
 // are drawn at LOUPE_MAG times their current on-screen size.
-const LOUPE_DIAMETER_CSS = 160;
-const LOUPE_MAG = 4;
+const LOUPE_DIAMETER_CSS = 240;
+const LOUPE_MAG = 6;
 
 // Two stacked canvases: the decoded JPEG, and an overlay drawn in frame
 // coordinates. Decoding is latest-wins: while one frame decodes, newer
@@ -30,6 +30,8 @@ export class Renderer {
   private view: View = { scale: 1, offsetX: 0, offsetY: 0, dpr: 1 };
   // Frame-space point under the pointer while the paused loupe is showing.
   private loupe: { x: number; y: number } | null = null;
+  // Short text shown above the loupe, or null for none.
+  private loupeHint: string | null = null;
 
   // Frames that were replaced before they could be decoded.
   skipped = 0;
@@ -67,15 +69,23 @@ export class Renderer {
     return { header: this.header, view: this.view };
   }
 
-  // Frame coordinates of the pointer, or null to hide the loupe.
-  setLoupe(frame: { x: number; y: number } | null): void {
+  // Frame coordinates of the pointer, or null to hide the loupe. `hint` is
+  // drawn above it.
+  setLoupe(frame: { x: number; y: number } | null, hint: string | null = null): void {
     if (frame === null) {
       if (this.loupe === null) return;
       this.loupe = null;
-    } else if (this.loupe && this.loupe.x === frame.x && this.loupe.y === frame.y) {
+      this.loupeHint = null;
+    } else if (
+      this.loupe &&
+      this.loupe.x === frame.x &&
+      this.loupe.y === frame.y &&
+      this.loupeHint === hint
+    ) {
       return;
     } else {
       this.loupe = { x: frame.x, y: frame.y };
+      this.loupeHint = hint;
     }
     this.dirty = true;
   }
@@ -148,9 +158,8 @@ export class Renderer {
     }
   };
 
-  // Circular sample of the source bitmap, centered on the pointer. The pixel
-  // grid stays locked to source pixels; the cell under the pointer is outlined
-  // in red and its contents stay visible.
+  // Circular sample of the source bitmap, centered on the pointer, with the
+  // pixel grid locked to source pixels.
   private drawLoupe(bitmap: ImageBitmap): void {
     const loupe = this.loupe;
     if (!loupe) return;
@@ -190,13 +199,6 @@ export class Renderer {
       this.paintOverlay(o, this.header, loupeView);
     }
 
-    const i = Math.floor(fx);
-    const j = Math.floor(fy);
-    if (i >= 0 && j >= 0 && i < bitmap.width && j < bitmap.height) {
-      o.strokeStyle = "#ff2a2a";
-      o.lineWidth = 2 / magScale;
-      o.strokeRect(i, j, 1, 1);
-    }
     o.restore();
 
     o.save();
@@ -206,6 +208,32 @@ export class Renderer {
     o.strokeStyle = "rgba(255,255,255,0.92)";
     o.lineWidth = 2;
     o.stroke();
+    if (this.loupeHint) this.drawLoupeHint(o, this.loupeHint, cx, cy, radius);
     o.restore();
+  }
+
+  // Label centered above the loupe (below it when there is no room above).
+  private drawLoupeHint(
+    o: CanvasRenderingContext2D,
+    text: string,
+    cx: number,
+    cy: number,
+    radius: number,
+  ): void {
+    o.font = "12px system-ui, sans-serif";
+    o.textAlign = "center";
+    o.textBaseline = "middle";
+    const w = o.measureText(text).width + 14;
+    const h = 20;
+    const stageW = this.overlayCanvas.width / this.view.dpr;
+    const above = cy - radius - 6 - h >= 0;
+    const y = above ? cy - radius - 6 - h : cy + radius + 6;
+    const x = Math.min(Math.max(cx - w / 2, 2), Math.max(2, stageW - w - 2));
+    o.fillStyle = "rgba(0,0,0,0.75)";
+    o.beginPath();
+    o.roundRect(x, y, w, h, 4);
+    o.fill();
+    o.fillStyle = "#fff";
+    o.fillText(text, x + w / 2, y + h / 2 + 0.5);
   }
 }

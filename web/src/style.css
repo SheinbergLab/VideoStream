@@ -1017,6 +1017,14 @@ button.bar-control:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.tuning-readonly-value.level-ok {
+  color: #9fd8a8;
+}
+
+.tuning-readonly-value.level-warn {
+  color: #e8c97a;
+}
+
 .tuning-live {
   grid-area: live;
   justify-self: end;
@@ -1197,6 +1205,10 @@ button.bar-control:disabled {
 
 .tuning-status.error {
   color: #f0a8a8;
+}
+
+#stage canvas.loupe-active {
+  cursor: none !important;
 }
 
 #stage canvas {
@@ -1533,6 +1545,34 @@ button.bar-control:disabled {
   color: var(--dim);
 }
 
+.picker-sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-sort-size {
+  justify-content: flex-end;
+}
+
+.picker-sort:hover,
+.picker-sort.active {
+  color: #ddd;
+}
+
+.picker-sort-arrow {
+  font-size: 8px;
+}
+
 .picker-list {
   flex: 1;
   overflow-y: auto;
@@ -1671,4 +1711,90 @@ button.bar-control:disabled {
 
 .picker-btn-primary:hover:not(:disabled) {
   background: #3a6fc8;
+}
+
+/* Server console: toggle at the right end of the status bar, panel above it. */
+.console-toggle {
+  order: 99;
+  margin-left: auto;
+  padding: 2px 10px;
+  border: 1px solid var(--bar-control-border);
+  border-radius: 4px;
+  background: var(--bar-control-bg);
+  color: var(--dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.console-toggle:hover,
+.console-toggle.active {
+  color: var(--fg);
+  background: #333;
+}
+
+.console-panel {
+  position: fixed;
+  right: 8px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  width: min(760px, calc(100vw - 16px));
+  height: min(320px, 50vh);
+  background: #151515;
+  border: 1px solid #444;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+
+.console-panel[hidden] {
+  display: none !important;
+}
+
+.console-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid #333;
+  font-size: 12px;
+}
+
+.console-title {
+  flex: 1;
+  color: var(--dim);
+}
+
+.console-btn {
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.console-btn:hover {
+  color: var(--fg);
+  border-color: var(--bar-control-border);
+}
+
+.console-body {
+  flex: 1;
+  overflow: auto;
+  padding: 6px 10px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #cfcfcf;
+  outline: none;
+}
+
+.console-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.console-line.err {
+  color: #e8a07a;
 }

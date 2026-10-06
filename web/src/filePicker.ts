@@ -1,5 +1,6 @@
 import type { Connection } from "./connection";
 import type { BrowseEntry, BrowsePlace } from "./protocol";
+import { settings } from "./settings";
 
 const VIDEO_FILTER = "Video files (.mp4, .avi, .mkv, .mov, .m4v, .webm, .mpg)";
 
@@ -12,6 +13,32 @@ export interface FilePicker {
   /** Resolves with the chosen file path, or null if cancelled. */
   pick: () => Promise<string | null>;
   isOpen: () => boolean;
+}
+
+type SortKey = "name" | "size" | "mtime";
+const SORT_SETTING = "ui.pickerSort"; // kept by the server, the same in every browser
+
+// Folders stay above files; the chosen column orders each group.
+function loadSort(): { key: SortKey; asc: boolean } {
+  const v = settings.json<{ key?: string; asc?: unknown } | null>(SORT_SETTING, null);
+  if ((v?.key === "name" || v?.key === "size" || v?.key === "mtime") && typeof v.asc === "boolean") {
+    return { key: v.key, asc: v.asc };
+  }
+  return { key: "name", asc: true };
+}
+
+const byName = (a: BrowseEntry, b: BrowseEntry) =>
+  a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+
+function sortEntries(list: BrowseEntry[], key: SortKey, asc: boolean): BrowseEntry[] {
+  const dir = asc ? 1 : -1;
+  const value = (e: BrowseEntry) => (key === "size" ? (e.size ?? 0) : (e.mtime ?? 0));
+  return [...list].sort((a, b) => {
+    if (a.dir !== b.dir) return a.dir ? -1 : 1;
+    // Folders have no size, so size order falls back to name for them.
+    if (key === "name" || (key === "size" && a.dir)) return dir * byName(a, b);
+    return dir * (value(a) - value(b)) || byName(a, b);
+  });
 }
 
 export function attachFilePicker(conn: Connection): FilePicker {
@@ -35,7 +62,9 @@ export function attachFilePicker(conn: Connection): FilePicker {
       <aside class="picker-places" aria-label="Places"></aside>
       <div class="picker-main">
         <div class="picker-head" role="row">
-          <span>Name</span><span>Size</span><span>Modified</span>
+          <button type="button" class="picker-sort" data-sort="name">Name<span class="picker-sort-arrow" aria-hidden="true"></span></button>
+          <button type="button" class="picker-sort picker-sort-size" data-sort="size">Size<span class="picker-sort-arrow" aria-hidden="true"></span></button>
+          <button type="button" class="picker-sort" data-sort="mtime">Modified<span class="picker-sort-arrow" aria-hidden="true"></span></button>
         </div>
         <div class="picker-list" role="listbox" tabindex="0"></div>
       </div>
@@ -71,6 +100,7 @@ export function attachFilePicker(conn: Connection): FilePicker {
   let history: string[] = [];
   let resolver: ((v: string | null) => void) | null = null;
   let loadSeq = 0;
+  let sort = loadSort();
   let typeAhead = "";
   let typeAheadTimer: number | undefined;
 
@@ -100,11 +130,12 @@ export function attachFilePicker(conn: Connection): FilePicker {
       if (pushHistory && cwd && res.path !== cwd) history.push(cwd);
       cwd = res.path ?? "";
       parent = res.parent ?? null;
-      entries = res.entries ?? [];
+      entries = sortEntries(res.entries ?? [], sort.key, sort.asc);
       selected = -1;
       renderCrumbs();
       renderPlaces(res.places ?? []);
       renderList();
+      renderSortHeader();
       updateFooter();
       list.focus();
     } catch (e) {
@@ -173,6 +204,42 @@ export function attachFilePicker(conn: Connection): FilePicker {
     });
   }
 
+  function renderSortHeader() {
+    for (const b of dlg.querySelectorAll<HTMLElement>("[data-sort]")) {
+      const on = b.dataset.sort === sort.key;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-sort", on ? (sort.asc ? "ascending" : "descending") : "none");
+      const arrow = b.querySelector(".picker-sort-arrow");
+      if (arrow) arrow.textContent = on ? (sort.asc ? "\u25B2" : "\u25BC") : "";
+    }
+  }
+
+  // Click the active column to flip direction; a new column starts ascending.
+  function setSort(key: SortKey) {
+    sort = key === sort.key ? { key, asc: !sort.asc } : { key, asc: true };
+    settings.set(SORT_SETTING, JSON.stringify(sort));
+    const keep = entries[selected]?.path;
+    entries = sortEntries(entries, sort.key, sort.asc);
+    selected = keep === undefined ? -1 : entries.findIndex((e) => e.path === keep);
+    renderList();
+    renderSortHeader();
+    if (selected >= 0) select(selected);
+    else updateFooter();
+  }
+
+  // Another browser changed the sort order (or this one just loaded the server's).
+  settings.on(SORT_SETTING, () => {
+    sort = loadSort();
+    const keep = entries[selected]?.path;
+    entries = sortEntries(entries, sort.key, sort.asc);
+    selected = keep === undefined ? -1 : entries.findIndex((e) => e.path === keep);
+    if (!dlg.hidden) {
+      renderList();
+      if (selected >= 0) select(selected);
+    }
+    renderSortHeader();
+  });
+
   function select(i: number) {
     if (i < 0 || i >= entries.length) return;
     selected = i;
@@ -209,6 +276,11 @@ export function attachFilePicker(conn: Connection): FilePicker {
   }
 
   dlg.addEventListener("click", (ev) => {
+    const sortKey = (ev.target as HTMLElement).closest<HTMLElement>("[data-sort]")?.dataset.sort;
+    if (sortKey) {
+      setSort(sortKey as SortKey);
+      return;
+    }
     const act = (ev.target as HTMLElement).closest<HTMLElement>("[data-act]")?.dataset.act;
     if (act === "cancel") finish(null);
     else if (act === "open") activate(selected);

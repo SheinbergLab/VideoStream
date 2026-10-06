@@ -1,11 +1,12 @@
 import type { Connection } from "./connection";
+import { cameraFpsReader } from "./cameraFps";
 import type { TuneProposal } from "./overlay/eyetracking";
+import { settings } from "./settings";
 import { parseTclDictNested, parseTclList } from "./tcl";
 
 interface NumControl {
   key: string;
   label: string;
-  cmd: string;
   min: number;
   max: number;
   step: number;
@@ -23,7 +24,6 @@ const PUPIL_CONTROLS: NumControl[] = [
   {
     key: "pupil_threshold",
     label: "Threshold",
-    cmd: "eyetracking::setPupilThreshold",
     min: 0,
     max: 255,
     step: 1,
@@ -35,7 +35,6 @@ const P1_CONTROLS: NumControl[] = [
   {
     key: "p1_min_intensity",
     label: "Min intensity",
-    cmd: "eyetracking::setP1MinIntensity",
     min: 0,
     max: 255,
     step: 1,
@@ -44,7 +43,6 @@ const P1_CONTROLS: NumControl[] = [
   {
     key: "p1_max_jump",
     label: "Max jump",
-    cmd: "eyetracking::setP1MaxJump",
     min: 1,
     max: 150,
     step: 0.5,
@@ -54,7 +52,6 @@ const P1_CONTROLS: NumControl[] = [
   {
     key: "p1_min_area",
     label: "Min area",
-    cmd: "eyetracking::setP1MinArea",
     min: 1,
     max: 400,
     step: 1,
@@ -63,7 +60,6 @@ const P1_CONTROLS: NumControl[] = [
   {
     key: "p1_max_area",
     label: "Max area",
-    cmd: "eyetracking::setP1MaxArea",
     min: 50,
     max: 3000,
     step: 10,
@@ -72,7 +68,6 @@ const P1_CONTROLS: NumControl[] = [
   {
     key: "p1_pupil_radius_max",
     label: "Pupil radius max",
-    cmd: "eyetracking::setP1PupilRadiusMax",
     min: 0.5,
     max: 3,
     step: 0.05,
@@ -85,7 +80,6 @@ const P4_CONTROLS: NumControl[] = [
   {
     key: "p4_min_intensity",
     label: "Min intensity",
-    cmd: "eyetracking::setP4MinIntensity",
     min: 0,
     max: 255,
     step: 1,
@@ -94,7 +88,6 @@ const P4_CONTROLS: NumControl[] = [
   {
     key: "p4_max_jump",
     label: "Max jump",
-    cmd: "eyetracking::setP4MaxJump",
     min: 1,
     max: 150,
     step: 0.5,
@@ -104,7 +97,6 @@ const P4_CONTROLS: NumControl[] = [
   {
     key: "p4_max_prediction_error",
     label: "Max prediction error",
-    cmd: "eyetracking::setP4MaxPredictionError",
     min: 1,
     max: 80,
     step: 0.5,
@@ -139,9 +131,6 @@ const MODES = [
   },
 ] as const;
 
-const OVERRIDES_KEY = "vs.viewer.tuning";
-const OPEN_KEY = "vs.viewer.tuningOpen";
-const AUTO_ROI_KEY = "vs.viewer.autoRoi";
 const AUTO_ROI_TITLE =
   "Slowly shift the ROI toward the pupil when the pupil leaves it (moves only; size stays the same).";
 const ROI_MIN = 32;
@@ -149,7 +138,6 @@ const ROI_MIN = 32;
 const ROI_W_CONTROL: NumControl = {
   key: "roi_w",
   label: "Width",
-  cmd: "eyetracking::setROI",
   min: ROI_MIN,
   max: 9999,
   step: 1,
@@ -159,7 +147,6 @@ const ROI_W_CONTROL: NumControl = {
 const ROI_H_CONTROL: NumControl = {
   key: "roi_h",
   label: "Height",
-  cmd: "eyetracking::setROI",
   min: ROI_MIN,
   max: 9999,
   step: 1,
@@ -170,13 +157,11 @@ const ROI_FOLLOW = [
   { label: "Fixed", follow: false },
   { label: "Follow pupil", follow: true },
 ] as const;
-const CAMERA_GAIN_KEY = "vs.viewer.cameraGain";
 const SEND_INTERVAL_MS = 100;
 
 const GAIN_CONTROL: NumControl = {
   key: "camera_gain",
   label: "Gain",
-  cmd: "camera::configureGain",
   min: 0,
   max: 48,
   step: 0.1,
@@ -184,12 +169,9 @@ const GAIN_CONTROL: NumControl = {
   hint: "Camera gain in dB (FLIR and Lucid).",
 };
 
-const GAIN_DISABLED_PLAYBACK = "Gain disabled for video playback.";
-
 const FPS_CONTROL: NumControl = {
   key: "camera_fps",
   label: "Frame rate",
-  cmd: "camera::configureFrameRate",
   min: 1,
   max: 250,
   step: 1,
@@ -208,15 +190,19 @@ const BINNING_HINT =
 const EXPOSURE_CONTROL: NumControl = {
   key: "camera_exposure",
   label: "Exposure",
-  cmd: "camera::configureExposure",
   min: 1,
   max: 99,
-  step: 1,
+  step: 0.1,
   unit: "%",
   hint: "Percent of the requested frame spent exposing. At 100 fps, 10% is 1000 \u00b5s. Auto exposure stays off.",
 };
 
-type Overrides = Record<string, number | string>;
+// Everything below that changes a tracking or camera setting goes through
+// settings.put, so the server applies it, keeps it for the next start, and every
+// other browser sees it. Detector values are saved as det.<key>, the ROI as
+// roi, and camera values per backend as cam.<vendor>.<field>.
+const detKey = (key: string) => `det.${key}`;
+const vendorOf = (cameraKey: string) => cameraKey.split(":")[0];
 
 export interface TuningPanel {
   onConnected: () => Promise<void>;
@@ -313,7 +299,8 @@ type P4CalibPlan =
 interface AutoSnapshot {
   settings: Record<string, string>;
   roi: string;
-  overrides: Overrides;
+  /** Detector values that were saved before auto-tune ran (key -> value). */
+  saved: Record<string, string>;
   gain?: number;
   cameraKey?: string;
 }
@@ -331,20 +318,23 @@ export function attachTuningPanel(
     getTuneProposal?: () => TuneProposal | null;
   },
 ): TuningPanel {
-  let overrides = loadOverrides();
   const rows = new Map<string, NumRow>();
   const segButtons: HTMLButtonElement[] = [];
   let mode = "";
 
   // ---- collapse ----
-  const setOpen = (open: boolean) => {
+  const showOpen = (open: boolean) => {
     panel.classList.toggle("collapsed", !open);
     toggle.setAttribute("aria-expanded", String(open));
     toggle.title = open ? "Hide settings" : "Show tracking settings";
-    localStorage.setItem(OPEN_KEY, open ? "1" : "0");
   };
-  setOpen(localStorage.getItem(OPEN_KEY) !== "0");
-  toggle.addEventListener("click", () => setOpen(panel.classList.contains("collapsed")));
+  showOpen(settings.flag("ui.tuningOpen", true));
+  settings.on("ui.tuningOpen", () => showOpen(settings.flag("ui.tuningOpen", true)));
+  toggle.addEventListener("click", () => {
+    const open = panel.classList.contains("collapsed");
+    showOpen(open);
+    settings.set("ui.tuningOpen", open);
+  });
 
   // ---- build ----
   const modeBlock = el("div", "tuning-mode-block");
@@ -408,6 +398,8 @@ export function attachTuningPanel(
   const frameRateSlider = new NumRow(FPS_CONTROL, (v, final) => onFpsEdit(v, final));
   frameRateSlider.attachLive();
   frameRateSlider.el.hidden = true;
+  const ptpRow = new ReadOnlyRow("Clock sync");
+  ptpRow.el.hidden = true;
   const binningButtons: HTMLButtonElement[] = [];
   const binningWrap = el("div", "tuning-binning");
   binningWrap.hidden = true;
@@ -440,9 +432,10 @@ export function attachTuningPanel(
     exposureRow.el,
     binningWrap,
     gainRow.el,
+    ptpRow.el,
   );
   body.append(camRoot);
-  gainRow.setDisabled(true, GAIN_DISABLED_PLAYBACK);
+  gainRow.el.hidden = true;
 
   const { root: roiRoot, content: roiBody } = section("ROI");
   const followSegButtons: HTMLButtonElement[] = [];
@@ -493,9 +486,10 @@ export function attachTuningPanel(
     status.classList.toggle("error", isError);
   }
 
-  async function run(script: string, okMsg = ""): Promise<boolean> {
+  /** Change a setting through the server's store; shows the reason in the panel if it is refused. */
+  async function putSetting(key: string, value: string | number | boolean, okMsg = ""): Promise<boolean> {
     try {
-      await conn.sendEvalAsync(script);
+      await settings.put(key, value);
       if (okMsg) setStatus(okMsg);
       return true;
     } catch (e) {
@@ -505,8 +499,6 @@ export function attachTuningPanel(
   }
 
   function onNumEdit(c: NumControl, v: number, final: boolean) {
-    overrides[c.key] = v;
-    saveOverrides(overrides);
     rows.get(c.key)?.setChanged(true);
     sendThrottled(c, v, final);
   }
@@ -519,7 +511,7 @@ export function attachTuningPanel(
     const wait = SEND_INTERVAL_MS - (now - (lastSent.get(c.key) ?? 0));
     const send = () => {
       lastSent.set(c.key, performance.now());
-      void run(`${c.cmd} ${formatValue(v, c.step)}`).then((ok) => {
+      void putSetting(detKey(c.key), formatValue(v, c.step)).then((ok) => {
         if (ok && final) setStatus("");
       });
     };
@@ -531,9 +523,7 @@ export function attachTuningPanel(
     if (id === mode) return;
     const prev = mode;
     setMode(id);
-    overrides.detection_mode = id;
-    saveOverrides(overrides);
-    if (!(await run(`eyetracking::setDetectionMode ${id}`))) setMode(prev);
+    if (!(await putSetting("det.mode", id))) setMode(prev);
   }
 
   function setMode(id: string) {
@@ -594,7 +584,7 @@ export function attachTuningPanel(
         roiWRow.setValue(next.w);
         roiHRow.setValue(next.h);
         hooks?.setPendingRoi?.(next);
-        void run(`eyetracking::setROI ${next.x} ${next.y} ${next.w} ${next.h}`);
+        void putSetting("roi", `${next.x} ${next.y} ${next.w} ${next.h}`);
       }
       return;
     }
@@ -606,12 +596,12 @@ export function attachTuningPanel(
   }
 
   const roiCommit = { t: 0, timer: 0 };
-  function sendRoiThrottled(script: string, final: boolean) {
+  function sendRoiThrottled(roi: string, final: boolean) {
     window.clearTimeout(roiCommit.timer);
     const wait = SEND_INTERVAL_MS - (performance.now() - roiCommit.t);
     const send = () => {
       roiCommit.t = performance.now();
-      void run(script);
+      void putSetting("roi", roi);
     };
     if (final || wait <= 0) send();
     else roiCommit.timer = window.setTimeout(send, wait);
@@ -639,7 +629,7 @@ export function attachTuningPanel(
     const next = { x, y, w, h };
     currentRoi = next;
     hooks?.setPendingRoi?.(next);
-    sendRoiThrottled(`eyetracking::setROI ${x} ${y} ${w} ${h}`, final);
+    sendRoiThrottled(`${x} ${y} ${w} ${h}`, final);
   }
 
   function setSourceInfo(info: { width?: number; height?: number; fps?: number }) {
@@ -663,7 +653,7 @@ export function attachTuningPanel(
       for (const [key, row] of rows) {
         const v = Number(s[key]);
         if (key in s && Number.isFinite(v)) row.setValue(v);
-        row.setChanged(key in overrides);
+        row.setChanged(settings.has(detKey(key)));
       }
       if (s.detection_mode) setMode(s.detection_mode);
     } catch (e) {
@@ -671,30 +661,37 @@ export function attachTuningPanel(
     }
   }
 
-  async function applyOverrides() {
-    const parts: string[] = [];
-    for (const c of ALL_CONTROLS) {
-      const v = overrides[c.key];
-      if (typeof v === "number") parts.push(`${c.cmd} ${formatValue(v, c.step)}`);
+  async function resetDefaults() {
+    try {
+      await settings.reset("detector");
+      setStatus("Defaults restored.");
+      await readSettings();
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e), true);
     }
-    const m = overrides.detection_mode;
-    if (typeof m === "string" && MODES.some((x) => x.id === m)) {
-      parts.push(`eyetracking::setDetectionMode ${m}`);
-    }
-    if (parts.length) await run(parts.join("; "));
   }
 
-  async function resetDefaults() {
-    overrides = {};
-    saveOverrides(overrides);
-    if (await run("apply_default_tuning", "Defaults restored.")) await readSettings();
-  }
+  // Another browser changed (or reset) a tracking setting.
+  settings.on("det.*", (key) => {
+    if (key === "det.mode") {
+      const m = settings.get("det.mode");
+      if (m && MODES.some((x) => x.id === m)) setMode(m);
+      else void readSettings();
+      return;
+    }
+    const row = rows.get(key.slice(4));
+    if (!row) return;
+    const v = settings.get(key);
+    row.setChanged(v !== undefined);
+    if (v === undefined) void readSettings();
+    else if (Number.isFinite(Number(v)) && !row.isFocused()) row.setValue(Number(v));
+  });
 
   async function onConnected() {
     setStatus("");
-    await applyOverrides();
+    await settings.load(); // what the server holds; nothing is pushed to it
     await readSettings();
-    await syncAutoRoiFromStorage();
+    await syncAutoRoiFromServer();
   }
 
   function setEnabled(enabled: boolean) {
@@ -716,18 +713,19 @@ export function attachTuningPanel(
 
   async function onGainEdit(v: number, final: boolean) {
     if (!cameraKey) return;
-    saveCameraGain(cameraKey, v);
     sendGainThrottled(v, final);
   }
 
   const gainLastSent = { t: 0, timer: 0 };
   function sendGainThrottled(v: number, final: boolean) {
+    const camKey = cameraKey;
+    if (!camKey) return;
     window.clearTimeout(gainLastSent.timer);
     const wait = SEND_INTERVAL_MS - (performance.now() - gainLastSent.t);
     const send = () => {
       gainLastSent.t = performance.now();
-      void conn
-        .sendEvalAsync(`${GAIN_CONTROL.cmd} ${formatValue(v, GAIN_CONTROL.step)}`)
+      void settings
+        .put(`cam.${vendorOf(camKey)}.gain`, formatValue(v, GAIN_CONTROL.step))
         .then((actual) => {
           const n = Number(actual);
           if (final && Number.isFinite(n)) gainRow.setValue(n);
@@ -743,6 +741,7 @@ export function attachTuningPanel(
     frameRateSlider.el.hidden = !on;
     exposureRow.el.hidden = !on;
     binningWrap.hidden = !on;
+    gainRow.el.hidden = !on;
   }
 
   let exposureMinUs = 1;
@@ -786,9 +785,9 @@ export function attachTuningPanel(
 
   async function applyDuty(percent: number, fps: number): Promise<number | undefined> {
     const us = exposureUsForDuty(percent, fps);
-    if (!Number.isFinite(us)) return undefined;
-    await conn.sendEvalAsync(`${EXPOSURE_CONTROL.cmd} ${Math.round(us)}`);
-    const actual = Number(await conn.sendEvalAsync("camera::node ExposureTime"));
+    if (!Number.isFinite(us) || !cameraKey) return undefined;
+    // The server sets it, keeps it, and answers with what the camera ended up with.
+    const actual = Number(await settings.put(`cam.${vendorOf(cameraKey)}.exposure_us`, Math.round(us)));
     return Number.isFinite(actual) ? actual : Math.round(us);
   }
 
@@ -827,12 +826,13 @@ export function attachTuningPanel(
 
   const fpsLastSent = { t: 0, timer: 0 };
   function onFpsEdit(v: number, final: boolean) {
-    if (!cameraKey) return;
+    const camKey = cameraKey;
+    if (!camKey) return;
     window.clearTimeout(fpsLastSent.timer);
     const send = () => {
       fpsLastSent.t = performance.now();
-      void conn
-        .sendEvalAsync(`${FPS_CONTROL.cmd} ${formatValue(v, FPS_CONTROL.step)}`)
+      void settings
+        .put(`cam.${vendorOf(camKey)}.fps`, formatValue(v, FPS_CONTROL.step))
         .then(async (actual) => {
           const n = Number(actual);
           const fps = Number.isFinite(n) ? n : v;
@@ -875,8 +875,8 @@ export function attachTuningPanel(
     if (!cameraKey) return;
     selectBinning(h, v);
     try {
-      const d = parseTclDict(await conn.sendEvalAsync(`camera::configureBinning ${h} ${v}`));
-      selectBinning(Number(d.horizontal), Number(d.vertical));
+      await settings.put(`cam.${vendorOf(cameraKey)}.binning`, `${h} ${v}`);
+      await loadBinning(); // what the camera ended up with
       await loadFrameRate();
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e), true);
@@ -890,6 +890,7 @@ export function attachTuningPanel(
 
   let liveTimer = 0;
   let liveBusy = false;
+  const liveFps = cameraFpsReader(conn);
 
   function showLive(fps: number | null, exposureUs: number | null) {
     frameRateSlider.setLive(fps !== null && Number.isFinite(fps) ? `${Math.round(fps)} fps` : "\u2014");
@@ -901,6 +902,9 @@ export function attachTuningPanel(
   function stopCameraLive() {
     window.clearInterval(liveTimer);
     liveTimer = 0;
+    window.clearInterval(ptpTimer);
+    ptpTimer = 0;
+    ptpRow.el.hidden = true;
     showLive(null, null);
   }
 
@@ -918,7 +922,7 @@ export function attachTuningPanel(
     if (!cameraKey || liveBusy) return;
     liveBusy = true;
     try {
-      const fps = Number(await conn.sendEvalAsync("camera::node AcquisitionResultingFrameRate"));
+      const fps = await liveFps.read();
       const exposureUs = Number(await conn.sendEvalAsync("camera::node ExposureTime"));
       if (cameraKey && Number.isFinite(fps) && Number.isFinite(exposureUs)) showLive(fps, exposureUs);
       const gain = Number(await conn.sendEvalAsync("camera::node Gain"));
@@ -930,22 +934,76 @@ export function attachTuningPanel(
     }
   }
 
+  // IEEE 1588 (PTP) state, read straight from the camera's nodes so it works
+  // under any launcher script. The offset is a latched value: PtpDataSetLatch
+  // refreshes it first. Cameras without PTP nodes hide the row.
+  const PTP_POLL_MS = 2000;
+  const PTP_EXPLAIN =
+    "When synced, frame timestamps are on the grandmaster's clock and can be compared directly with dserv datapoint times.";
+  let ptpTimer = 0;
+  let ptpBusy = false;
+  let ptpUnsupported = false;
+
+  function showPtp(enabled: boolean, status: string, servo: string, offsetNs: number) {
+    const detail = [`status ${status}`, servo && `servo ${servo}`, Number.isFinite(offsetNs) && `offset ${formatOffsetNs(offsetNs)}`]
+      .filter(Boolean)
+      .join(", ");
+    ptpRow.el.hidden = false;
+    if (!enabled || status === "Disabled") {
+      ptpRow.setValue("PTP off", undefined, `PTP is disabled on the camera, so frame timestamps use its own clock and cannot be compared with dserv times.`);
+    } else if (status === "Slave") {
+      const off = Number.isFinite(offsetNs) ? ` \u00b7 ${formatOffsetNs(offsetNs)}` : "";
+      ptpRow.setValue(`synced${off}`, "ok", `Following the PTP grandmaster (${detail}). ${PTP_EXPLAIN}`);
+    } else if (status === "Master") {
+      ptpRow.setValue("PTP master", undefined, `This camera is the PTP grandmaster (${detail}).`);
+    } else if (status === "Listening") {
+      ptpRow.setValue("no master", "warn", `PTP is on but no grandmaster has been heard (${detail}). Is ptp4l running on the host?`);
+    } else if (status === "Uncalibrated") {
+      ptpRow.setValue("syncing\u2026", "warn", `Locking to the grandmaster (${detail}).`);
+    } else {
+      ptpRow.setValue(status, "warn", `PTP is not synced (${detail}).`);
+    }
+  }
+
+  async function readPtp() {
+    if (!cameraKey || ptpBusy || ptpUnsupported) return;
+    ptpBusy = true;
+    try {
+      const raw = await conn.sendEvalAsync(
+        "catch {camera::node PtpDataSetLatch 1}; " +
+          "list [camera::node PtpEnable] [camera::node PtpStatus] [camera::node PtpServoStatus] [camera::node PtpOffsetFromMaster]",
+      );
+      const [enabled, status, servo, offset] = parseTclList(raw);
+      if (cameraKey) showPtp(enabled === "1", status ?? "", servo ?? "", Number(offset));
+    } catch (e) {
+      if (String(e).includes("no such node")) {
+        ptpUnsupported = true;
+        ptpRow.el.hidden = true;
+      }
+      /* otherwise the camera dropped; keep the last reading */
+    } finally {
+      ptpBusy = false;
+    }
+  }
+
   function startCameraLive() {
     stopCameraLive();
     void readCameraLive();
     liveTimer = window.setInterval(() => void readCameraLive(), 500);
+    void readPtp();
+    ptpTimer = window.setInterval(() => void readPtp(), PTP_POLL_MS);
   }
 
   async function setCamera(key: string | undefined) {
     cameraKey = key || undefined;
+    liveFps.reset();
+    ptpUnsupported = false;
     if (!cameraKey) {
       showCameraControls(false);
-      gainRow.setDisabled(true, GAIN_DISABLED_PLAYBACK);
       stopCameraLive();
       return;
     }
     showCameraControls(true);
-    gainRow.setDisabled(false, GAIN_CONTROL.hint);
     startCameraLive();
     await loadExposure();
     await loadFrameRate();
@@ -975,8 +1033,8 @@ export function attachTuningPanel(
 
   function showStoredGain() {
     if (!cameraKey) return;
-    const stored = loadCameraGains()[cameraKey];
-    if (stored !== undefined && Number.isFinite(stored)) gainRow.setValue(stored);
+    const stored = settings.num(`cam.${vendorOf(cameraKey)}.gain`, NaN);
+    if (Number.isFinite(stored)) gainRow.setValue(stored);
   }
 
   function setSourceState(active: boolean, paused: boolean) {
@@ -985,23 +1043,8 @@ export function attachTuningPanel(
     refreshAutoBtn();
   }
 
-  let autoRoiOn = loadAutoRoiPref();
-
-  function loadAutoRoiPref(): boolean {
-    try {
-      return localStorage.getItem(AUTO_ROI_KEY) === "1";
-    } catch {
-      return false;
-    }
-  }
-
-  function saveAutoRoiPref(on: boolean): void {
-    try {
-      localStorage.setItem(AUTO_ROI_KEY, on ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
-  }
+  // ROI positioning (follow the pupil or stay put): the server holds it as roi.follow.
+  let autoRoiOn = settings.flag("roi.follow", false);
 
   function refreshAutoRoiUi(): void {
     for (const b of followSegButtons) {
@@ -1016,18 +1059,24 @@ export function attachTuningPanel(
     roiHRow.setDisabled(noRoi);
   }
 
-  async function syncAutoRoiFromStorage(): Promise<void> {
-    autoRoiOn = loadAutoRoiPref();
+  async function syncAutoRoiFromServer(): Promise<void> {
+    autoRoiOn = settings.flag("roi.follow", false);
     refreshAutoRoiUi();
     if (!connected) return;
     try {
-      const v = (await conn.sendEvalAsync(`eyetracking::roiFollow ${autoRoiOn ? 1 : 0}`)).trim();
+      // What the plugin is doing now (it starts from the saved setting).
+      const v = (await conn.sendEvalAsync("eyetracking::roiFollow")).trim();
       autoRoiOn = v === "1" || v.toLowerCase() === "true";
       refreshAutoRoiUi();
     } catch {
       /* plugin may not be loaded yet */
     }
   }
+
+  settings.on("roi.follow", () => {
+    autoRoiOn = settings.flag("roi.follow", false);
+    refreshAutoRoiUi();
+  });
 
   async function setFollowPupil(next: boolean): Promise<void> {
     if (next === autoRoiOn) return;
@@ -1036,9 +1085,8 @@ export function attachTuningPanel(
       return;
     }
     try {
-      const v = (await conn.sendEvalAsync(`eyetracking::roiFollow ${next ? 1 : 0}`)).trim();
+      const v = (await settings.put("roi.follow", next)).trim();
       autoRoiOn = v === "1" || v.toLowerCase() === "true";
-      saveAutoRoiPref(autoRoiOn);
       refreshAutoRoiUi();
     } catch (e) {
       refreshAutoRoiUi();
@@ -1176,9 +1224,8 @@ export function attachTuningPanel(
     setAutoMessage("Applying gain\u2026", "Keep the subject looking straight ahead.");
     try {
       await conn.sendEvalAsync("vstream::pause 0");
-      await conn.sendEvalAsync(`${GAIN_CONTROL.cmd} ${formatValue(target, GAIN_CONTROL.step)}`);
+      await settings.put(`cam.${vendorOf(cameraKey)}.gain`, formatValue(target, GAIN_CONTROL.step));
       gainRow.setValue(target);
-      saveCameraGain(cameraKey, target);
       await sleep(500);
       await conn.sendEvalAsync("vstream::pause 1");
       sourcePaused = true;
@@ -1221,10 +1268,17 @@ export function attachTuningPanel(
           gainBefore = gainRow.getValue();
         }
       }
+      // Which of the values auto-tune is about to change were saved settings
+      // already (the rest were defaults), so Undo can put things back exactly.
+      const saved: Record<string, string> = {};
+      for (const k of [...settings.keys("det."), "roi", ...(cameraKey ? [`cam.${vendorOf(cameraKey)}.gain`] : [])]) {
+        const v = settings.get(k);
+        if (v !== undefined) saved[k] = v;
+      }
       const before: AutoSnapshot = {
         settings: parseTclDict(settingsRaw),
         roi: roiRaw.trim(),
-        overrides: { ...overrides },
+        saved,
         gain: gainBefore,
         cameraKey,
       };
@@ -1237,21 +1291,20 @@ export function attachTuningPanel(
       }
       const p1Found = d.p1_found === "1";
       const p4Found = d.p4_found === "1";
-      const parts: string[] = [];
+      const writes: [string, string][] = [];
       for (const key of AUTO_KEYS) {
         if (!(key in d)) continue;
         const c = controlFor(key);
         const raw = Number(d[key]);
         if (!c || !Number.isFinite(raw)) continue;
         const v = clamp(snap(raw, c.step), c.min, c.max);
-        overrides[key] = v;
         rows.get(key)?.setValue(v);
         rows.get(key)?.setChanged(true);
-        parts.push(`${c.cmd} ${formatValue(v, c.step)}`);
+        writes.push([detKey(key), formatValue(v, c.step)]);
       }
-      parts.push(`eyetracking::setROI ${roi.join(" ")}`, "eyetracking::resetTrackingState");
-      await conn.sendEvalAsync(parts.join("; "));
-      saveOverrides(overrides);
+      writes.push(["roi", roi.join(" ")]);
+      for (const [k, v] of writes) await settings.put(k, v);
+      await conn.sendEvalAsync("eyetracking::resetTrackingState");
       snapshot = before;
       p4CalibPlan = null;
       setAcceptLabel(null);
@@ -1386,25 +1439,30 @@ export function attachTuningPanel(
   async function undoAutoDetect() {
     const s = snapshot;
     if (!s) return;
-    const parts: string[] = [];
-    for (const key of AUTO_KEYS) {
-      const c = controlFor(key);
-      const v = Number(s.settings[key]);
-      if (c && Number.isFinite(v)) parts.push(`${c.cmd} ${formatValue(v, c.step)}`);
+    try {
+      for (const key of AUTO_KEYS) {
+        const c = controlFor(key);
+        const v = Number(s.settings[key]);
+        if (c && Number.isFinite(v)) await settings.put(detKey(key), formatValue(v, c.step));
+      }
+      if (/^-?\d+ -?\d+ \d+ \d+$/.test(s.roi)) await settings.put("roi", s.roi);
+      if (s.gain !== undefined && s.cameraKey) {
+        await settings.put(`cam.${vendorOf(s.cameraKey)}.gain`, formatValue(s.gain, GAIN_CONTROL.step));
+      }
+      // Whatever was only a default before is not a saved setting now either.
+      const touched = [
+        ...AUTO_KEYS.map(detKey),
+        "roi",
+        ...(s.cameraKey ? [`cam.${vendorOf(s.cameraKey)}.gain`] : []),
+      ];
+      settings.drop(...touched.filter((k) => !(k in s.saved)));
+      await conn.sendEvalAsync("eyetracking::resetTrackingState");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e), true);
+      return;
     }
-    if (/^-?\d+ -?\d+ \d+ \d+$/.test(s.roi)) parts.push(`eyetracking::setROI ${s.roi}`);
-    if (s.gain !== undefined && s.cameraKey) {
-      parts.push(`${GAIN_CONTROL.cmd} ${formatValue(s.gain, GAIN_CONTROL.step)}`);
-    }
-    parts.push("eyetracking::resetTrackingState");
-    if (!(await run(parts.join("; ")))) return;
     hooks?.endTuneProposal?.();
-    if (s.gain !== undefined && s.cameraKey) {
-      gainRow.setValue(s.gain);
-      saveCameraGain(s.cameraKey, s.gain);
-    }
-    overrides = { ...s.overrides };
-    saveOverrides(overrides);
+    if (s.gain !== undefined && s.cameraKey) gainRow.setValue(s.gain);
     snapshot = null;
     p4CalibPlan = null;
     setAcceptLabel(null);
@@ -1438,9 +1496,21 @@ class ReadOnlyRow {
     this.el.append(this.valueEl);
   }
 
-  setValue(text: string) {
+  setValue(text: string, level?: "ok" | "warn", tooltip?: string) {
     this.valueEl.textContent = text;
+    this.valueEl.classList.toggle("level-ok", level === "ok");
+    this.valueEl.classList.toggle("level-warn", level === "warn");
+    this.el.title = tooltip ?? "";
   }
+}
+
+// "+143 ns", "-12.3 \u00b5s", "+1.2 ms"
+function formatOffsetNs(ns: number): string {
+  const sign = ns < 0 ? "-" : "+";
+  const a = Math.abs(ns);
+  if (a < 1000) return `${sign}${Math.round(a)} ns`;
+  if (a < 1e6) return `${sign}${(a / 1000).toFixed(1)} \u00b5s`;
+  return `${sign}${(a / 1e6).toFixed(1)} ms`;
 }
 
 function formatExposureUs(us: number): string {
@@ -1579,21 +1649,6 @@ function parseQualityChecks(checksRaw: string): QualityCheckRow[] {
   });
 }
 
-function loadCameraGains(): Record<string, number> {
-  try {
-    const o = JSON.parse(localStorage.getItem(CAMERA_GAIN_KEY) ?? "{}");
-    return o && typeof o === "object" ? (o as Record<string, number>) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveCameraGain(key: string, db: number): void {
-  const all = loadCameraGains();
-  all[key] = db;
-  localStorage.setItem(CAMERA_GAIN_KEY, JSON.stringify(all));
-}
-
 function decimals(step: number): number {
   const s = String(step);
   const dot = s.indexOf(".");
@@ -1610,19 +1665,6 @@ function snap(v: number, step: number): number {
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
-}
-
-function loadOverrides(): Overrides {
-  try {
-    const o = JSON.parse(localStorage.getItem(OVERRIDES_KEY) ?? "{}");
-    return o && typeof o === "object" ? (o as Overrides) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveOverrides(o: Overrides): void {
-  localStorage.setItem(OVERRIDES_KEY, JSON.stringify(o));
 }
 
 function el(tag: string, cls: string, text?: string): HTMLElement {

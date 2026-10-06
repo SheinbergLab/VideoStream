@@ -16,6 +16,8 @@ export interface EyeTrackingOverlay {
   // from; FrameHeader.frame_id minus frame_id is the overlay lag. Absent
   // when !valid.
   analysis_frame?: number;
+  /** Microseconds spent finding pupil, P1 and P4 for this frame. */
+  process_us?: number;
   frame_id?: number;
   abs_frame_id?: number;
   in_blink?: boolean;
@@ -133,6 +135,8 @@ export interface FrameHeader {
   rss_kb?: number;
   mem_avail_kb?: number;
   in_obs: boolean;
+  /** Datafile the dataserver has open; absent when none. */
+  datafile?: string;
   encode_ms: number;
   source?: PreviewSource;
   // Keyed by registered plugin name.

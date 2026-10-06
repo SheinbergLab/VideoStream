@@ -57,6 +57,11 @@ public:
   // Status
   SourceState getState() const { return state_; }
   std::string getSourceType() const { return current_source_type_; }
+  // Why the last startSource failed (empty after a successful start)
+  std::string getLastError() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return last_error_;
+  }
   IFrameSource* getCurrentSource() { return current_source_.get(); }
  
   // Get current source parameters
@@ -88,6 +93,7 @@ private:
   mutable std::mutex state_mutex_;
   
   std::string current_source_type_;
+  std::string last_error_;
   std::map<std::string, std::string> current_params_;
   
   std::unique_ptr<IFrameSource> createSourceFromParams(

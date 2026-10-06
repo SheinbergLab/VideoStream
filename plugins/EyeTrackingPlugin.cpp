@@ -602,6 +602,9 @@ struct AnalysisResults {
     cv::Point2f p4_predicted{-1, -1};
     bool p4_candidate_found = false;
     int p1_reject_reason = P1_OK;
+    // Time spent finding pupil, P1 and P4 for this frame (microseconds): the
+    // ceiling on the frame rate analysis can keep up with. -1 = not measured.
+    float process_us = -1.f;
 };
 
 // ============================================================================
@@ -2727,6 +2730,8 @@ cv::Point2f findP4ByProximityWeightedSearch(const cv::Mat& search_region,
             latest_results_.p4_predicted = p4_predicted_;
             latest_results_.p4_candidate_found = p4_candidate_found_;
             latest_results_.p1_reject_reason = p1_reject_reason_;
+            latest_results_.process_us = std::chrono::duration<float, std::micro>(
+                std::chrono::high_resolution_clock::now() - start).count();
             result_hist_[result_hist_pos_] = latest_results_;
             result_hist_pos_ = (result_hist_pos_ + 1) % kResultHist;
             if (result_hist_count_ < kResultHist) result_hist_count_++;
@@ -4204,8 +4209,14 @@ void autoDetectQuality(const cv::Mat& gray_u8, AutoDetectResult& res,
   constexpr float kNoiseHigh = 3.0f;
   constexpr float kCnrIrisLow = 10.0f;
   constexpr float kCnrP4Low = 8.0f;
-  constexpr float kEdgeGood = 3.0f;
-  constexpr float kEdgeBlur = 5.0f;
+  // Pupil edge 10-90% width, px. Doubled from 3/5: a focused edge measured
+  // wider than 5 px on the Lucid rig and warned about focus that was fine.
+  constexpr float kEdgeGood = 6.0f;
+  constexpr float kEdgeBlur = 10.0f;
+  // Soft-edge condition of the combined "barely acceptable" (dim P4) check,
+  // which also stands in for the P4 messages; kept at the original 5 px so
+  // the pupil edge change above leaves the P4 checks as they were.
+  constexpr float kMarginalEdgeBlur = 5.0f;
   constexpr float kP4FwhmGood = 4.0f;
   constexpr float kP4FwhmBlur = 6.0f;
   constexpr float kGainSuggestDb = 1.5f;
@@ -4435,7 +4446,7 @@ void autoDetectQuality(const cv::Mat& gray_u8, AutoDetectResult& res,
   // only brightens the blur. Focus, then aperture, is the useful change.
   const bool barely =
       res.p4_found && res.p4_peak > 0 && res.p4_peak < 100 &&
-      q.edge_width > kEdgeBlur && q.gain_delta_db >= kGainSuggestDb;
+      q.edge_width > kMarginalEdgeBlur && q.gain_delta_db >= kGainSuggestDb;
 
   if (res.p4_found && !barely) {
     if (q.cnr_p4 > 0 && q.cnr_p4 < kCnrP4Low)
@@ -6782,6 +6793,7 @@ std::string overlayJSON(long long want_frame) {
       return out;
     }
     json_object_set_new(root, "analysis_frame", json_integer(r.frame_idx));
+    if (r.process_us >= 0) json_object_set_new(root, "process_us", json_real(r.process_us));
     json_object_set_new(root, "abs_frame_id", json_integer(r.abs_frame_id));
     json_object_set_new(root, "frame_id", json_integer(r.src_frame_id));
     json_object_set_new(root, "in_blink", json_boolean(r.in_blink));

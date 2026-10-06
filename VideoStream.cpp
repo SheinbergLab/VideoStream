@@ -23,6 +23,7 @@
 #include <atomic>
 #include <csignal>
 #include <cmath>
+#include <limits>
 #include <filesystem>
 #include <iterator>
 
@@ -50,6 +51,7 @@
 #include "EventToTcl.h"
 #include "KeyboardCallbackRegistry.h"
 #include "SourceManager.h"
+#include "ConsoleCapture.h"
 #include "StorageManager.h"
 #include "FrameBufferManager.h"
 #include "IFrameSource.h"
@@ -162,6 +164,17 @@ SharedQueue<VstreamEvent> event_queue;
 
 std::atomic<bool> events_ready{false};
 
+// Seconds since the program started (static initialisation), for the startup
+// timeline printed at the points where the browser connection can be held up.
+static const std::chrono::steady_clock::time_point g_process_start = std::chrono::steady_clock::now();
+static std::string uptime_tag()
+{
+  char buf[24];
+  snprintf(buf, sizeof buf, "[%6.1fs] ",
+           std::chrono::duration<double>(std::chrono::steady_clock::now() - g_process_start).count());
+  return buf;
+}
+
 Tcl_Interp *interp = NULL;
 
 /* Shared with tcl */
@@ -201,6 +214,15 @@ std::string output_file;
 bool overwrite = false;
 
 bool in_obs = false;		
+
+// Datafile the dataserver has open, for the viewer's FILE OPEN tag.
+static std::mutex viewer_datafile_mutex;
+static std::string viewer_datafile;
+void set_viewer_datafile(const char *name)
+{
+  std::lock_guard<std::mutex> lock(viewer_datafile_mutex);
+  viewer_datafile = name ? name : "";
+}
 bool ds_in_obs = false;		// dataserver obs status (no line_status)
 
 // Where a frame's obs state comes from (vstream::obsSource):
@@ -474,6 +496,53 @@ private:
   std::atomic<int> preview_max_fps{0};
   std::atomic<int> preview_quality{0};
 
+  // Console lines (ConsoleCapture) reach a client in batches of at most
+  // LOG_BATCH_LINES, and only while its send buffer is below LOG_MAX_BUFFERED;
+  // the rest follows from the next push or when the socket drains.
+  static constexpr unsigned int LOG_MAX_BUFFERED = 256 * 1024;
+  static constexpr size_t LOG_BATCH_LINES = 500;
+  std::atomic<bool> log_push_pending{false};
+
+  // The web port's listen socket, closed by stopListening().
+  us_listen_socket_t* listen_socket_ = nullptr;
+
+  void sendLogs(uWS::WebSocket<false, true, WSPerSocketData>* ws) {
+    WSPerSocketData* userData = (WSPerSocketData*) ws->getUserData();
+    if (!userData || !userData->logs_enabled) return;
+    while (ws->getBufferedAmount() <= LOG_MAX_BUFFERED) {
+      std::vector<ConsoleLine> lines;
+      ConsoleCapture::instance().linesSince(userData->logs_sent, LOG_BATCH_LINES, lines);
+      if (lines.empty()) return;
+      json_t* msg = json_object();
+      json_object_set_new(msg, "type", json_string("log"));
+      json_t* arr = json_array();
+      for (const ConsoleLine& l : lines) {
+        json_t* o = json_object();
+        json_object_set_new(o, "seq", json_integer((json_int_t) l.seq));
+        if (l.err) json_object_set_new(o, "err", json_true());
+        json_object_set_new(o, "text", json_stringn(l.text.data(), l.text.size()));
+        json_array_append_new(arr, o);
+      }
+      json_object_set_new(msg, "lines", arr);
+      char* str = json_dumps(msg, JSON_COMPACT);
+      ws->send(std::string_view(str), uWS::OpCode::TEXT);
+      free(str);
+      json_decref(msg);
+      userData->logs_sent = lines.back().seq;
+    }
+  }
+
+  // Called from the capture thread when new lines arrive: one deferred push
+  // covers any number of notifications that land before it runs.
+  void pushLogs() {
+    uWS::Loop* loop = ws_loop.load();
+    if (!loop || log_push_pending.exchange(true)) return;
+    loop->defer([this]() {
+      log_push_pending = false;
+      for (auto& [name, conn] : ws_connections) sendLogs(conn);
+    });
+  }
+
   // A client further behind than this skips preview frames until it drains:
   // the newest frame is always the one sent, never a backlog.
   static constexpr unsigned int PREVIEW_MAX_BUFFERED = 256 * 1024;
@@ -530,8 +599,10 @@ private:
             userData->rate_window_start = now;
         }
         
-        // Find matching rate limit
-        int rate_limit = rate_limits_["*"];  // Default
+        // Find matching rate limit. Events no pattern limits are not limited:
+        // looking up rate_limits_["*"] here used to insert a limit of 0 that
+        // matched everything, so no ordinary event ever reached a browser.
+        int rate_limit = std::numeric_limits<int>::max();
         for (const auto& [pattern, limit] : rate_limits_) {
             if (event.matchesPattern(pattern)) {
                 rate_limit = limit;
@@ -615,6 +686,22 @@ public:
   void shutdown() {
     m_bDone = true;
     // uWebsockets handles cleanup internally
+  }
+
+  // Stop accepting connections now, at the start of shutdown. uSockets lets
+  // several processes listen on one port and the kernel splits new
+  // connections between them, so an old VideoStream that is slow to exit
+  // (closing the camera, library teardown) would keep taking a share of the
+  // new one's browser connections and never answer them properly.
+  void stopListening() {
+    uWS::Loop* loop = ws_loop.load();
+    if (!loop) return;
+    loop->defer([this]() {
+      if (listen_socket_) {
+        us_listen_socket_close(0, listen_socket_);
+        listen_socket_ = nullptr;
+      }
+    });
   }
 
   int previewClients() const { return preview_clients.load(); }
@@ -738,6 +825,7 @@ void broadcastEvent(const VstreamEvent& event) {
   
   void startWebSocketServer(void) {
     ws_loop = uWS::Loop::get();
+    ConsoleCapture::instance().setListener([this]() { pushLogs(); });
     
     auto app = uWS::App();
     
@@ -761,6 +849,8 @@ void broadcastEvent(const VstreamEvent& event) {
          ->end();
     });
     app.get("/app/*", [this](auto *res, auto *req) {
+      if (req->getUrl() == "/app/")  // the page itself, not each asset
+        std::cout << uptime_tag() << "browser page requested" << std::endl;
       serveAppFile(res, req->getUrl());
     });
     
@@ -806,6 +896,7 @@ void broadcastEvent(const VstreamEvent& event) {
       .maxBackpressure = 16 * 1024 * 1024,
       
       .upgrade = [](auto *res, auto *req, auto *context) {
+        std::cout << uptime_tag() << "WebSocket upgrade requested" << std::endl;
         res->template upgrade<WSPerSocketData>({
           .rqueue = new SharedQueue<std::string>(),
           .client_name = "",
@@ -840,7 +931,7 @@ void broadcastEvent(const VstreamEvent& event) {
     
     std::string peer(ws->getRemoteAddress());
     bool local = peerIsLocal(peer);
-    std::cout << "WebSocket client connected: " << userData->client_name
+    std::cout << uptime_tag() << "WebSocket client connected: " << userData->client_name
               << (local ? " (this machine)" : " (remote)") << std::endl;
     
     // Send welcome with subscription info
@@ -848,6 +939,8 @@ void broadcastEvent(const VstreamEvent& event) {
     json_object_set_new(welcome, "type", json_string("welcome"));
     json_object_set_new(welcome, "client_id", json_string(userData->client_name.c_str()));
     json_object_set_new(welcome, "local", local ? json_true() : json_false());
+    // Newest console line, so a reconnecting client can tell the server restarted.
+    json_object_set_new(welcome, "log_latest", json_integer((json_int_t) ConsoleCapture::instance().latestSeq()));
     
     json_t *subs_array = json_array();
     for (const auto& sub : userData->subscriptions) {
@@ -1034,6 +1127,16 @@ void broadcastEvent(const VstreamEvent& event) {
             free(response_str);
             json_decref(response);
         }
+        else if (strcmp(cmd, "logs") == 0) {
+            // {"cmd":"logs","enable":true,"since":<last seq seen>}: stream the
+            // server's console output, starting with what came after `since`.
+            json_t *enable_obj = json_object_get(root, "enable");
+            json_t *since_obj = json_object_get(root, "since");
+            userData->logs_enabled = !enable_obj || json_is_true(enable_obj);
+            userData->logs_sent =
+                since_obj && json_is_integer(since_obj) ? (unsigned long long) json_integer_value(since_obj) : 0;
+            sendLogs(ws);
+        }
 	else if (strcmp(cmd, "eval") == 0) {
             // Handle Tcl script evaluation
             json_t *script_obj = json_object_get(root, "script");
@@ -1090,7 +1193,7 @@ void broadcastEvent(const VstreamEvent& event) {
       
       // A client that falls behind is not disconnected: preview frames are
       // skipped for it (broadcastPreview) until its send buffer drains.
-      .drain = [](auto *ws) {},
+      .drain = [this](auto *ws) { sendLogs(ws); },
       
       .close = [this](auto *ws, int code, std::string_view message) {
         WSPerSocketData *userData = (WSPerSocketData *) ws->getUserData();
@@ -1110,12 +1213,20 @@ void broadcastEvent(const VstreamEvent& event) {
     })
     .listen(port, [this](auto *listen_socket) {
       if (listen_socket) {
-        std::cout << "WebSocket server listening on port " << port << std::endl;
+        listen_socket_ = listen_socket;
+        std::cout << uptime_tag() << "WebSocket server listening on port " << port << std::endl;
         std::cout << "Open http://localhost:" << port << "/ in your browser" << std::endl;
       } else {
         std::cerr << "Failed to start WebSocket server on port " << port << std::endl;
       }
     }).run();
+
+    // stopListening() leaves the loop with nothing to wait for once the last
+    // client has gone, so run() returns while shutdown is still going on. The
+    // loop is destroyed with this thread, but other threads (the preview
+    // encoder, the console capture) reach it through ws_loop->defer(), so keep
+    // the thread, and the loop, alive until the main thread calls shutdown().
+    while (!m_bDone) std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
 };
 
@@ -2442,6 +2553,10 @@ int setupTcl(proginfo_t *p)
     std::cerr << Tcl_GetStringResult(interp) << std::endl;
   }
   else {
+    // Tcl buffers stdout fully when it is not a terminal, as when the console
+    // is being captured; keep puts output arriving line by line.
+    Tcl_Eval(interp, "fconfigure stdout -buffering line");
+
     // core commands
     addTclCommands(interp, p);
 
@@ -2583,9 +2698,15 @@ int sourceFile(const char *filename)
   return Tcl_EvalFile(interp, filename);
 }
 
-// thread safe command eval using "disp" shared queues
+// thread safe command eval using "disp" shared queues. Only the main loop
+// answers, so once it is shutting down refuse rather than wait forever (a
+// connected browser polls through here constantly).
 int tcl_eval(const std::string& cmd, std::string &response)
 {
+  if (done) {
+    response = "shutting down";
+    return TCL_ERROR;
+  }
   disp_cqueue.push_back(cmd);
   std::string s(disp_rqueue.front());
   disp_rqueue.pop_front();
@@ -2604,6 +2725,7 @@ int tcl_eval(const std::string& cmd, std::string &response)
 
 int tcl_eval(const std::string& cmd)
 {
+  if (done) return TCL_ERROR;
   disp_cqueue.push_back(cmd);
   std::string s(disp_rqueue.front());
   disp_rqueue.pop_front();
@@ -3006,6 +3128,9 @@ int main(int argc, char **argv)
     exit(0);
   }
 
+  // From here on, keep a copy of the console output for the browser viewer.
+  ConsoleCapture::instance().start();
+
   // index of current frame
   std::atomic<int> curFrame{0};
 
@@ -3160,6 +3285,7 @@ int main(int argc, char **argv)
     if (sourceFile(startup_file) != TCL_OK) {
       std::cerr << Tcl_GetStringResult(interp) << std::endl;
     }
+    std::cout << uptime_tag() << "startup script finished" << std::endl;
     
     // Check if startup script requested shutdown
     if (done) {
@@ -3194,6 +3320,7 @@ int main(int argc, char **argv)
   
   // Ready to accept "fired" events
   events_ready = true;
+  std::cout << uptime_tag() << "main loop running" << std::endl;
   
   while(!done)
     {
@@ -3307,6 +3434,10 @@ int main(int argc, char **argv)
 	    pinfo.src_fps = g_frameSource->getFrameRate();
 	    pinfo.incomplete_frames = g_frameSource->incompleteFrameCount();
 	    pinfo.in_obs = in_obs;
+	    {
+	      std::lock_guard<std::mutex> lock(viewer_datafile_mutex);
+	      pinfo.datafile = viewer_datafile;
+	    }
 	    g_webPreview.offer(frame, pinfo);
 	  }
 
@@ -3409,6 +3540,11 @@ int main(int argc, char **argv)
     }
 
 cleanup:
+  // First thing: no new browser connections from here on (see stopListening).
+  wsServer.stopListening();
+  const auto shutdown_started = std::chrono::steady_clock::now();
+  std::cout << "Shutting down..." << std::endl;
+
   if (programInfo.samplingManager) {
     programInfo.samplingManager->stop();
     delete programInfo.samplingManager;
@@ -3441,6 +3577,7 @@ cleanup:
   }
 
   g_webPreview.stop();
+  ConsoleCapture::instance().setListener(nullptr);
   g_wsServer = nullptr;
 
   
@@ -3450,8 +3587,18 @@ cleanup:
   }
   
   g_sourceManager.stopSource();
+  std::cout << "Shutdown: source closed after "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now() - shutdown_started).count()
+            << " ms" << std::endl;
   
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  // Same for the WebSocket thread: a browser eval sent just before the main
+  // loop exited is blocked in disp_rqueue.front(). Answer it so the thread
+  // is not still waiting on the queue when exit() destroys it (which hangs
+  // in pthread_cond_destroy and leaves Ctrl+C unable to quit).
+  disp_rqueue.push_back("!TCL_ERROR shutting down");
 
   wsServer.shutdown();
   if (ws_thread.joinable()) {
@@ -3467,6 +3614,11 @@ cleanup:
   if (verbose) std::cout << "Shutting down" << std::endl;
 
   processShutdownCommands();  
-  
+
+  std::cout << "Shutdown complete after "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now() - shutdown_started).count()
+            << " ms" << std::endl;
+  ConsoleCapture::instance().stop();
   return 0;
 }

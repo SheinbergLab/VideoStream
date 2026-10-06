@@ -39,6 +39,9 @@ set ::S::live_serial ""
 
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
 
+# Settings changed in the browser viewer are kept by the server, here.
+source [file join [file dirname [info script]] viewer_settings.tcl]
+
 # Detector tuning defaults (same as watch.tcl and the headless reprocess
 # path). The viewer's tuning panel calls this for "Reset to defaults".
 proc apply_default_tuning {} {
@@ -59,6 +62,7 @@ proc apply_default_tuning {} {
 }
 
 eyetracking::setROI 160 80 430 365
+set ::vs::default_roi {160 80 430 365}
 eyetracking::resetP4Model
 if {$::S::have_model} {
     eyetracking::setP4Model $::S::mag $::S::ang
@@ -412,6 +416,8 @@ proc switch_to_camera {vendor id {serial ""}} {
             return -code error "unknown camera vendor: $vendor"
         }
     }
+    # exposure / gain / frame rate / binning saved from the viewer
+    ::vs::apply_camera
     eyetracking::resetTrackingState
     vstream::pause 0
     puts "serve.tcl: switched to live $vendor (headless - no et_camera tuning)"
@@ -473,6 +479,13 @@ proc start_default_source {} {
     puts "serve.tcl: no camera detected; no fallback video - pick a source in the viewer"
     return none
 }
+
+# Saved browser-viewer settings go on top of the defaults above. Loaded here,
+# after the procs they call (set_playback_speed) exist and before the first
+# source opens (so the saved camera values apply to it).
+::vs::load
+::vs::apply_saved
+vstream::addShutdownCmd ::vs::flush
 
 set ::S::started_as [start_default_source]
 

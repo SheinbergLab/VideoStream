@@ -9,6 +9,8 @@ source [file join [file dirname [info script]] et_keys.tcl]
 # Override before sourcing this file, or from the console.
 if {![info exists ::camera_type]} { set ::camera_type flir }
 source [file join [file dirname [info script]] et_camera.tcl]
+# Settings changed in the browser viewer are kept by the server, here.
+source [file join [file dirname [info script]] viewer_settings.tcl]
 
 # Live-camera settings per backend, applied once by go_live (see et_camera.tcl).
 # Lucid: 430 us exposure at 250 Hz (4001 us frame time), Line1 drives the IR
@@ -176,11 +178,13 @@ proc datafile_changed { data } {
 	    close_datafile
 	}
 	set ::Registry::datafile $data
+	vstream::setViewerDatafile $data
 	vstream::resetPlugins
 	ds_log "datafile open: $data (plugins reset)"
 	open_datafile $data
     } else {
 	set ::Registry::datafile {}
+	vstream::setViewerDatafile {}
 	close_datafile
 	ds_log "datafile closed"
     }
@@ -712,12 +716,21 @@ namespace eval ::ROI {
     }
 }
 
+# What the viewer's "reset camera" returns to: the scripted rig settings.
+proc ::vs::camera_defaults {} {
+    ::et_camera::apply_live_settings \
+        [::et_camera::settings_for_backend $::camera_live_settings]
+}
+
 proc go_live {} {
     set initialized $::Registry::camera_initialized
     
     if { !$initialized } {
         ::et_camera::apply_live_settings \
             [::et_camera::settings_for_backend $::camera_live_settings]
+        # exposure / gain / frame rate / binning saved from the viewer win over
+        # the rig values above; strobe, TTL line and PTP stay as scripted
+        ::vs::apply_camera
         set ::Registry::camera_initialized 1
     }
     
@@ -738,6 +751,90 @@ proc go_live {} {
 	bind_key $::keys::LEFT {::ROI::nudgeLeft}
 	bind_key $::keys::RIGHT {::ROI::nudgeRight}
     }
+}
+
+# Browser viewer (web/) source controls: the same commands serve.tcl
+# provides (camera/file picker, playback speed, Stop and Play-after-Stop).
+# A live camera is (re)opened with this rig's settings (strobe, exposure,
+# PTP), since a reopened device is set up from scratch.  While an ESS
+# datafile is open the live recording is protected: no switching or stopping.
+set ::viewer_last_kind camera     ;# camera | playback
+set ::viewer_live_id 0
+set ::viewer_live_serial ""
+set ::viewer_playback_speed 1.0
+
+proc viewer_check_not_recording {} {
+    if {$::Registry::datafile ne ""} {
+        return -code error "recording to $::Registry::datafile; close the datafile first"
+    }
+}
+
+proc viewer_start_live {} {
+    if {$::camera_type eq "webcam"} {
+        vstream::startSource webcam id $::viewer_live_id
+    } elseif {$::viewer_live_serial ne ""} {
+        vstream::startSource $::camera_type id $::viewer_live_id serial $::viewer_live_serial
+    } else {
+        vstream::startSource $::camera_type id $::viewer_live_id
+    }
+    if {$::camera_type ne "webcam"} {
+        set ::Registry::camera_initialized 0
+        go_live
+    }
+    eyetracking::resetTrackingState
+    vstream::pause 0
+    set ::Registry::paused 0
+}
+
+proc switch_to_camera {vendor id {serial ""}} {
+    viewer_check_not_recording
+    if {$vendor ni {webcam flir lucid}} {
+        return -code error "unknown camera vendor: $vendor"
+    }
+    set ::camera_type $vendor
+    set ::viewer_live_id $id
+    set ::viewer_live_serial $serial
+    set ::viewer_last_kind camera
+    viewer_start_live
+}
+
+proc switch_to_playback {path} {
+    viewer_check_not_recording
+    set ::source_file $path
+    set ::viewer_last_kind playback
+    vstream::startSource playback file $path speed $::viewer_playback_speed loop 1 rate_limited 1
+    eyetracking::resetTrackingState
+    vstream::pause 0
+    set ::Registry::paused 0
+}
+
+proc set_playback_speed {spd} {
+    set ::viewer_playback_speed $spd
+    if {[vstream::getSourceType] eq "playback"} {
+        vstream::setPlaybackSpeed $spd
+    }
+}
+
+proc stop_active_source {} {
+    viewer_check_not_recording
+    if {[vstream::getSourceType] ne ""} {
+        vstream::stopSource
+    }
+    return stopped
+}
+
+proc resume_stopped_source {} {
+    if {[vstream::getSourceType] ne ""} {
+        vstream::pause 0
+        set ::Registry::paused 0
+        return running
+    }
+    if {$::viewer_last_kind eq "playback"} {
+        switch_to_playback $::source_file
+    } else {
+        viewer_start_live
+    }
+    return running
 }
 
 # ============================================================================
@@ -907,22 +1004,35 @@ proc connect_to_dataserver { host {port 4620} } {
 
 load [file dir [info nameofexecutable]]/plugins/eyetracking[info sharedlibextension]
 
-# Default parameters
-eyetracking::setROI 160 80 430 365
-eyetracking::setP1MaxJump 24
-eyetracking::setP1MinIntensity 145
-eyetracking::setP4MaxJump 100
-eyetracking::setP4MinIntensity 24
-eyetracking::setPupilThreshold 32
-eyetracking::setDetectionMode pupil_p1
-eyetracking::setP4MaxPredictionError 40
-eyetracking::resetP4Model
+# Default detector parameters, in code. The browser's "Reset to defaults"
+# comes back here (apply_default_tuning, below, adds the rig-local file).
+proc apply_code_defaults {} {
+    eyetracking::setP1MaxJump 24
+    eyetracking::setP1MinIntensity 145
+    eyetracking::setP4MaxJump 100
+    eyetracking::setP4MinIntensity 24
+    eyetracking::setPupilThreshold 32
+    eyetracking::setDetectionMode pupil_p1
+    eyetracking::setP4MaxPredictionError 40
 
-# Per-backend detector defaults: the Lucid rig's shorter focal length makes
-# P1 smaller than on the FLIR rig (plugin default 40 px^2).
-if { $::camera_type eq "lucid" } {
-    eyetracking::setP1MinArea 25
+    # Per-backend detector defaults: the Lucid rig's shorter focal length makes
+    # P1 smaller than on the FLIR rig (plugin default 40 px^2).
+    if { $::camera_type eq "lucid" } {
+        eyetracking::setP1MinArea 25
+    }
 }
+
+proc apply_default_tuning {} {
+    apply_code_defaults
+    if { $::tracker_local_file ne "" && [file exists $::tracker_local_file] } {
+        source $::tracker_local_file
+    }
+}
+
+eyetracking::setROI 160 80 430 365
+set ::vs::default_roi {160 80 430 365}
+eyetracking::resetP4Model
+apply_code_defaults
 
 # Rig-local overrides, kept out of git: tracker_local.tcl is sourced after the
 # defaults above, so per-rig values (thresholds, areas, ROI) survive updates.
@@ -951,21 +1061,24 @@ if { $::tracker_local_file eq "" } {
     }
 }
 
-# Write the detector parameters currently in effect (sliders included) to
-# tracker_local.tcl so they are restored at the next start.
+# Keep the detector parameters currently in effect (sliders included) as the
+# saved settings, so they are restored at the next start. This is what the old
+# display UI's save button does; the browser viewer saves every change as it
+# is made. (tracker_local.tcl above is still read, as a lower layer.)
 proc save_detector_settings {} {
-    file mkdir [file dirname $::tracker_local_file]
-    set f [open $::tracker_local_file w]
-    puts $f "# tracker_local.tcl - rig-local detector settings, written by"
-    puts $f "# save_detector_settings on [clock format [clock seconds]]; sourced after the"
-    puts $f "# defaults in tracker.tcl.  Edit freely; not tracked by git."
-    foreach cmd {setPupilThreshold setP1MinIntensity setP1MaxJump setP1MinArea
-	         setP1MaxArea setP4MinIntensity setP4MaxJump setP4MaxPredictionError} {
-	puts $f "eyetracking::$cmd [eyetracking::$cmd]"
+    dict for {name setter} $::vs::detector_setter {
+        if { ![catch {eyetracking::$setter} v] } {
+            ::vs::put det.$name $v
+        }
     }
-    close $f
-    puts "Saved detector settings to $::tracker_local_file"
+    ::vs::flush
+    puts "Saved detector settings to [::vs::path]"
 }
+
+# Saved browser-viewer settings go on top of the defaults above.
+::vs::load
+::vs::apply_saved
+vstream::addShutdownCmd ::vs::flush
 
 vstream::onlySaveInObs 0
 vstream::obsSource $::obs_source

@@ -64,6 +64,11 @@ struct WSPerSocketData {
   int preview_quality = 0;   // 0 = server default (vstream::webPreview quality)
   std::chrono::steady_clock::time_point preview_next_due{};
   long long preview_dropped = 0;
+
+  // Server console stream (opted into with {"cmd":"logs"}); logs_sent is the
+  // newest ConsoleCapture line already delivered to this client.
+  bool logs_enabled = false;
+  unsigned long long logs_sent = 0;
 };
 
 // To help manage large WebSocket messages (stimdg -> ess/stiminfo)
@@ -101,6 +106,10 @@ extern "C" {
   int set_fourCC(char *str);
 
   void add_shutdown_command(char *str);
+
+  // Name of the datafile the dataserver has open ("" = none); the browser
+  // viewer shows a FILE OPEN tag while it is set. Called from Tcl.
+  void set_viewer_datafile(const char *name);
   
   int show_display(proginfo_t *p);
   int hide_display(proginfo_t *p);

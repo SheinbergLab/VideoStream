@@ -3,7 +3,63 @@
 #include "VstreamEvent.h"
 #include "VstreamVars.h"
 #include <iostream>
+#include <fstream>
+#include <filesystem>
+#include <cstdint>
 #include <dynio.h>
+
+static std::string humanSize(std::uintmax_t bytes) {
+    char buf[32];
+    if (bytes < 1024) snprintf(buf, sizeof buf, "%ju bytes", bytes);
+    else if (bytes < 1024 * 1024) snprintf(buf, sizeof buf, "%.1f KB", bytes / 1024.0);
+    else snprintf(buf, sizeof buf, "%.1f MB", bytes / (1024.0 * 1024.0));
+    return buf;
+}
+
+// Why OpenCV could not open (or read a frame from) a video file, for the
+// error shown in the viewer. An MP4 is only playable once its index (the
+// moov atom) is written when the recording closes, so a recording that was
+// never closed has frame data but no index, or nothing at all.
+static std::string describeUnplayable(const std::string& path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::string name = fs::path(path).filename().string();
+    if (!fs::exists(path, ec)) return name + ": file not found";
+    std::uintmax_t size = fs::file_size(path, ec);
+    if (ec) return name + ": cannot read file";
+    if (size == 0) return name + " is empty (0 bytes)";
+
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return name + ": cannot read file (permission denied?)";
+    bool isMp4 = false, hasMoov = false;
+    std::uintmax_t pos = 0;
+    while (pos + 8 <= size) {
+        unsigned char h[8];
+        f.seekg((std::streamoff) pos);
+        if (!f.read((char*) h, 8)) break;
+        std::uintmax_t atom = ((std::uintmax_t) h[0] << 24) | (h[1] << 16) | (h[2] << 8) | h[3];
+        std::string type((const char*) h + 4, 4);
+        if (pos == 0) isMp4 = (type == "ftyp");
+        if (!isMp4) break;
+        if (type == "moov") hasMoov = true;
+        if (atom == 1) {                       // 64-bit size follows
+            unsigned char x[8];
+            if (!f.read((char*) x, 8)) break;
+            atom = 0;
+            for (unsigned char b : x) atom = (atom << 8) | b;
+        }
+        if (atom < 8) break;                   // 0 = runs to end of file
+        pos += atom;
+    }
+    if (isMp4 && !hasMoov) {
+        if (size < 4096)
+            return name + " has no video frames (" + humanSize(size) +
+                   "): the recording stopped before any frames were written";
+        return name + " is an unfinished recording (" + humanSize(size) +
+               ", missing its index): it was not closed properly, so it cannot be played";
+    }
+    return name + " could not be opened as a video (" + humanSize(size) + ")";
+}
 
 VideoFileSource::VideoFileSource(const std::string& videoFile,
                                  const std::string& dgzFile,
@@ -24,7 +80,7 @@ VideoFileSource::VideoFileSource(const std::string& videoFile,
 {
     cap.open(videoFile);
     if (!cap.isOpened()) {
-        throw std::runtime_error("Failed to open video file: " + videoFile);
+        throw std::runtime_error(describeUnplayable(videoFile));
     }
     
     width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
@@ -35,6 +91,11 @@ VideoFileSource::VideoFileSource(const std::string& videoFile,
     // Try to determine if color (read first frame and check)
     cv::Mat test_frame;
     cap >> test_frame;
+    if (test_frame.empty()) {
+        throw std::runtime_error(
+            std::filesystem::path(videoFile).filename().string() +
+            " contains no video frames");
+    }
     color = (test_frame.channels() > 1);
     cap.set(cv::CAP_PROP_POS_FRAMES, 0); // Rewind
     

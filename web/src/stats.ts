@@ -7,6 +7,9 @@ export class Stats {
   private displayed = 0;
   private bytes = 0;
   private lastSeq = -1;
+  private trackSumUs = 0;
+  private trackCount = 0;
+  private trackMaxUs = 0;
 
   // Totals since the page loaded.
   serverGaps = 0;
@@ -18,6 +21,9 @@ export class Stats {
   last: FrameHeader | null = null;
   lag: number | null = null;
   latencyMs: number | null = null;
+  // Time to find pupil, P1 and P4 per frame (ms), mean and worst over the last second.
+  trackMs: number | null = null;
+  trackMaxMs: number | null = null;
 
   frameReceived(msg: FrameMessage): void {
     this.received++;
@@ -33,6 +39,11 @@ export class Stats {
     this.displayed++;
     this.last = h;
     const et = h.overlay.eye_tracking;
+    if (et?.valid && et.process_us !== undefined) {
+      this.trackSumUs += et.process_us;
+      this.trackCount++;
+      this.trackMaxUs = Math.max(this.trackMaxUs, et.process_us);
+    }
     if (et?.valid && et.frame_id !== undefined && et.frame_id >= 0) {
       this.lag = h.frame_id - et.frame_id;
     } else if (et?.valid && et.analysis_frame !== undefined && h.ring_size > 0) {
@@ -53,6 +64,11 @@ export class Stats {
     this.rxFps = this.received / dt;
     this.displayFps = this.displayed / dt;
     this.kbps = this.bytes / 1024 / dt;
+    if (this.trackCount > 0) {
+      this.trackMs = this.trackSumUs / this.trackCount / 1000;
+      this.trackMaxMs = this.trackMaxUs / 1000;
+    }
+    this.trackSumUs = this.trackCount = this.trackMaxUs = 0;
     this.received = this.displayed = this.bytes = 0;
     this.windowStart = now;
     return true;

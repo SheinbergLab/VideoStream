@@ -2,9 +2,9 @@ import type { Connection } from "./connection";
 import type { FilePicker } from "./filePicker";
 import type { RefPicker } from "./refPicker";
 import type { PreviewSource, ProbedCamera } from "./protocol";
-import { tclDoubleQuoted, tclListArg } from "./tcl";
+import { tclDoubleQuoted } from "./tcl";
 
-export { tclDoubleQuoted, tclListArg };
+export { tclDoubleQuoted };
 
 export interface SourceMenuOptions {
   conn: Connection;
@@ -228,7 +228,7 @@ export function attachSourceMenu(opts: SourceMenuOptions): {
   async function openFile(path: string) {
     const spd = opts.getPlaybackSpeed();
     await runSwitch(
-      `set_playback_speed ${spd}; switch_to_playback ${tclListArg(path)}`,
+      `set_playback_speed ${spd}; switch_to_playback ${tclDoubleQuoted(path)}`,
       { type: "playback", label: baseName(path), file: path },
       opts.openFileBtn,
     );

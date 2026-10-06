@@ -155,7 +155,10 @@ static int startSourceCmd(ClientData clientData, Tcl_Interp *interp,
         Tcl_SetObjResult(interp, Tcl_NewStringObj("ok", -1));
         return TCL_OK;
     } else {
-        Tcl_SetObjResult(interp, Tcl_NewStringObj("failed to start source", -1));
+        std::string why = sm->getLastError();
+        std::string msg = "failed to start source";
+        if (!why.empty()) msg += ": " + why;
+        Tcl_SetObjResult(interp, Tcl_NewStringObj(msg.c_str(), -1));
         return TCL_ERROR;
     }
 }
@@ -2006,6 +2009,18 @@ static int shutdownCmd(ClientData clientData, Tcl_Interp *interp,
 /*********************************************************************/
 
 
+// vstream::setViewerDatafile name  -- "" when no datafile is open
+static int setViewerDatafileCmd(ClientData clientData, Tcl_Interp *interp,
+                                int argc, char *argv[])
+{
+  if (argc != 2) {
+    Tcl_AppendResult(interp, "usage: ", argv[0], " name", NULL);
+    return TCL_ERROR;
+  }
+  set_viewer_datafile(argv[1]);
+  return TCL_OK;
+}
+
 static int fireEventCmd(ClientData clientData, Tcl_Interp *interp,
                         int argc, char *argv[])
 {
@@ -2172,6 +2187,8 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
   
   Tcl_CreateCommand(interp, "vstream::shutdown", (Tcl_CmdProc *) shutdownCmd, 
             (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
+  Tcl_CreateCommand(interp, "vstream::setViewerDatafile", (Tcl_CmdProc *) setViewerDatafileCmd,
+		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   Tcl_CreateCommand(interp, "vstream::fireEvent", (Tcl_CmdProc *) fireEventCmd, 
 		    (ClientData) NULL, (Tcl_CmdDeleteProc *) NULL);
   

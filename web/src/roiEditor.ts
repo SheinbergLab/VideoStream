@@ -1,6 +1,6 @@
 import type { FrameHeader } from "./protocol";
 import type { View } from "./renderer";
-import type { Connection } from "./connection";
+import { settings } from "./settings";
 
 export type RoiRect = { x: number; y: number; w: number; h: number };
 
@@ -78,7 +78,6 @@ function roiNearEqual(a: RoiRect, b: RoiRect, eps = 2): boolean {
 /** Edge hit-testing uses the same ROI as the overlay (e.g. after Auto-ROI moves the crop). */
 export function attachRoiEditor(
   canvas: HTMLCanvasElement,
-  conn: Connection,
   getState: () => { header: FrameHeader | null; view: View },
   getDisplayRoi: () => RoiRect | null,
   onPendingRoi: (roi: RoiRect | null) => void,
@@ -90,7 +89,8 @@ export function attachRoiEditor(
   let debounceTimer: number | undefined;
 
   const commit = (r: RoiRect) => {
-    conn.sendEval(`eyetracking::setROI ${r.x} ${r.y} ${r.w} ${r.h}`);
+    // The server applies it and keeps it as the saved ROI.
+    settings.put("roi", `${r.x} ${r.y} ${r.w} ${r.h}`).catch((e) => console.warn("ROI not applied:", e));
   };
 
   const scheduleCommit = (r: RoiRect) => {

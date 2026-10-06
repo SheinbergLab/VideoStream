@@ -241,6 +241,8 @@ void WebPreview::run()
     if (load.avail_kb >= 0)
       json_object_set_new(header, "mem_avail_kb", json_integer(load.avail_kb));
     json_object_set_new(header, "in_obs", json_boolean(info.in_obs));
+    if (!info.datafile.empty())
+      json_object_set_new(header, "datafile", json_string(info.datafile.c_str()));
     json_object_set_new(header, "encode_ms", json_real(encode_ms));
     json_t* overlay_obj = overlay.empty() ? nullptr : json_loads(overlay.c_str(), 0, nullptr);
     json_object_set_new(header, "overlay", overlay_obj ? overlay_obj : json_object());

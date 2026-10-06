@@ -1,4 +1,5 @@
 import { Connection } from "./connection";
+import { cameraFpsReader } from "./cameraFps";
 import { Renderer } from "./renderer";
 import { Stats } from "./stats";
 import {
@@ -16,12 +17,12 @@ import { attachFilePicker } from "./filePicker";
 import {
   PLAYBACK_SPEEDS,
   formatPlaybackSpeed,
-  loadPlaybackSpeedPref,
   nearestPlaybackSpeed,
-  savePlaybackSpeedPref,
 } from "./playbackSpeed";
 import { attachRefPicker } from "./refPicker";
 import { attachSourceMenu } from "./sourceMenu";
+import { attachConsolePanel, type ConsolePanel } from "./consolePanel";
+import { settings } from "./settings";
 import { attachTuningPanel } from "./tuningPanel";
 import { HistoryPlot } from "./history";
 import type { EyeTrackingOverlay, PreviewSource } from "./protocol";
@@ -33,6 +34,7 @@ const quality = Number(params.get("quality")) || undefined;
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const connEl = $("conn");
 const badgesEl = $("badges");
+const fileTag = $("file-tag");
 const layersPanel = $("layers-panel");
 const layersToggle = $("layers-toggle") as HTMLButtonElement;
 const layersBody = $("layers-body");
@@ -50,7 +52,7 @@ const overlayCanvas = $("overlay") as HTMLCanvasElement;
 const NO_CAMERA_HINT =
   "Camera not found. Connect one or choose a video for playback above.";
 
-let playbackSpeed = loadPlaybackSpeedPref();
+let playbackSpeed: number = nearestPlaybackSpeed(settings.num("playback.speed", 1));
 // Speed the user just picked; frames still report the old speed until the
 // server applies it, so they must not override the selection meanwhile.
 let pendingSpeed: number | null = null;
@@ -93,7 +95,7 @@ function syncSpeedSelect(): void {
 
 function setPlaybackSpeedPref(speed: number): void {
   playbackSpeed = nearestPlaybackSpeed(speed);
-  savePlaybackSpeedPref(playbackSpeed);
+  settings.set("playback.speed", playbackSpeed); // the server applies it to a playing file too
   pendingSpeed = playbackSpeed;
   window.clearTimeout(pendingSpeedTimer);
   pendingSpeedTimer = window.setTimeout(() => (pendingSpeed = null), 3000);
@@ -110,12 +112,20 @@ function adoptServerSpeed(speed: number): void {
   }
   if (s === playbackSpeed) return;
   playbackSpeed = s;
-  savePlaybackSpeedPref(s);
   syncSpeedSelect();
 }
 
-// ---- layer toggles (remembered per browser) ----
-const LAYER_KEY = "vs.viewer.layers";
+// Another browser changed the speed (or this one just loaded the server's).
+settings.on("playback.speed", () => {
+  const s = nearestPlaybackSpeed(settings.num("playback.speed", 1));
+  if (s === playbackSpeed) return;
+  playbackSpeed = s;
+  syncSpeedSelect();
+  updateSourcePickerUi();
+});
+
+// ---- layer toggles (kept by the server, the same in every browser) ----
+const LAYER_SETTING = "ui.layers";
 
 function layerDefaultOn(id: LayerId): boolean {
   return id !== "pupil_ellipse" && id !== "reference_ellipse";
@@ -134,22 +144,29 @@ function migrateLayerPrefs(raw: Record<string, unknown>): Partial<LayerState> {
 }
 
 const layers = Object.fromEntries(LAYERS.map((l) => [l.id, layerDefaultOn(l.id)])) as LayerState;
-try {
-  const saved = migrateLayerPrefs(JSON.parse(localStorage.getItem(LAYER_KEY) ?? "{}") as Record<string, unknown>);
-  for (const l of LAYERS) {
-    const v = saved[l.id];
-    if (typeof v === "boolean") layers[l.id] = v;
-  }
-} catch {
-  // ignore bad saved state
-}
 
 const layerBoxes = new Map<LayerId, HTMLInputElement>();
 const groupBoxes = new Map<"live" | "stored", HTMLInputElement>();
 function saveLayers() {
-  localStorage.setItem(LAYER_KEY, JSON.stringify(layers));
+  settings.set(LAYER_SETTING, JSON.stringify(layers));
   renderer.invalidate();
 }
+
+// Adopt the server's layer toggles, unless a tune proposal has them switched off for now.
+function layersFromSettings(): void {
+  if (savedLayers) return;
+  const saved = migrateLayerPrefs(settings.json<Record<string, unknown>>(LAYER_SETTING, {}));
+  for (const l of LAYERS) {
+    const v = saved[l.id];
+    const on = typeof v === "boolean" ? v : layerDefaultOn(l.id);
+    layers[l.id] = on;
+    const box = layerBoxes.get(l.id);
+    if (box) box.checked = on;
+  }
+  for (const group of groupBoxes.keys()) syncGroupCheck(group);
+  renderer.invalidate();
+}
+settings.on(LAYER_SETTING, layersFromSettings);
 
 function groupLayerIds(group: "live" | "stored"): LayerId[] {
   return LAYERS.filter((l) => l.group === group).map((l) => l.id);
@@ -281,15 +298,18 @@ layersDivider.className = "layers-divider";
 layersBody.append(layersDivider);
 for (const l of LAYERS.filter((x) => x.group === "general")) appendLayerRow(layersBody, l);
 
-const LAYERS_OPEN_KEY = "vs.viewer.layersOpen";
-function setLayersOpen(open: boolean) {
+function showLayersOpen(open: boolean) {
   layersPanel.classList.toggle("collapsed", !open);
   layersToggle.setAttribute("aria-expanded", String(open));
   layersToggle.title = open ? "Hide layers" : "Show layers";
-  localStorage.setItem(LAYERS_OPEN_KEY, open ? "1" : "0");
 }
-setLayersOpen(localStorage.getItem(LAYERS_OPEN_KEY) !== "0");
-layersToggle.addEventListener("click", () => setLayersOpen(layersPanel.classList.contains("collapsed")));
+showLayersOpen(settings.flag("ui.layersOpen", true));
+settings.on("ui.layersOpen", () => showLayersOpen(settings.flag("ui.layersOpen", true)));
+layersToggle.addEventListener("click", () => {
+  const open = layersPanel.classList.contains("collapsed");
+  showLayersOpen(open);
+  settings.set("ui.layersOpen", open);
+});
 
 let pendingRoi: RoiRect | null = null;
 let tuneProposal: TuneProposal | null = null;
@@ -473,9 +493,13 @@ async function seekPlayback(frame: number, alreadyThere: boolean): Promise<void>
 let clientOnServer = false;
 
 // ---- connection (created early for modal) ----
+let consolePanel: ConsolePanel | null = null;
 const conn = new Connection({
   fps,
   quality,
+  onEvent: (event, data) => settings.handleEvent(event, data),
+  onLog: (lines) => consolePanel?.append(lines),
+  onLogReset: () => consolePanel?.reset(),
   onFrame: (msg) => {
     stats.frameReceived(msg);
     renderer.submit(msg);
@@ -487,6 +511,7 @@ const conn = new Connection({
   onStatus: (up, url) => {
     wsConnected = up;
     if (!up) {
+      fileTag.hidden = true;
       clientOnServer = false;
       renderStats();
       sourcePaused = false;
@@ -520,6 +545,8 @@ const conn = new Connection({
     }
     tuningPanel.setEnabled(up);
     if (up) {
+      // The server's settings first: every panel below adopts them.
+      void settings.load();
       void tuningPanel.onConnected();
       void sourceMenu.refreshCameras();
       void refPicker.refresh();
@@ -537,6 +564,7 @@ const conn = new Connection({
     console.warn("eval failed:", msg);
   },
 });
+settings.bind(conn);
 
 for (const speed of PLAYBACK_SPEEDS) {
   const o = document.createElement("option");
@@ -548,9 +576,6 @@ syncSpeedSelect();
 speedSelect.addEventListener("change", () => {
   const speed = nearestPlaybackSpeed(Number(speedSelect.value));
   setPlaybackSpeedPref(speed);
-  void conn.sendEvalAsync(`set_playback_speed ${speed}`).catch(() => {
-    // Idle or non-playback: preference stored for next file open.
-  });
 });
 
 const refErrorEl = $("ref-error");
@@ -722,6 +747,13 @@ renderer.onDisplayed = (header) => {
   if (header.in_obs) badges.push({ text: "in obs", kind: "ok" });
   const runBadge = refPicker.badge();
   if (runBadge) badges.unshift(runBadge);
+  const datafile = header.datafile ?? "";
+  if (fileTag.hidden === (datafile !== "")) {
+    fileTag.hidden = datafile === "";
+  }
+  if (datafile !== "" && fileTag.title !== `Datafile open on the dataserver: ${datafile}`) {
+    fileTag.title = `Datafile open on the dataserver: ${datafile}`;
+  }
   const key = JSON.stringify(badges);
   if (key !== lastBadges) {
     lastBadges = key;
@@ -770,9 +802,10 @@ async function showNoCameraHintIfNeeded(): Promise<void> {
 conn.start();
 updateSourcePickerUi();
 
+consolePanel = attachConsolePanel(conn, $("console-toggle") as HTMLButtonElement, statsEl);
+
 attachRoiEditor(
   overlayCanvas,
-  conn,
   () => renderer.getState(),
   () => {
     if (tuneProposal) return null;
@@ -788,7 +821,7 @@ attachRoiEditor(
 const PROPOSAL_HIT_PX = 12;
 let proposalDrag: "p1" | "p4" | null = null;
 
-function framePoint(ev: PointerEvent): { x: number; y: number } | null {
+function framePoint(ev: { clientX: number; clientY: number }): { x: number; y: number } | null {
   const { header, view } = renderer.getState();
   if (!header) return null;
   const rect = overlayCanvas.getBoundingClientRect();
@@ -798,7 +831,7 @@ function framePoint(ev: PointerEvent): { x: number; y: number } | null {
   };
 }
 
-function hitProposalMark(ev: PointerEvent): "p1" | "p4" | null {
+function hitProposalMark(ev: { clientX: number; clientY: number }): "p1" | "p4" | null {
   const p = tuneProposal;
   const pt = framePoint(ev);
   const { view } = renderer.getState();
@@ -876,7 +909,22 @@ overlayCanvas.addEventListener("pointercancel", () => {
 // pixel being placed. Registered after the ROI and proposal handlers so it
 // wins the cursor while it is showing.
 let loupeClient: { x: number; y: number } | null = null;
-let loupeHidesCursor = false;
+
+// The loupe stays away from the ROI edge (in frame pixels) so dragging the
+// ROI's edges and corners is not done through a magnifier.
+const LOUPE_ROI_INSET = 20;
+
+function loupeAllowedAt(x: number, y: number): boolean {
+  if (tuneProposal) return true; // the ROI is not editable while a proposal is shown
+  const roi = pendingRoi ?? renderer.getState().header?.overlay.eye_tracking?.roi;
+  if (!roi) return true;
+  return (
+    x >= roi.x + LOUPE_ROI_INSET &&
+    x <= roi.x + roi.w - LOUPE_ROI_INSET &&
+    y >= roi.y + LOUPE_ROI_INSET &&
+    y <= roi.y + roi.h - LOUPE_ROI_INSET
+  );
+}
 
 function loupeFramePoint(): { x: number; y: number } | null {
   if (!sourcePaused || !loupeClient) return null;
@@ -886,19 +934,27 @@ function loupeFramePoint(): { x: number; y: number } | null {
   const x = (loupeClient.x - rect.left - view.offsetX) / view.scale;
   const y = (loupeClient.y - rect.top - view.offsetY) / view.scale;
   if (x < 0 || y < 0 || x >= header.width || y >= header.height) return null;
+  if (!loupeAllowedAt(x, y)) return null;
   return { x, y };
 }
 
+// Shown above the loupe when a proposed P1/P4 mark is under the pointer.
+// P1 is the center of the bright blob and P4 the weighted center of its bright
+// spot, not the single brightest pixel (see refineP1SubPixel / refineP4SubPixelWeighted).
+const LOUPE_DRAG_HINT = "click+drag to center of mass";
+
+// The cursor is hidden by a class whose rule is !important, not by writing
+// style.cursor: the ROI and proposal handlers reset the inline cursor on every
+// pointer move, and a loupe that writes it back afterwards leaves the canvas
+// showing the arrow for the instants in between.
 syncLoupe = () => {
   const frame = loupeFramePoint();
-  renderer.setLoupe(frame);
-  if (frame) {
-    overlayCanvas.style.cursor = "none";
-    loupeHidesCursor = true;
-  } else if (loupeHidesCursor) {
-    loupeHidesCursor = false;
-    overlayCanvas.style.cursor = "";
-  }
+  const canDrag =
+    frame !== null &&
+    loupeClient !== null &&
+    (proposalDrag !== null || hitProposalMark({ clientX: loupeClient.x, clientY: loupeClient.y }) !== null);
+  renderer.setLoupe(frame, canDrag ? LOUPE_DRAG_HINT : null);
+  overlayCanvas.classList.toggle("loupe-active", frame !== null);
 };
 
 function trackLoupePointer(ev: PointerEvent): void {
@@ -971,6 +1027,7 @@ let linkBps: number | null = null;
 let linkMissing = false;
 let linkCameraKey = "";
 let cameraPollBusy = false;
+const statsFps = cameraFpsReader(conn);
 
 async function pollCameraPath(): Promise<void> {
   const key = currentSource?.camera_key;
@@ -980,11 +1037,12 @@ async function pollCameraPath(): Promise<void> {
     linkMissing = false;
     linkBps = null;
     cameraFps = null;
+    statsFps.reset();
   }
   cameraPollBusy = true;
   try {
     try {
-      const fps = Number(await conn.sendEvalAsync("camera::node AcquisitionResultingFrameRate"));
+      const fps = await statsFps.read();
       if (currentSource?.camera_key === key && Number.isFinite(fps)) cameraFps = fps;
     } catch {
       /* leave the last reading */
@@ -1038,6 +1096,16 @@ function renderStats(): void {
     cameraFps === null ? "\u2013" : `${cameraFps.toFixed(1)} fps`,
     "Pictures per second the camera is delivering to the server.",
     camera,
+  );
+  setField(
+    source,
+    "track",
+    "track",
+    stats.trackMs === null || stats.trackMaxMs === null
+      ? "\u2013"
+      : `${stats.trackMs.toFixed(1)} ms (max ${stats.trackMaxMs.toFixed(1)})`,
+    "Time to find the pupil, P1 and P4 in one frame, averaged over the last second, with the slowest frame in brackets. 1000 divided by this is the highest frame rate tracking can keep up with: 2 ms is about 500 fps.",
+    stats.trackMs !== null,
   );
   setField(
     source,

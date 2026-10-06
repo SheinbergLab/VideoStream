@@ -7,6 +7,7 @@
 #ifdef USE_LUCID
 #include <memory>
 #include <string>
+#include <vector>
 
 // Lucid Vision Labs GigE camera (Arena SDK). Mirrors FlirCameraSource: the
 // GenICam node names (ExposureTime, Gain, OffsetX, BinningHorizontal, ...)
@@ -94,6 +95,16 @@ public:
   bool setNodeValue(const std::string& name, const std::string& value, std::string& error) override;
   void listNodes(std::vector<std::string>& names) override;
 };
+
+// Lucid cameras on the network, for the viewer's camera list. Arena allows
+// one ISystem per process, so this shares the live source's system; while a
+// camera is open it reports the list from when that camera was opened rather
+// than rescanning the network under the running stream.
+struct LucidDeviceSummary {
+  std::string model;
+  std::string serial;
+};
+std::vector<LucidDeviceSummary> lucidListDevices();
 
 #endif // USE_LUCID
 #endif // LUCID_CAMERA_SOURCE_H

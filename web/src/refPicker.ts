@@ -1,6 +1,6 @@
 import type { Connection } from "./connection";
 import type { Badge } from "./overlay/eyetracking";
-import { parseTclDictNested, parseTclList, tclListArg } from "./tcl";
+import { parseTclDictNested, parseTclList, tclDoubleQuoted } from "./tcl";
 
 /** Matches serve.tcl ::S::run_state. */
 export type RunState = "idle" | "running" | "closing" | "done";
@@ -142,7 +142,7 @@ export function attachRefPicker(opts: RefPickerOptions): RefPicker {
     if (lastValue === REF_CREATE && value !== REF_CREATE && state !== "idle") {
       if (!window.confirm("Discard the unsaved re-process run?")) return;
       const nextRef = value === REF_CREATE ? "keep" : value;
-      await run(`run_discard ${tclListArg(nextRef)}`);
+      await run(`run_discard ${tclDoubleQuoted(nextRef)}`);
       lastValue = value;
       await refresh();
       return;
@@ -154,7 +154,7 @@ export function attachRefPicker(opts: RefPickerOptions): RefPicker {
       opts.onMenuUpdate?.();
       return;
     }
-    await run(`ref_select ${tclListArg(value)}`);
+    await run(`ref_select ${tclDoubleQuoted(value)}`);
     renderMenu();
     renderButtons();
     opts.onRefPicked?.();

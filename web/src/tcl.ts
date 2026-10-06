@@ -13,11 +13,6 @@ export function tclDoubleQuoted(value: string): string {
   );
 }
 
-/** One argument for Tcl eval via `[list …]` (handles spaces, `{`, `$`, etc.). */
-export function tclListArg(value: string): string {
-  return `[list ${tclDoubleQuoted(value)}]`;
-}
-
 /** Tcl list → elements; handles {braced} and "quoted" elements and backslashes. */
 export function parseTclList(raw: string): string[] {
   const out: string[] = [];

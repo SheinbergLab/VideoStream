@@ -99,7 +99,9 @@
       <div class="topbar-center">
         <div id="badges" class="badges"></div>
       </div>
-      <div class="topbar-right"></div>
+      <div class="topbar-right">
+        <span id="file-tag" class="badge badge-ok" hidden>FILE OPEN</span>
+      </div>
     </header>
     <div id="workspace">
       <aside id="tuning-panel" class="tuning-panel" aria-label="Tracking settings">
@@ -122,21 +124,6 @@
           <canvas id="overlay"></canvas>
           <div id="placeholder">waiting for frames&hellip;</div>
         </main>
-        <section id="history" class="history" aria-label="Tracking history">
-          <div class="history-head">
-            <button type="button" id="history-toggle" class="history-toggle" aria-expanded="true">
-              <span>Tracking history</span>
-              <span class="history-toggle-chevron" aria-hidden="true">&#9662;</span>
-            </button>
-            <select id="history-window" class="history-window" aria-label="History length">
-              <option value="1">1s</option>
-              <option value="2">2s</option>
-              <option value="5">5s</option>
-              <option value="10">10s</option>
-            </select>
-          </div>
-          <canvas id="history-canvas" class="history-canvas"></canvas>
-        </section>
       </div>
       <aside id="layers-panel" class="layers-panel" aria-label="Layers">
         <button
@@ -153,7 +140,24 @@
         <div id="layers-body" class="layers-body"></div>
       </aside>
     </div>
-    <footer id="stats"></footer>
+    <section id="history" class="history" aria-label="Tracking history">
+      <div class="history-head">
+        <button type="button" id="history-toggle" class="history-toggle" aria-expanded="true">
+          <span>Tracking history</span>
+          <span class="history-toggle-chevron" aria-hidden="true">&#9662;</span>
+        </button>
+        <select id="history-window" class="history-window" aria-label="History length">
+          <option value="1">1s</option>
+          <option value="2">2s</option>
+          <option value="5">5s</option>
+          <option value="10">10s</option>
+        </select>
+      </div>
+      <canvas id="history-canvas" class="history-canvas"></canvas>
+    </section>
+    <footer id="stats">
+      <button type="button" id="console-toggle" class="console-toggle" aria-expanded="false" title="Show the server's console output">Console</button>
+    </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

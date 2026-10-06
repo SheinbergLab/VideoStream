@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cctype>
 #include <cstdlib>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -26,6 +27,52 @@ struct LucidCameraSource::Impl {
   bool streaming = false;
   size_t num_buffers = 20;
 };
+
+// Arena::OpenSystem() throws if a system is already open, so the source and
+// the viewer's device probe share one, reference counted.
+static std::mutex g_system_mutex;
+static Arena::ISystem* g_system = nullptr;
+static int g_system_refs = 0;
+static int g_open_devices = 0;
+
+static Arena::ISystem* acquireSystem() {
+  std::lock_guard<std::mutex> lock(g_system_mutex);
+  if (!g_system) g_system = Arena::OpenSystem();
+  ++g_system_refs;
+  return g_system;
+}
+
+static void releaseSystem() {
+  std::lock_guard<std::mutex> lock(g_system_mutex);
+  if (--g_system_refs > 0) return;
+  Arena::ISystem* system = g_system;
+  g_system = nullptr;
+  g_system_refs = 0;
+  Arena::CloseSystem(system);
+}
+
+std::vector<LucidDeviceSummary> lucidListDevices() {
+  std::vector<LucidDeviceSummary> out;
+  try {
+    Arena::ISystem* system = acquireSystem();
+    try {
+      bool deviceOpen;
+      {
+        std::lock_guard<std::mutex> lock(g_system_mutex);
+        deviceOpen = g_open_devices > 0;
+      }
+      if (!deviceOpen) system->UpdateDevices(1000);
+      for (Arena::DeviceInfo& d : system->GetDevices())
+        out.push_back({d.ModelName().c_str(), d.SerialNumber().c_str()});
+    } catch (GenICam::GenericException& ge) {
+      std::cerr << "Lucid probe: " << ge.what() << std::endl;
+    }
+    releaseSystem();
+  } catch (GenICam::GenericException& ge) {
+    std::cerr << "Lucid probe: " << ge.what() << std::endl;
+  }
+  return out;
+}
 
 // Switch an "*Auto" enumeration (ExposureAuto, GainAuto) to Off. On the
 // Triton the node reports read-only for a while after a stream stops even
@@ -93,7 +140,7 @@ LucidCameraSource::~LucidCameraSource() {
 
 bool LucidCameraSource::initializeCamera() {
   try {
-    impl_->system = Arena::OpenSystem();
+    impl_->system = acquireSystem();
     impl_->system->UpdateDevices(1000);
     std::vector<Arena::DeviceInfo> devices = impl_->system->GetDevices();
 
@@ -121,6 +168,10 @@ bool LucidCameraSource::initializeCamera() {
               << " ip " << devices[index].IpAddressStr() << std::endl;
 
     impl_->device = impl_->system->CreateDevice(devices[index]);
+    {
+      std::lock_guard<std::mutex> lock(g_system_mutex);
+      ++g_open_devices;
+    }
     impl_->nodeMap = impl_->device->GetNodeMap();
     impl_->streamMap = impl_->device->GetTLStreamNodeMap();
     GenApi::INodeMap* nm = impl_->nodeMap;
@@ -359,12 +410,14 @@ void LucidCameraSource::close() {
   if (!impl_) return;
   stopAcquisition();
 
-  try {
-    if (impl_->system && impl_->device) {
+  if (impl_->system && impl_->device) {
+    try {
       impl_->system->DestroyDevice(impl_->device);
+    } catch (GenICam::GenericException& ge) {
+      std::cerr << "Error destroying device: " << ge.what() << std::endl;
     }
-  } catch (GenICam::GenericException& ge) {
-    std::cerr << "Error destroying device: " << ge.what() << std::endl;
+    std::lock_guard<std::mutex> lock(g_system_mutex);
+    --g_open_devices;
   }
   impl_->device = nullptr;
   impl_->nodeMap = nullptr;
@@ -372,7 +425,7 @@ void LucidCameraSource::close() {
 
   try {
     if (impl_->system) {
-      Arena::CloseSystem(impl_->system);
+      releaseSystem();
     }
   } catch (GenICam::GenericException& ge) {
     std::cerr << "Error closing system: " << ge.what() << std::endl;

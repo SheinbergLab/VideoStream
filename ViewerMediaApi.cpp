@@ -19,7 +19,7 @@ using namespace Spinnaker::GenApi;
 #endif
 
 #ifdef USE_LUCID
-#include "ArenaApi.h"
+#include "LucidCameraSource.h"
 #endif
 
 static const std::set<std::string> kVideoExt = {
@@ -133,19 +133,13 @@ ViewerCameraPick viewer_probe_first_camera() {
   }
 #endif
 #ifdef USE_LUCID
-  try {
-    Arena::ISystem* system = Arena::OpenSystem();
-    system->UpdateDevices(1000);
-    std::vector<Arena::DeviceInfo> devices = system->GetDevices();
-    if (!devices.empty()) {
-      pick.found = true;
-      pick.vendor = "lucid";
-      pick.id = 0;
-      pick.serial = devices[0].SerialNumber().c_str();
-    }
-    Arena::CloseSystem(system);
-    if (pick.found) return pick;
-  } catch (...) {
+  std::vector<LucidDeviceSummary> lucid = lucidListDevices();
+  if (!lucid.empty()) {
+    pick.found = true;
+    pick.vendor = "lucid";
+    pick.id = 0;
+    pick.serial = lucid[0].serial;
+    return pick;
   }
 #endif
   return pick;
@@ -186,21 +180,14 @@ static void probe_flir(json_t* cameras) {
 
 #ifdef USE_LUCID
 static void probe_lucid(json_t* cameras) {
-  try {
-    Arena::ISystem* system = Arena::OpenSystem();
-    system->UpdateDevices(1000);
-    std::vector<Arena::DeviceInfo> devices = system->GetDevices();
-    for (size_t i = 0; i < devices.size(); ++i) {
-      std::string model = devices[i].ModelName().c_str();
-      std::string serial = devices[i].SerialNumber().c_str();
-      std::string label = "Triton2";
-      if (!model.empty()) label += " — " + model;
-      else if (!serial.empty()) label += " — " + serial;
-      append_camera(cameras, "lucid", (int) i, label, model, serial);
-    }
-    Arena::CloseSystem(system);
-  } catch (const std::exception& e) {
-    std::cerr << "Lucid probe: " << e.what() << std::endl;
+  std::vector<LucidDeviceSummary> devices = lucidListDevices();
+  for (size_t i = 0; i < devices.size(); ++i) {
+    const std::string& model = devices[i].model;
+    const std::string& serial = devices[i].serial;
+    std::string label = "Triton2";
+    if (!model.empty()) label += " — " + model;
+    else if (!serial.empty()) label += " — " + serial;
+    append_camera(cameras, "lucid", (int) i, label, model, serial);
   }
 }
 #endif

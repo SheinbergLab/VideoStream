@@ -1,9 +1,11 @@
 import type { EyeTrackingOverlay } from "./protocol";
 import { LAYERS } from "./overlay/eyetracking";
+import { settings } from "./settings";
 
 const WINDOW_OPTIONS = [1, 2, 5, 10] as const;
-const OPEN_KEY = "vs.viewer.historyOpen";
-const WINDOW_KEY = "vs.viewer.historyWindow";
+// Kept by the server (ui.history.open / ui.history.window), the same in every browser.
+const OPEN_SETTING = "ui.history.open";
+const WINDOW_SETTING = "ui.history.window";
 
 const layerColor = Object.fromEntries(LAYERS.map((l) => [l.id, l.color])) as Record<string, string>;
 const MISSING = "#353535";
@@ -53,12 +55,12 @@ export class HistoryPlot {
     windowSelect: HTMLSelectElement,
     private onSeek: (frame: number, alreadyThere: boolean) => void,
   ) {
-    this.open = localStorage.getItem(OPEN_KEY) !== "0";
+    this.open = settings.flag(OPEN_SETTING, true);
     this.windowS = loadWindowS();
     windowSelect.value = String(this.windowS);
     windowSelect.addEventListener("change", () => {
       this.windowS = Number(windowSelect.value);
-      localStorage.setItem(WINDOW_KEY, windowSelect.value);
+      settings.set(WINDOW_SETTING, windowSelect.value);
       this.trimToWindow();
       this.dirty = true;
       this.draw();
@@ -66,8 +68,19 @@ export class HistoryPlot {
     this.applyOpen();
     toggle.addEventListener("click", () => {
       this.open = !this.open;
-      localStorage.setItem(OPEN_KEY, this.open ? "1" : "0");
+      settings.set(OPEN_SETTING, this.open);
       this.applyOpen();
+    });
+    settings.on(OPEN_SETTING, () => {
+      this.open = settings.flag(OPEN_SETTING, true);
+      this.applyOpen();
+    });
+    settings.on(WINDOW_SETTING, () => {
+      this.windowS = loadWindowS();
+      windowSelect.value = String(this.windowS);
+      this.trimToWindow();
+      this.dirty = true;
+      this.draw();
     });
     new ResizeObserver(() => {
       this.dirty = true;
@@ -325,10 +338,6 @@ export class HistoryPlot {
 }
 
 function loadWindowS(): number {
-  try {
-    const v = Number(localStorage.getItem(WINDOW_KEY));
-    return WINDOW_OPTIONS.includes(v as (typeof WINDOW_OPTIONS)[number]) ? v : 1;
-  } catch {
-    return 1;
-  }
+  const v = settings.num(WINDOW_SETTING, 1);
+  return WINDOW_OPTIONS.includes(v as (typeof WINDOW_OPTIONS)[number]) ? v : 1;
 }

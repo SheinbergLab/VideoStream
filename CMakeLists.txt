@@ -404,7 +404,7 @@ add_executable( VideoStream VideoStream.cpp FrameBufferManager.cpp DservSocket.c
 		SamplingManager.cpp ReviewModeSource.cpp WebcamSource.cpp
 		FlirCameraSource.cpp LucidCameraSource.cpp CameraCommands.cpp
 		VideoFileSource.cpp StorageManager.cpp
-		AnalysisPluginRegistry.cpp tclproc.cpp WebPreview.cpp ViewerMediaApi.cpp
+		AnalysisPluginRegistry.cpp tclproc.cpp WebPreview.cpp ViewerMediaApi.cpp ConsoleCapture.cpp
 		external/sqlite/sqlite3.c)
 
 # Camera SDK rpaths (Linux). Build tree: find each SDK where it is. Installed:

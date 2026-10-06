@@ -36,6 +36,7 @@ struct PreviewFrameInfo {
   double src_fps = 0.0;
   long long incomplete_frames = 0;
   bool in_obs = false;
+  std::string datafile;         // dataserver datafile currently open ("" = none)
 };
 
 class WebPreview {

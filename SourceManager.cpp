@@ -126,14 +126,17 @@ bool SourceManager::startSource(const std::string& type,
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
   
+  last_error_.clear();
   if (state_ == SOURCE_RUNNING) {
     std::cerr << "Source already running" << std::endl;
+    last_error_ = "a source is already running";
     return false;
   }
 
   if (type == "review") {
     ensureReviewSource();
     if (review_source_->getFrameCount() == 0) {
+        last_error_ = "no review frames have been sampled";
         return false;
     }
   }
@@ -218,6 +221,7 @@ bool SourceManager::startSource(const std::string& type,
     
   } catch (const std::exception& e) {
     std::cerr << "Failed to start source: " << e.what() << std::endl;
+    last_error_ = e.what();
     state_ = SOURCE_ERROR;
     return false;
   }
