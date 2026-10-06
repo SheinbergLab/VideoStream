@@ -126,14 +126,17 @@ bool SourceManager::startSource(const std::string& type,
 {
   std::lock_guard<std::mutex> lock(state_mutex_);
   
+  last_error_.clear();
   if (state_ == SOURCE_RUNNING) {
     std::cerr << "Source already running" << std::endl;
+    last_error_ = "a source is already running";
     return false;
   }
 
   if (type == "review") {
     ensureReviewSource();
     if (review_source_->getFrameCount() == 0) {
+        last_error_ = "no review frames have been sampled";
         return false;
     }
   }
@@ -218,6 +221,7 @@ bool SourceManager::startSource(const std::string& type,
     
   } catch (const std::exception& e) {
     std::cerr << "Failed to start source: " << e.what() << std::endl;
+    last_error_ = e.what();
     state_ = SOURCE_ERROR;
     return false;
   }
@@ -258,9 +262,24 @@ bool SourceManager::stopSource()
 
     std::string data = "type " + source_type;
     fireEvent(VstreamEvent("vstream/source_stopped", data));
-    
+
+    current_source_type_.clear();
+    current_params_.clear();
     state_ = SOURCE_IDLE;
     return true;
+}
+
+bool SourceManager::setPlaybackSpeed(float speed) {
+  if (speed < 0.25f || speed > 2.0f) return false;
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (current_source_type_ != "playback" || !current_source_) return false;
+  auto* vfs = dynamic_cast<VideoFileSource*>(current_source_.get());
+  if (!vfs) return false;
+  vfs->setPlaybackSpeed(speed);
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%g", speed);
+  current_params_["speed"] = buf;
+  return true;
 }
 
 bool SourceManager::sampleCurrentFrame(const cv::Mat& frame, const FrameMetadata& metadata)

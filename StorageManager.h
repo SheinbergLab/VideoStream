@@ -134,7 +134,8 @@ public:
     
     // Plugin storage interface
     bool initializePluginStorage();
-    bool storeFrameWithPlugins(int frame_number, int buffer_index);
+    bool storeFrameWithPlugins(int frame_number, int buffer_index,
+                               int64_t src_frame_id);
     void beginPluginStorageBatch();
     void endPluginStorageBatch();
     

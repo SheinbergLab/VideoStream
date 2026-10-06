@@ -24,7 +24,7 @@ with `-D WITH_FLIR=ON` (see [Building with FLIR support](#building-with-flir-sup
 
 ### macOS
 
-A signed and **notarized** `.pkg` (Apple Silicon, macOS 14 Sonoma or newer).
+A signed and **notarized** `.pkg` (Apple Silicon, macOS 15 Sequoia or newer).
 Double-click to install; it places `VideoStream.app` in `/Applications` and a
 `videostream` command-line launcher in `/usr/local/bin`. The app is
 self-contained (OpenCV and Tcl are bundled) — nothing else needs to be installed.
@@ -84,6 +84,29 @@ cmake --build build -j
 To build the self-contained, signed `.app`/`.dmg` locally, configure with
 `-D MACOS_APP_BUNDLE=ON` (and `-D MACOS_CODESIGN_IDENTITY="Developer ID Application: ..."`
 to sign); see the CMake `APPLE` branch and `release_macos.yml` for the full flow.
+
+### Browser viewer
+
+VideoStream serves a browser viewer at `http://<host>:8080/app/`. It is a
+TypeScript app in `web/` that is built with Node (version in `.nvmrc`) and then
+embedded in the binary, so build it **before** VideoStream:
+
+```sh
+(cd web && npm ci && npm run build)   # -> web/dist
+cmake -B build
+cmake --build build -j
+```
+
+Without `web/dist` the C++ still builds (with a warning) but `/app/` is empty;
+`-D VS_REQUIRE_VIEWER=ON` (used by the release builds) makes that an error.
+Installed builds (the `.app`/`.pkg` and the `.deb`) started with no `-f` and
+no source option run their bundled `tcl/serve.tcl`, so double-clicking the app
+or running a bare `videostream` gives the viewer a working back end (script
+arguments still go after `--`, e.g. `videostream -- recording.mp4`); pass
+`--bare` to start without it. A dev build in `build/` still starts bare.
+For front-end work, serve the files from disk instead of the embedded copy with
+`--www-dir web/dist`, or run `npm run dev` in `web/` for a live-reloading dev
+server that proxies to VideoStream on port 8080.
 
 ## Building with FLIR support
 

@@ -75,10 +75,22 @@ jobs:
           wget -q "https://github.com/SheinbergLab/dlsh/releases/download/${DLSH_VERSION}/dlsh-dg_${DLSH_VERSION}_${{ matrix.arch }}.deb"
           dpkg --install "dlsh-dg_${DLSH_VERSION}_${{ matrix.arch }}.deb" || apt -f install -y
 
+      - name: Set up Node (browser viewer)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Build the browser viewer (web/dist)
+        run: |
+          cd web
+          npm ci
+          npm run build
+
       - name: Build and package (.deb)
         run: |
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D VS_REQUIRE_VIEWER=ON \
             -D DISTRO_SUFFIX=${{ matrix.distro }}
           cmake --build build -j
           cpack --config build/CPackConfig.cmake
@@ -197,11 +209,25 @@ jobs:
           tar -xzf arena-sdk.tar.gz -C "$HOME/arena-sdk" --strip-components=1
           ls "$HOME/arena-sdk"
 
+      - name: Set up Node (browser viewer)
+        if: steps.sdk.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Build the browser viewer (web/dist)
+        if: steps.sdk.outputs.enabled == 'true'
+        run: |
+          cd web
+          npm ci
+          npm run build
+
       - name: Build and package (.deb, Lucid enabled)
         if: steps.sdk.outputs.enabled == 'true'
         run: |
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D VS_REQUIRE_VIEWER=ON \
             -D DISTRO_SUFFIX=${{ matrix.distro }} \
             -D WITH_LUCID=ON \
             -D ARENA_SDK_DIR="$HOME/arena-sdk"
@@ -331,11 +357,25 @@ jobs:
           tar -xzf spinnaker-sdk.tar.gz -C "$HOME/spinnaker-sdk" --strip-components=1
           ls "$HOME/spinnaker-sdk"
 
+      - name: Set up Node (browser viewer)
+        if: steps.priv.outputs.enabled == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Build the browser viewer (web/dist)
+        if: steps.priv.outputs.enabled == 'true'
+        run: |
+          cd web
+          npm ci
+          npm run build
+
       - name: Build and package (.deb, FLIR enabled)
         if: steps.priv.outputs.enabled == 'true'
         run: |
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D VS_REQUIRE_VIEWER=ON \
             -D DISTRO_SUFFIX=${{ matrix.distro }} \
             -D WITH_FLIR=ON \
             -D SPINNAKER_SDK_DIR="$HOME/spinnaker-sdk"

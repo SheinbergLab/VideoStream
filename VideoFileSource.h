@@ -5,6 +5,7 @@
 #include <df.h>
 #include <string>
 #include <memory>
+#include <mutex>
 
 class VideoFileSource : public IFrameSource {
 private:
@@ -18,12 +19,20 @@ private:
   int metadata_length;
   
   int current_idx;
+  // Index of the frame last returned. current_idx is the next one to decode,
+  // so reading current_idx from the UI (or re-reading it on pause) is one
+  // frame ahead of the picture.
+  int delivered_idx_ = 0;
+  // A paused re-read leaves the decoder one frame past the frame it showed.
+  bool reseek_on_resume_ = false;
   float fps;
   int width, height;
   bool color;
   bool has_metadata;
   
-  // Playback control
+  // Playback control. timing_mutex guards playback_start and playback_speed,
+  // which the Tcl thread changes while the capture thread paces frames.
+  std::mutex timing_mutex;
   std::chrono::high_resolution_clock::time_point playback_start;
   float playback_speed;
   bool rate_limit;
@@ -50,13 +59,13 @@ public:
   bool isColor() const override { return color; }
   void close() override { cap.release(); }
 
-  void setPlaybackSpeed(float speed) { playback_speed = speed; }
+  void setPlaybackSpeed(float speed);
   void setRateLimiting(bool enable) { rate_limit = enable; }
   void setLooping(bool enable) { loop_playback = enable; }
   void rewind();
   bool hasMetadata() const { return has_metadata; }
   void seekToFrame(int frame_number);
-  int getCurrentFrameIndex() const { return current_idx; }
+  int getCurrentFrameIndex() const { return delivered_idx_; }
   int getTotalFrames() const;
   void stepFrame(int delta);  // Step forward (+1) or backward (-1)  
   
@@ -64,6 +73,7 @@ public:
   bool isLooping() const override { return loop_playback; }
 
   bool supportsPause() const override { return true; }
+  void setPaused(bool status) override;
 };
 
 #endif

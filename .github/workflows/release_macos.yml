@@ -9,7 +9,10 @@ jobs:
 
   release-macos:
     # Apple Silicon runner; build on not-the-latest for modest dep versions.
-    runs-on: macos-14
+    # Not macos-14: Homebrew dropped Sonoma (no bottles, so opencv@4's whole
+    # dependency tree builds from source for hours). The bundled brew dylibs
+    # set the floor, so the .pkg needs macOS 15+.
+    runs-on: macos-15
 
     permissions:
       contents: write
@@ -19,6 +22,12 @@ jobs:
       - name: Install build dependencies
         run: |
           brew update
+          # The runner image leaves symlinks (bin/openssl, ...) into openssl@1.1
+          # that brew doesn't count as linked (`brew unlink` removes 0), so
+          # linking the openssl@3 that opencv@4 pulls in fails the install.
+          # Delete them directly. We use neither openssl.
+          find /opt/homebrew/bin /opt/homebrew/include /opt/homebrew/lib /opt/homebrew/share \
+            -maxdepth 4 -lname '*openssl@1.1*' -print -delete 2>/dev/null || true
           # tcl-tk@9 is bundle-friendly (non-zipfs libtcl + on-disk stdlib);
           # dylibbundler relocates dylibs into the .app.
           # opencv@4, NOT opencv: the unversioned formula moved to OpenCV 5.0
@@ -65,6 +74,17 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN"
           security find-identity -p basic -v
 
+      - name: Set up Node (browser viewer)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Build the browser viewer (web/dist)
+        run: |
+          cd web
+          npm ci
+          npm run build
+
       - name: Build, sign (.app), package (.pkg), sign + notarize the pkg
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -78,6 +98,7 @@ jobs:
           # .app (Developer ID Application + hardened runtime + entitlements + timestamp).
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D VS_REQUIRE_VIEWER=ON \
             -D MACOS_APP_BUNDLE=ON \
             -D MACOS_CODESIGN_IDENTITY="$APP_CERT_ID"
           cmake --build build -j
@@ -133,3 +154,18 @@ jobs:
           spctl -a -vvv -t exec /Applications/VideoStream.app || true
           # The postinstall CLI launcher should be on PATH and runnable.
           /usr/local/bin/videostream --help
+
+      - name: Check the embedded browser viewer is served
+        run: |
+          /usr/local/bin/videostream --ws-port 18080 > vs.log 2>&1 &
+          VS_PID=$!
+          for i in $(seq 1 20); do
+            curl -sf -o index.html http://127.0.0.1:18080/app/ && break
+            sleep 1
+          done
+          sleep 1   # let Tcl init (after the web server starts) report
+          kill $VS_PID || true
+          cat vs.log
+          grep -q '<title>' index.html
+          # The bundled Tcl stdlib must load (a failure here only logs).
+          ! grep -q "initialization failed" vs.log

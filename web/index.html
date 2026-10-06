@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EyeTracker</title>
+    <link rel="icon" href="%BASE_URL%favicon.ico" sizes="any" />
+    <link rel="icon" href="%BASE_URL%favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png" />
+    <link rel="manifest" href="%BASE_URL%site.webmanifest" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header id="topbar">
+      <div class="topbar-left">
+        <div class="topbar-cluster">
+          <span id="conn" class="bar-control conn conn-down" title="connection">VideoStream not found</span>
+          <div class="transport-group">
+            <div id="source-picker-wrap" class="source-picker-wrap">
+              <button
+                type="button"
+                id="source-picker"
+                class="bar-control transport source-picker"
+                title="Change video source"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="source-menu"
+                disabled
+              >
+                <span class="source-picker-label">—</span>
+                <span class="source-picker-chevron" aria-hidden="true">▾</span>
+              </button>
+              <div id="source-menu" class="source-menu" role="menu" aria-labelledby="source-picker" hidden>
+                <p id="source-menu-error" class="source-menu-error" hidden></p>
+                <section class="source-menu-section">
+                  <div class="source-menu-heading-row">
+                    <h3 class="source-menu-heading">Live cameras</h3>
+                    <button type="button" id="source-menu-refresh" class="source-menu-refresh" title="Look for cameras again">
+                      Refresh
+                    </button>
+                  </div>
+                  <div id="source-menu-cameras" class="source-menu-list"></div>
+                </section>
+                <section class="source-menu-section">
+                  <h3 class="source-menu-heading">Review</h3>
+                  <button type="button" id="source-menu-current-file" class="source-menu-item" hidden></button>
+                  <button type="button" id="source-menu-open-file" class="source-menu-item source-menu-open-file">
+                    Open video file&hellip;
+                  </button>
+                  <div id="source-menu-saved" class="source-submenu" hidden>
+                    <button
+                      type="button"
+                      id="source-menu-saved-toggle"
+                      class="source-menu-item source-submenu-toggle"
+                      aria-expanded="false"
+                      aria-controls="source-menu-saved-panel"
+                    >
+                      <span class="source-submenu-label">Saved tracking</span>
+                      <span id="source-menu-saved-current" class="source-submenu-current"></span>
+                      <span class="source-submenu-chevron" aria-hidden="true">&#8250;</span>
+                    </button>
+                    <div id="source-menu-saved-panel" class="source-submenu-panel" hidden>
+                      <div id="source-menu-ref-list" class="source-menu-list"></div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+            <select id="playback-speed" class="bar-control speed-select" aria-label="Playback speed" disabled></select>
+            <div id="ref-row" class="ref-row" hidden>
+              <button type="button" id="ref-reprocess" class="bar-control ref-btn" hidden>Re-process</button>
+              <button type="button" id="ref-save" class="bar-control ref-btn ref-btn-primary" hidden>Save</button>
+              <span id="ref-error" class="ref-error" hidden></span>
+            </div>
+            <button
+              type="button"
+              id="transport-pause"
+              class="bar-control transport transport-pause"
+              title="Pause playback and capture (Space)"
+              aria-label="Pause"
+              data-paused="0"
+              disabled
+            >
+              <span class="transport-pause-icon" aria-hidden="true">⏸</span>
+            </button>
+            <button
+              type="button"
+              id="transport-stop"
+              class="bar-control transport transport-stop"
+              title="Stop the camera, or close the video file"
+              aria-label="Stop"
+              disabled
+            >
+              <span class="transport-stop-icon" aria-hidden="true">■</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="topbar-center">
+        <div id="badges" class="badges"></div>
+      </div>
+      <div class="topbar-right">
+        <span id="file-tag" class="badge badge-ok" hidden>FILE OPEN</span>
+      </div>
+    </header>
+    <div id="workspace">
+      <aside id="tuning-panel" class="tuning-panel" aria-label="Tracking settings">
+        <button
+          type="button"
+          id="tuning-toggle"
+          class="tuning-toggle"
+          aria-expanded="true"
+          aria-controls="tuning-body"
+          title="Hide settings"
+        >
+          <span class="tuning-toggle-title">Tracking settings</span>
+          <span class="tuning-toggle-chevron" aria-hidden="true">&#8249;</span>
+        </button>
+        <div id="tuning-body" class="tuning-body"></div>
+      </aside>
+      <div id="stage-col">
+        <main id="stage">
+          <canvas id="video"></canvas>
+          <canvas id="overlay"></canvas>
+          <div id="placeholder">waiting for frames&hellip;</div>
+        </main>
+      </div>
+      <aside id="layers-panel" class="layers-panel" aria-label="Layers">
+        <button
+          type="button"
+          id="layers-toggle"
+          class="layers-toggle"
+          aria-expanded="true"
+          aria-controls="layers-body"
+          title="Hide layers"
+        >
+          <span class="layers-toggle-title">Layers</span>
+          <span class="layers-toggle-chevron" aria-hidden="true">&#8250;</span>
+        </button>
+        <div id="layers-body" class="layers-body"></div>
+      </aside>
+    </div>
+    <section id="history" class="history" aria-label="Tracking history">
+      <div class="history-head">
+        <button type="button" id="history-toggle" class="history-toggle" aria-expanded="true">
+          <span>Tracking history</span>
+          <span class="history-toggle-chevron" aria-hidden="true">&#9662;</span>
+        </button>
+        <select id="history-window" class="history-window" aria-label="History length">
+          <option value="1">1s</option>
+          <option value="2">2s</option>
+          <option value="5">5s</option>
+          <option value="10">10s</option>
+        </select>
+      </div>
+      <canvas id="history-canvas" class="history-canvas"></canvas>
+    </section>
+    <footer id="stats">
+      <button type="button" id="console-toggle" class="console-toggle" aria-expanded="false" title="Show the server's console output">Console</button>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

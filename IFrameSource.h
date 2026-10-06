@@ -23,6 +23,8 @@ public:
   virtual bool isColor() const = 0;
   virtual void close() = 0;
   virtual bool isPlaybackMode() const { return false; }
+  /** Frames the camera delivered incomplete, discarded before they were stored. */
+  virtual long long incompleteFrameCount() const { return 0; }
   virtual bool isLooping() const { return true; }
 
   virtual void setPaused(bool status) { paused_ = status; }

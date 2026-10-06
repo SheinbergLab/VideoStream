@@ -611,7 +611,8 @@ bool StorageManager::initializePluginStorage() {
     return true;
 }
 
-bool StorageManager::storeFrameWithPlugins(int frame_number, int buffer_index) {
+bool StorageManager::storeFrameWithPlugins(int frame_number, int buffer_index,
+                                           int64_t src_frame_id) {
     if (!recording_open_) {
         return false;
     }
@@ -627,7 +628,8 @@ bool StorageManager::storeFrameWithPlugins(int frame_number, int buffer_index) {
         
         if (plugin->usesStructuredStorage()) {
             // Plugin manages its own table inserts
-            plugin->storeFrameData(db_, frame_number, current_obs_id_);
+            plugin->storeFrameData(db_, frame_number, current_obs_id_,
+                                   src_frame_id);
             // Note: Don't treat as error if plugin has no data for this frame
         }
         // Note: Removed fallback JSON serialization - plugins should use structured storage

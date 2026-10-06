@@ -149,6 +149,7 @@ bool FlirCameraSource::startAcquisition() {
     
     try {
         pCam->BeginAcquisition();
+        incomplete_frames_ = 0;
         std::cout << "FLIR camera acquisition started" << std::endl;
 
         settings_.acquisition_running = true;
@@ -191,8 +192,10 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
         
         // Check if image is incomplete
         if (pResultImage->IsIncomplete()) {
+            incomplete_frames_++;
             std::cerr << "Image incomplete with status " 
-                      << pResultImage->GetImageStatus() << std::endl;
+                      << pResultImage->GetImageStatus()
+                      << " (" << incomplete_frames_ << " total)" << std::endl;
             pResultImage->Release();
             return false;
         }
@@ -391,60 +394,98 @@ bool FlirCameraSource::configureImageOrientation(bool reverseX, bool reverseY) {
     }
 }
 
+// Leave an "*Auto" enum alone when it already reads Off, even if streaming
+// has locked the node. Only write it when it is something else and writable.
+static bool ensureEnumOff(INodeMap* nm, const char* name) {
+    CEnumerationPtr p = nm->GetNode(name);
+    if (!IsAvailable(p) || !IsReadable(p)) return true;
+    CEnumEntryPtr cur = p->GetCurrentEntry();
+    if (cur.IsValid() && std::string(cur->GetSymbolic().c_str()) == "Off")
+        return true;
+    if (!IsWritable(p)) return false;
+    CEnumEntryPtr off = p->GetEntryByName("Off");
+    if (!IsAvailable(off) || !IsReadable(off)) return false;
+    p->SetIntValue(off->GetValue());
+    return true;
+}
+
+static double clampFloatNode(CFloatPtr p, double value) {
+    if (!IsAvailable(p) || !IsReadable(p)) return value;
+    double lo = p->GetMin();
+    double hi = p->GetMax();
+    if (value < lo) return lo;
+    if (value > hi) return hi;
+    return value;
+}
+
 bool FlirCameraSource::configureExposure(float exposureTime) {
     if (!nodeMapPtr) return false;
-    
-    try {
-        CEnumerationPtr ptrExposureAuto = nodeMapPtr->GetNode("ExposureAuto");
-        if (!IsAvailable(ptrExposureAuto) || !IsWritable(ptrExposureAuto))
-            return false;
-        
-        CEnumEntryPtr ptrExposureAutoOff = ptrExposureAuto->GetEntryByName("Off");
-        if (!IsAvailable(ptrExposureAutoOff) || !IsReadable(ptrExposureAutoOff))
-            return false;
-        ptrExposureAuto->SetIntValue(ptrExposureAutoOff->GetValue());
-        
-        CFloatPtr ptrExposureTime = nodeMapPtr->GetNode("ExposureTime");
-        if (!IsAvailable(ptrExposureTime) || !IsWritable(ptrExposureTime))
-            return false;
-        
-        ptrExposureTime->SetValue(exposureTime);
 
-        settings_.exposure_time = exposureTime;
-        fireSettingChanged("exposure_time", std::to_string(exposureTime));
-	
+    bool restart = false;
+    try {
+        if (!ensureEnumOff(nodeMapPtr, "ExposureAuto"))
+            return false;
+
+        CFloatPtr ptrExposureTime = nodeMapPtr->GetNode("ExposureTime");
+        if (!IsAvailable(ptrExposureTime))
+            return false;
+
+        // ExposureTime is often locked for the whole acquisition. Pause,
+        // write, and resume, the same way setNodeValue does.
+        restart = pCam && pCam->IsStreaming() && !IsWritable(ptrExposureTime);
+        if (restart) {
+            stopAcquisition();
+            ptrExposureTime = nodeMapPtr->GetNode("ExposureTime");
+        }
+        if (!IsAvailable(ptrExposureTime) || !IsWritable(ptrExposureTime)) {
+            if (restart) startAcquisition();
+            return false;
+        }
+
+        ptrExposureTime->SetValue(clampFloatNode(ptrExposureTime, exposureTime));
+        settings_.exposure_time = static_cast<float>(ptrExposureTime->GetValue());
+        fireSettingChanged("exposure_time", std::to_string(settings_.exposure_time));
+
+        if (restart) startAcquisition();
         return true;
     } catch (Spinnaker::Exception &e) {
         std::cerr << "Error configuring exposure: " << e.what() << std::endl;
+        if (restart && pCam && !pCam->IsStreaming()) startAcquisition();
         return false;
     }
 }
 
 bool FlirCameraSource::configureGain(float gain) {
     if (!nodeMapPtr) return false;
-    
-    try {
-        CEnumerationPtr ptrGainAuto = nodeMapPtr->GetNode("GainAuto");
-        if (!IsAvailable(ptrGainAuto) || !IsWritable(ptrGainAuto))
-            return false;
-        
-        CEnumEntryPtr ptrGainAutoOff = ptrGainAuto->GetEntryByName("Off");
-        if (!IsAvailable(ptrGainAutoOff) || !IsReadable(ptrGainAutoOff))
-            return false;
-        ptrGainAuto->SetIntValue(ptrGainAutoOff->GetValue());
-        
-        CFloatPtr ptrGain = nodeMapPtr->GetNode("Gain");
-        if (!IsAvailable(ptrGain) || !IsWritable(ptrGain))
-            return false;
-        
-        ptrGain->SetValue(gain);
 
-        settings_.gain = gain;
-        fireSettingChanged("gain", std::to_string(gain));
-	
+    bool restart = false;
+    try {
+        if (!ensureEnumOff(nodeMapPtr, "GainAuto"))
+            return false;
+
+        CFloatPtr ptrGain = nodeMapPtr->GetNode("Gain");
+        if (!IsAvailable(ptrGain))
+            return false;
+
+        restart = pCam && pCam->IsStreaming() && !IsWritable(ptrGain);
+        if (restart) {
+            stopAcquisition();
+            ptrGain = nodeMapPtr->GetNode("Gain");
+        }
+        if (!IsAvailable(ptrGain) || !IsWritable(ptrGain)) {
+            if (restart) startAcquisition();
+            return false;
+        }
+
+        ptrGain->SetValue(clampFloatNode(ptrGain, gain));
+        settings_.gain = static_cast<float>(ptrGain->GetValue());
+        fireSettingChanged("gain", std::to_string(settings_.gain));
+
+        if (restart) startAcquisition();
         return true;
     } catch (Spinnaker::Exception &e) {
         std::cerr << "Error configuring gain: " << e.what() << std::endl;
+        if (restart && pCam && !pCam->IsStreaming()) startAcquisition();
         return false;
     }
 }
@@ -606,25 +647,30 @@ bool FlirCameraSource::setROIOffset(int offsetX, int offsetY) {
 
 bool FlirCameraSource::configureBinning(int horizontal, int vertical)
 {
+  bool wasAcquiring = false;
   try {
     Spinnaker::GenApi::INodeMap& nodeMap = pCam->GetNodeMap();
     
     // Stop acquisition if running
-    bool wasAcquiring = pCam->IsStreaming();
+    wasAcquiring = pCam->IsStreaming();
     if (wasAcquiring) {
       pCam->EndAcquisition();
     }
     
-    // Reset ROI to maximum before changing binning
+    // Binning and the image size constrain each other. Shrink to the
+    // minimum first so the binning change is legal in either direction,
+    // then expand to the new full sensor after the binning is applied.
+    // Setting the size to GetMax() before the change leaves a 2x2 frame
+    // at 720x540 when returning to 1x1, because that was the old maximum.
     Spinnaker::GenApi::CIntegerPtr ptrWidth = nodeMap.GetNode("Width");
     Spinnaker::GenApi::CIntegerPtr ptrHeight = nodeMap.GetNode("Height");
     Spinnaker::GenApi::CIntegerPtr ptrOffsetX = nodeMap.GetNode("OffsetX");
     Spinnaker::GenApi::CIntegerPtr ptrOffsetY = nodeMap.GetNode("OffsetY");
     
-    if (IsWritable(ptrOffsetX)) ptrOffsetX->SetValue(0);
-    if (IsWritable(ptrOffsetY)) ptrOffsetY->SetValue(0);
-    if (IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMax());
-    if (IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMax());
+    if (IsWritable(ptrOffsetX)) ptrOffsetX->SetValue(ptrOffsetX->GetMin());
+    if (IsWritable(ptrOffsetY)) ptrOffsetY->SetValue(ptrOffsetY->GetMin());
+    if (IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMin());
+    if (IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMin());
     
     // Now set binning selector and binning amount
     CEnumerationPtr ptrBinningSelector = nodeMap.GetNode("BinningSelector");
@@ -656,6 +702,15 @@ bool FlirCameraSource::configureBinning(int horizontal, int vertical)
       binning_v = static_cast<int>(ptrBinningVertical->GetValue());
     }
 
+    if (IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMax());
+    if (IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMax());
+    if (IsReadable(ptrWidth)) width = static_cast<int>(ptrWidth->GetValue());
+    if (IsReadable(ptrHeight)) height = static_cast<int>(ptrHeight->GetValue());
+    if (IsReadable(ptrOffsetX)) offset_x = static_cast<int>(ptrOffsetX->GetValue());
+    if (IsReadable(ptrOffsetY)) offset_y = static_cast<int>(ptrOffsetY->GetValue());
+    frame_width = width;
+    frame_height = height;
+
     // Restart acquisition if it was running
     if (wasAcquiring) {
       pCam->BeginAcquisition();
@@ -663,6 +718,9 @@ bool FlirCameraSource::configureBinning(int horizontal, int vertical)
     return true;
   } catch (Spinnaker::Exception& e) {
     std::cerr << "Error setting binning: " << e.what() << std::endl;
+    if (wasAcquiring && pCam && !pCam->IsStreaming()) {
+      try { pCam->BeginAcquisition(); } catch (...) {}
+    }
     return false;
   }
 }

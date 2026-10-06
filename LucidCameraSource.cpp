@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cctype>
 #include <cstdlib>
+#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -26,6 +27,52 @@ struct LucidCameraSource::Impl {
   bool streaming = false;
   size_t num_buffers = 20;
 };
+
+// Arena::OpenSystem() throws if a system is already open, so the source and
+// the viewer's device probe share one, reference counted.
+static std::mutex g_system_mutex;
+static Arena::ISystem* g_system = nullptr;
+static int g_system_refs = 0;
+static int g_open_devices = 0;
+
+static Arena::ISystem* acquireSystem() {
+  std::lock_guard<std::mutex> lock(g_system_mutex);
+  if (!g_system) g_system = Arena::OpenSystem();
+  ++g_system_refs;
+  return g_system;
+}
+
+static void releaseSystem() {
+  std::lock_guard<std::mutex> lock(g_system_mutex);
+  if (--g_system_refs > 0) return;
+  Arena::ISystem* system = g_system;
+  g_system = nullptr;
+  g_system_refs = 0;
+  Arena::CloseSystem(system);
+}
+
+std::vector<LucidDeviceSummary> lucidListDevices() {
+  std::vector<LucidDeviceSummary> out;
+  try {
+    Arena::ISystem* system = acquireSystem();
+    try {
+      bool deviceOpen;
+      {
+        std::lock_guard<std::mutex> lock(g_system_mutex);
+        deviceOpen = g_open_devices > 0;
+      }
+      if (!deviceOpen) system->UpdateDevices(1000);
+      for (Arena::DeviceInfo& d : system->GetDevices())
+        out.push_back({d.ModelName().c_str(), d.SerialNumber().c_str()});
+    } catch (GenICam::GenericException& ge) {
+      std::cerr << "Lucid probe: " << ge.what() << std::endl;
+    }
+    releaseSystem();
+  } catch (GenICam::GenericException& ge) {
+    std::cerr << "Lucid probe: " << ge.what() << std::endl;
+  }
+  return out;
+}
 
 // Switch an "*Auto" enumeration (ExposureAuto, GainAuto) to Off. On the
 // Triton the node reports read-only for a while after a stream stops even
@@ -93,7 +140,7 @@ LucidCameraSource::~LucidCameraSource() {
 
 bool LucidCameraSource::initializeCamera() {
   try {
-    impl_->system = Arena::OpenSystem();
+    impl_->system = acquireSystem();
     impl_->system->UpdateDevices(1000);
     std::vector<Arena::DeviceInfo> devices = impl_->system->GetDevices();
 
@@ -121,6 +168,10 @@ bool LucidCameraSource::initializeCamera() {
               << " ip " << devices[index].IpAddressStr() << std::endl;
 
     impl_->device = impl_->system->CreateDevice(devices[index]);
+    {
+      std::lock_guard<std::mutex> lock(g_system_mutex);
+      ++g_open_devices;
+    }
     impl_->nodeMap = impl_->device->GetNodeMap();
     impl_->streamMap = impl_->device->GetTLStreamNodeMap();
     GenApi::INodeMap* nm = impl_->nodeMap;
@@ -218,6 +269,7 @@ bool LucidCameraSource::startAcquisition() {
     }
     impl_->device->StartStream(impl_->num_buffers);
     impl_->streaming = true;
+    incomplete_frames_ = 0;
     packet_size_negotiated_ = true;
     std::cout << "Lucid camera acquisition started" << std::endl;
 
@@ -267,8 +319,10 @@ bool LucidCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
     image = impl_->device->GetImage(image_timeout_ms_);
 
     if (image->IsIncomplete()) {
+      incomplete_frames_++;
       std::cerr << "Image incomplete (frame " << image->GetFrameId()
-                << ", " << image->GetSizeFilled() << " bytes)" << std::endl;
+                << ", " << image->GetSizeFilled() << " bytes, "
+                << incomplete_frames_ << " total)" << std::endl;
       impl_->device->RequeueBuffer(image);
       return false;
     }
@@ -356,12 +410,14 @@ void LucidCameraSource::close() {
   if (!impl_) return;
   stopAcquisition();
 
-  try {
-    if (impl_->system && impl_->device) {
+  if (impl_->system && impl_->device) {
+    try {
       impl_->system->DestroyDevice(impl_->device);
+    } catch (GenICam::GenericException& ge) {
+      std::cerr << "Error destroying device: " << ge.what() << std::endl;
     }
-  } catch (GenICam::GenericException& ge) {
-    std::cerr << "Error destroying device: " << ge.what() << std::endl;
+    std::lock_guard<std::mutex> lock(g_system_mutex);
+    --g_open_devices;
   }
   impl_->device = nullptr;
   impl_->nodeMap = nullptr;
@@ -369,7 +425,7 @@ void LucidCameraSource::close() {
 
   try {
     if (impl_->system) {
-      Arena::CloseSystem(impl_->system);
+      releaseSystem();
     }
   } catch (GenICam::GenericException& ge) {
     std::cerr << "Error closing system: " << ge.what() << std::endl;
@@ -652,21 +708,26 @@ bool LucidCameraSource::configureBinning(int horizontal, int vertical)
 {
   GenApi::INodeMap* nm = impl_->nodeMap;
   if (!nm) return false;
+  bool wasAcquiring = false;
   try {
     // Width/Height/Binning are locked while streaming
-    bool wasAcquiring = impl_->streaming;
+    wasAcquiring = impl_->streaming;
     if (wasAcquiring) stopAcquisition();
 
-    // Reset ROI to maximum before changing binning
+    // Binning and the image size constrain each other. Shrink to the
+    // minimum first so the binning change is legal in either direction,
+    // then expand to the new full sensor after the binning is applied.
+    // Setting the size to GetMax() before the change leaves the binned
+    // size in place when returning to 1x1, because that was the old maximum.
     GenApi::CIntegerPtr ptrWidth = nm->GetNode("Width");
     GenApi::CIntegerPtr ptrHeight = nm->GetNode("Height");
     GenApi::CIntegerPtr ptrOffsetX = nm->GetNode("OffsetX");
     GenApi::CIntegerPtr ptrOffsetY = nm->GetNode("OffsetY");
 
-    if (GenApi::IsWritable(ptrOffsetX)) ptrOffsetX->SetValue(0);
-    if (GenApi::IsWritable(ptrOffsetY)) ptrOffsetY->SetValue(0);
-    if (GenApi::IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMax());
-    if (GenApi::IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMax());
+    if (GenApi::IsWritable(ptrOffsetX)) ptrOffsetX->SetValue(ptrOffsetX->GetMin());
+    if (GenApi::IsWritable(ptrOffsetY)) ptrOffsetY->SetValue(ptrOffsetY->GetMin());
+    if (GenApi::IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMin());
+    if (GenApi::IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMin());
 
     // Prefer on-sensor binning (raises the achievable frame rate); fall
     // back to digital binning on models without it. Binning 1x1 is set
@@ -698,14 +759,19 @@ bool LucidCameraSource::configureBinning(int horizontal, int vertical)
       std::cout << "Set vertical binning to " << v << std::endl;
     }
 
-    // Binning changes the image size: cache what the camera actually
-    // accepted (binning, Width, Height) before restarting
+    // The maximum is the post-binning one, so 1x1 fills the sensor again.
+    if (GenApi::IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMax());
+    if (GenApi::IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMax());
+
     refreshGeometry();
 
     if (wasAcquiring) startAcquisition();
     return true;
   } catch (GenICam::GenericException& ge) {
     std::cerr << "Error setting binning: " << ge.what() << std::endl;
+    if (wasAcquiring && impl_ && !impl_->streaming) {
+      try { startAcquisition(); } catch (...) {}
+    }
     return false;
   }
 }

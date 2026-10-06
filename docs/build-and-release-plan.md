@@ -135,7 +135,8 @@ These are not build inputs (not referenced by CMake) and add clutter / confusion
   (`videostream --help` and/or a one-frame headless reprocess).
 
 ### `release_macos.yml` (on: push tag `*`) — mirrors stim2 exactly
-- Runner: `macos-14` (build on not-latest for modest dep versions).
+- Runner: `macos-15` (build on not-latest for modest dep versions; `macos-14`
+  stopped working once Homebrew dropped Sonoma bottles in Oct 2026).
 - Steps:
   - `brew install cmake dylibbundler opencv lz4 libuv jq` (+ tcl via submodule or
     `brew tcl-tk@9`).

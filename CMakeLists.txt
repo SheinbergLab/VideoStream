@@ -132,13 +132,19 @@ elseif(APPLE)
 	# than guessing — otherwise the compiler silently falls back to the macOS SDK's
 	# Tcl 8.6 headers (Tcl_Size unknown, Tcl_LinkVar signature mismatch).
 	find_package(PkgConfig REQUIRED)
+	set(TCL_STDLIB_DIRNAME "tcl9.0")  # overridden from pkg-config below
 	execute_process(COMMAND brew --prefix tcl-tk@9
 	    OUTPUT_VARIABLE BREW_TCL OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 	if(BREW_TCL AND EXISTS "${BREW_TCL}/lib/pkgconfig/tcl.pc")
 	    set(ENV{PKG_CONFIG_PATH} "${BREW_TCL}/lib/pkgconfig")
 	    pkg_check_modules(TCL REQUIRED tcl)
 	    set(TCL_INCLUDE_DIR "${TCL_INCLUDE_DIRS}")
-	    set(TCL_LIBRARY "${BREW_TCL}/lib/libtcl9.0.dylib")
+	    # Don't hardcode the minor version: brew only carries the latest 9.x
+	    # (9.0 -> 9.1 broke this). tcl.pc names the dylib; the stdlib dir follows.
+	    pkg_get_variable(TCL_LIBFILE tcl libfile)
+	    set(TCL_LIBRARY "${TCL_LIBDIR}/${TCL_LIBFILE}")
+	    string(REGEX MATCH "^[0-9]+\\.[0-9]+" _tcl_majmin "${TCL_VERSION}")
+	    set(TCL_STDLIB_DIRNAME "tcl${_tcl_majmin}")
 	    include_directories(${TCL_INCLUDE_DIRS})
 	    link_directories(${TCL_LIBRARY_DIRS})
 	    add_compile_options(${TCL_CFLAGS_OTHER})   # -DTCL_WITH_EXTERNAL_TOMMATH
@@ -373,6 +379,40 @@ embed_resource(
     interface_html
 )
 
+# Browser viewer: embed the Vite build (web/dist) so the binary serves /app/
+# with no files beside it (--www-dir still overrides, for front-end work).
+# Node is only needed to build web/; without it the C++ still builds, just
+# with no embedded viewer. Release builds set VS_REQUIRE_VIEWER so they can't
+# ship without one.
+option(VS_REQUIRE_VIEWER "Fail if the browser viewer (web/dist) has not been built" OFF)
+set(VIEWER_DIST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/web/dist)
+# CONFIGURE_DEPENDS: re-glob on every build, so a rebuilt viewer (new hashed
+# asset names) is picked up without re-running cmake by hand.
+file(GLOB_RECURSE VIEWER_DIST_FILES CONFIGURE_DEPENDS ${VIEWER_DIST_DIR}/*)
+# Rewritten only when the file list changes, so a deleted file re-embeds too.
+file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/embedded_app.files
+     CONTENT "${VIEWER_DIST_FILES}")
+if(EXISTS ${VIEWER_DIST_DIR}/index.html)
+    message(STATUS "Embedding browser viewer from ${VIEWER_DIST_DIR}")
+elseif(VS_REQUIRE_VIEWER)
+    message(FATAL_ERROR "VS_REQUIRE_VIEWER: ${VIEWER_DIST_DIR}/index.html not found; "
+                        "run 'npm ci && npm run build' in web/ first")
+else()
+    message(WARNING "Browser viewer not built (no ${VIEWER_DIST_DIR}/index.html): "
+                    "/app/ will only work with --www-dir. Build it with "
+                    "'npm ci && npm run build' in web/.")
+endif()
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/embedded_app.cpp
+    COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${VIEWER_DIST_DIR}
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/embedded_app.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedDir.cmake
+    DEPENDS ${VIEWER_DIST_FILES} ${CMAKE_CURRENT_BINARY_DIR}/embedded_app.files
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedDir.cmake
+    COMMENT "Embedding browser viewer (web/dist)"
+    VERBATIM
+)
+
 # Create list of all embedded headers that will be generated
 set(EMBEDDED_HEADERS
     ${CMAKE_CURRENT_BINARY_DIR}/embedded_terminal.h
@@ -404,7 +444,7 @@ add_executable( VideoStream VideoStream.cpp FrameBufferManager.cpp DservSocket.c
 		SamplingManager.cpp ReviewModeSource.cpp WebcamSource.cpp
 		FlirCameraSource.cpp LucidCameraSource.cpp CameraCommands.cpp
 		VideoFileSource.cpp StorageManager.cpp
-		AnalysisPluginRegistry.cpp tclproc.cpp
+		AnalysisPluginRegistry.cpp tclproc.cpp WebPreview.cpp ViewerMediaApi.cpp ConsoleCapture.cpp
 		external/sqlite/sqlite3.c)
 
 # Camera SDK rpaths (Linux). Build tree: find each SDK where it is. Installed:
@@ -447,9 +487,11 @@ add_dependencies(VideoStream generate_embedded_headers)
 set(VSTREAM_EMBEDDED_SOURCES
     ${CMAKE_CURRENT_BINARY_DIR}/embedded_terminal.h 
     ${CMAKE_CURRENT_BINARY_DIR}/embedded_interface.h
+    ${CMAKE_CURRENT_BINARY_DIR}/embedded_app.cpp
 )
 
 target_sources(VideoStream PRIVATE ${VSTREAM_EMBEDDED_SOURCES})
+target_include_directories(VideoStream PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # EmbeddedApp.h
 target_include_directories(VideoStream PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 # Link with found libraries
@@ -576,27 +618,28 @@ if(APPLE AND MACOS_APP_BUNDLE)
             REGEX "\\.(NEW|thresholds|BAK|bak|orig|swp)$" EXCLUDE
             REGEX "\\.DS_Store$"                       EXCLUDE
             REGEX "history\\.txt$"                     EXCLUDE)
+    # (The browser viewer is embedded in the binary; see VS_REQUIRE_VIEWER.)
 
-    # Bundle the Tcl stdlib so the relocated libtcl finds it at ../lib/tcl9.0
-    # (relative to Contents/Frameworks). tcl9.0/ = packages, tcl9/ = Tcl modules.
+    # Bundle the Tcl stdlib so the relocated libtcl finds it at ../lib/tcl9.x
+    # (relative to Contents/Frameworks). tcl9.x/ = packages, tcl9/ = Tcl modules.
     # Trailing slash on the source + full destination path => install the
     # CONTENTS (dereferencing brew's keg symlinks). Without it, a symlinked
-    # lib/tcl9.0 on the CI runner copies as an empty dir entry. (Matches stim2.)
-    if(LIBTCL_DIR AND EXISTS "${LIBTCL_DIR}/tcl9.0")
-        install(DIRECTORY ${LIBTCL_DIR}/tcl9.0/
-                DESTINATION ${APP_BUNDLE}/Contents/lib/tcl9.0 COMPONENT videostream)
+    # lib/tcl9.x on the CI runner copies as an empty dir entry. (Matches stim2.)
+    if(LIBTCL_DIR AND EXISTS "${LIBTCL_DIR}/${TCL_STDLIB_DIRNAME}")
+        install(DIRECTORY ${LIBTCL_DIR}/${TCL_STDLIB_DIRNAME}/
+                DESTINATION ${APP_BUNDLE}/Contents/lib/${TCL_STDLIB_DIRNAME} COMPONENT videostream)
         install(DIRECTORY ${LIBTCL_DIR}/tcl9/
                 DESTINATION ${APP_BUNDLE}/Contents/lib/tcl9 COMPONENT videostream OPTIONAL)
     else()
-        message(FATAL_ERROR "Tcl stdlib (tcl9.0/) not found under ${LIBTCL_DIR}; cannot build a self-contained .app")
+        message(FATAL_ERROR "Tcl stdlib (${TCL_STDLIB_DIRNAME}/) not found under ${LIBTCL_DIR}; cannot build a self-contained .app")
     endif()
 
     # Fail the build loudly if the stdlib didn't actually land in the bundle
     # (e.g. an empty/symlinked copy) rather than shipping a .app that can't
     # find init.tcl at runtime.
     install(CODE "
-        if(NOT EXISTS \"${APP_BUNDLE}/Contents/lib/tcl9.0/init.tcl\")
-            message(FATAL_ERROR \"Bundled Tcl stdlib is missing Contents/lib/tcl9.0/init.tcl\")
+        if(NOT EXISTS \"${APP_BUNDLE}/Contents/lib/${TCL_STDLIB_DIRNAME}/init.tcl\")
+            message(FATAL_ERROR \"Bundled Tcl stdlib is missing Contents/lib/${TCL_STDLIB_DIRNAME}/init.tcl\")
         endif()
     " COMPONENT videostream)
 
@@ -691,6 +734,7 @@ elseif(NOT APPLE)
             REGEX "history\\.txt$"                     EXCLUDE)
     install(DIRECTORY www DESTINATION videostream COMPONENT videostream
             REGEX "\\.DS_Store$" EXCLUDE)
+    # (The browser viewer is embedded in the binary; see VS_REQUIRE_VIEWER.)
 
     if(WITH_LUCID AND LUCID_BUNDLE_RUNTIME)
         # Arena runtime, unmodified (not stripped): only the acquisition closure

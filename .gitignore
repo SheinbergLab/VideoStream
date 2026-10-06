@@ -18,6 +18,10 @@ install_manifest.txt
 embedded_terminal.h
 embedded_interface.h
 
+# Browser viewer (web/)
+web/node_modules/
+web/dist/
+
 # macOS
 .DS_Store
 

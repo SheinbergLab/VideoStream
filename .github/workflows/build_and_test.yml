@@ -40,20 +40,51 @@ jobs:
           wget -q "https://github.com/SheinbergLab/dlsh/releases/download/${DLSH_VERSION}/dlsh-dg_${DLSH_VERSION}_${ARCH}.deb"
           dpkg --install "dlsh-dg_${DLSH_VERSION}_${ARCH}.deb"
 
-      - name: Build (FLIR-free, default)
+      - name: Set up Node (browser viewer)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Build the browser viewer (web/dist; type-checks the TypeScript)
         run: |
-          cmake -B build
+          cd web
+          npm ci
+          npm run build
+
+      - name: Build (FLIR-free, default, viewer embedded)
+        run: |
+          cmake -B build -D VS_REQUIRE_VIEWER=ON
           cmake --build build -j
 
       - name: Sanity-check the binary
         run: ./build/VideoStream --help
 
+      - name: Check the embedded browser viewer is served
+        run: |
+          ./build/VideoStream --ws-port 18080 > vs.log 2>&1 &
+          VS_PID=$!
+          for i in $(seq 1 20); do
+            curl -sf -o index.html http://127.0.0.1:18080/app/ && break
+            sleep 1
+          done
+          sleep 1   # let Tcl init (after the web server starts) report
+          kill $VS_PID || true
+          cat vs.log
+          grep -q '<title>' index.html
+          ! grep -q "initialization failed" vs.log
+
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-15   # Homebrew has no Sonoma (macos-14) bottles any more
     steps:
       - name: Install build dependencies
         run: |
           brew update
+          # The runner image leaves symlinks (bin/openssl, ...) into openssl@1.1
+          # that brew doesn't count as linked (`brew unlink` removes 0), so
+          # linking the openssl@3 that opencv@4 pulls in fails the install.
+          # Delete them directly. We use neither openssl.
+          find /opt/homebrew/bin /opt/homebrew/include /opt/homebrew/lib /opt/homebrew/share \
+            -maxdepth 4 -lname '*openssl@1.1*' -print -delete 2>/dev/null || true
           # opencv@4, NOT opencv: the unversioned formula moved to OpenCV 5.0
           # (2026-07), which breaks the imgproc shape API this codebase uses.
           # CMakeLists adds the keg-only opencv@4 prefix to CMAKE_PREFIX_PATH.
