@@ -27,6 +27,10 @@
 #include <filesystem>
 #include <iterator>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 // Use dgz format to store metadata about frames
 #include <df.h>
 #include <dynio.h>
@@ -3010,6 +3014,38 @@ void processMacOSEvents(proginfo_t* p, float scale = 1.0, Mat* frame_to_display 
 }
 #endif
 
+static std::filesystem::path executable_dir(void)
+{
+  std::error_code ec;
+#if defined(__APPLE__)
+  char buf[4096];
+  uint32_t size = sizeof(buf);
+  if (_NSGetExecutablePath(buf, &size) == 0)
+    return std::filesystem::canonical(buf, ec).parent_path();
+#else
+  auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+  if (!ec) return exe.parent_path();
+#endif
+  return std::filesystem::current_path(ec);
+}
+
+// The script an installed VideoStream runs when given no -f and no source, so
+// that double-clicking the .app (or a bare `videostream`) gives the browser
+// viewer everything it calls into. Found by install layout: the .app's
+// Contents/Resources/tcl, the .deb's <exe_dir>/tcl. A dev build (build/) has
+// neither and keeps starting bare.
+static std::string installed_default_script(void)
+{
+  std::filesystem::path exe_dir = executable_dir();
+  std::error_code ec;
+  for (const auto &p : {exe_dir / ".." / "Resources" / "tcl" / "serve.tcl",
+                        exe_dir / "tcl" / "serve.tcl"}) {
+    if (std::filesystem::is_regular_file(p, ec))
+      return std::filesystem::weakly_canonical(p, ec).string();
+  }
+  return "";
+}
+
 int main(int argc, char **argv)
 {
   int camera_id = 0;
@@ -3020,6 +3056,7 @@ int main(int argc, char **argv)
   int display_every = 1;
   bool help = false;
   bool init_display = false;
+  bool bare = false;
   bool no_source = true;
   bool flip_view = true;
   int flip_code = -2;
@@ -3066,7 +3103,10 @@ int main(int argc, char **argv)
     ("o,overwrite", "Overwrite file", cxxopts::value<bool>(overwrite))
     ("s,scale", "Scale factor", cxxopts::value<float>(scale))
     ("n,showevery", "Show every n frames", cxxopts::value<int>(display_every))
-    ("f,file", "Startup file name", cxxopts::value<std::string>())
+    ("f,file", "Startup file name (installed builds default to their tcl/serve.tcl)",
+     cxxopts::value<std::string>())
+    ("bare", "Installed builds: don't run serve.tcl when no -f or source is given",
+     cxxopts::value<bool>(bare))
     ("e,flipcode", "Flip code (OpenCV)", cxxopts::value<int>(flip_code))
     ("l,flip", "Flip video(OpenCV)", cxxopts::value<bool>(flip_view))
     ("playback", "Playback mode (video file)", cxxopts::value<std::string>())
@@ -3121,6 +3161,14 @@ int main(int argc, char **argv)
   if (help) {
     std::cout << options.help({"", "Group"}) << std::endl;
     exit(0);
+  }
+
+  if (!startup_file && !bare && !playback_mode && !use_webcam && !use_flir && !use_lucid) {
+    std::string script = installed_default_script();
+    if (!script.empty()) {
+      startup_file = strdup(script.c_str());
+      std::cout << "no -f given: running " << script << " (--bare to skip)" << std::endl;
+    }
   }
 
   // From here on, keep a copy of the console output for the browser viewer.

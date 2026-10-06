@@ -99,6 +99,11 @@ cmake --build build -j
 
 Without `web/dist` the C++ still builds (with a warning) but `/app/` is empty;
 `-D VS_REQUIRE_VIEWER=ON` (used by the release builds) makes that an error.
+Installed builds (the `.app`/`.pkg` and the `.deb`) started with no `-f` and
+no source option run their bundled `tcl/serve.tcl`, so double-clicking the app
+or running a bare `videostream` gives the viewer a working back end (script
+arguments still go after `--`, e.g. `videostream -- recording.mp4`); pass
+`--bare` to start without it. A dev build in `build/` still starts bare.
 For front-end work, serve the files from disk instead of the embedded copy with
 `--www-dir web/dist`, or run `npm run dev` in `web/` for a live-reloading dev
 server that proxies to VideoStream on port 8080.
