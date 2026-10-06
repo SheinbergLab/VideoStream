@@ -22,6 +22,9 @@ jobs:
       - name: Install build dependencies
         run: |
           brew update
+          # The runner image's openssl@1.1 owns bin/openssl, so linking the
+          # openssl@3 that opencv@4 pulls in fails the install. We use neither.
+          brew unlink openssl@1.1 || true
           # tcl-tk@9 is bundle-friendly (non-zipfs libtcl + on-disk stdlib);
           # dylibbundler relocates dylibs into the .app.
           # opencv@4, NOT opencv: the unversioned formula moved to OpenCV 5.0
