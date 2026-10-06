@@ -3323,6 +3323,9 @@ int main(int argc, char **argv)
 
   setupTcl(&programInfo);
 
+  // Web server port (--ws-port), so scripts can print the viewer's address
+  Tcl_SetVar2Ex(interp, "vstream::wsPort", NULL, Tcl_NewIntObj(ws_port), TCL_GLOBAL_ONLY);
+
   // --flir / --lucid also pick the camera backend for the tracker scripts,
   // which read ::camera_type (default flir) before going live
   if (source_type == "flir" || source_type == "lucid") {
