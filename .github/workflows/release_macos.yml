@@ -68,7 +68,7 @@ jobs:
       - name: Set up Node (browser viewer)
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
 
       - name: Build the browser viewer (web/dist)
         run: |
@@ -89,6 +89,7 @@ jobs:
           # .app (Developer ID Application + hardened runtime + entitlements + timestamp).
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D VS_REQUIRE_VIEWER=ON \
             -D MACOS_APP_BUNDLE=ON \
             -D MACOS_CODESIGN_IDENTITY="$APP_CERT_ID"
           cmake --build build -j
@@ -144,3 +145,18 @@ jobs:
           spctl -a -vvv -t exec /Applications/VideoStream.app || true
           # The postinstall CLI launcher should be on PATH and runnable.
           /usr/local/bin/videostream --help
+
+      - name: Check the embedded browser viewer is served
+        run: |
+          /usr/local/bin/videostream --ws-port 18080 > vs.log 2>&1 &
+          VS_PID=$!
+          for i in $(seq 1 20); do
+            curl -sf -o index.html http://127.0.0.1:18080/app/ && break
+            sleep 1
+          done
+          sleep 1   # let Tcl init (after the web server starts) report
+          kill $VS_PID || true
+          cat vs.log
+          grep -q '<title>' index.html
+          # The bundled Tcl stdlib must load (a failure here only logs).
+          ! grep -q "initialization failed" vs.log

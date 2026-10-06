@@ -85,6 +85,24 @@ To build the self-contained, signed `.app`/`.dmg` locally, configure with
 `-D MACOS_APP_BUNDLE=ON` (and `-D MACOS_CODESIGN_IDENTITY="Developer ID Application: ..."`
 to sign); see the CMake `APPLE` branch and `release_macos.yml` for the full flow.
 
+### Browser viewer
+
+VideoStream serves a browser viewer at `http://<host>:8080/app/`. It is a
+TypeScript app in `web/` that is built with Node (version in `.nvmrc`) and then
+embedded in the binary, so build it **before** VideoStream:
+
+```sh
+(cd web && npm ci && npm run build)   # -> web/dist
+cmake -B build
+cmake --build build -j
+```
+
+Without `web/dist` the C++ still builds (with a warning) but `/app/` is empty;
+`-D VS_REQUIRE_VIEWER=ON` (used by the release builds) makes that an error.
+For front-end work, serve the files from disk instead of the embedded copy with
+`--www-dir web/dist`, or run `npm run dev` in `web/` for a live-reloading dev
+server that proxies to VideoStream on port 8080.
+
 ## Building with FLIR support
 
 FLIR Spinnaker is a proprietary SDK that is **not redistributable**, so it is

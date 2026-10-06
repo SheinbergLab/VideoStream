@@ -40,13 +40,38 @@ jobs:
           wget -q "https://github.com/SheinbergLab/dlsh/releases/download/${DLSH_VERSION}/dlsh-dg_${DLSH_VERSION}_${ARCH}.deb"
           dpkg --install "dlsh-dg_${DLSH_VERSION}_${ARCH}.deb"
 
-      - name: Build (FLIR-free, default)
+      - name: Set up Node (browser viewer)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Build the browser viewer (web/dist; type-checks the TypeScript)
         run: |
-          cmake -B build
+          cd web
+          npm ci
+          npm run build
+
+      - name: Build (FLIR-free, default, viewer embedded)
+        run: |
+          cmake -B build -D VS_REQUIRE_VIEWER=ON
           cmake --build build -j
 
       - name: Sanity-check the binary
         run: ./build/VideoStream --help
+
+      - name: Check the embedded browser viewer is served
+        run: |
+          ./build/VideoStream --ws-port 18080 > vs.log 2>&1 &
+          VS_PID=$!
+          for i in $(seq 1 20); do
+            curl -sf -o index.html http://127.0.0.1:18080/app/ && break
+            sleep 1
+          done
+          sleep 1   # let Tcl init (after the web server starts) report
+          kill $VS_PID || true
+          cat vs.log
+          grep -q '<title>' index.html
+          ! grep -q "initialization failed" vs.log
 
   build-macos:
     runs-on: macos-14

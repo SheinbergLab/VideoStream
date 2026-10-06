@@ -379,6 +379,40 @@ embed_resource(
     interface_html
 )
 
+# Browser viewer: embed the Vite build (web/dist) so the binary serves /app/
+# with no files beside it (--www-dir still overrides, for front-end work).
+# Node is only needed to build web/; without it the C++ still builds, just
+# with no embedded viewer. Release builds set VS_REQUIRE_VIEWER so they can't
+# ship without one.
+option(VS_REQUIRE_VIEWER "Fail if the browser viewer (web/dist) has not been built" OFF)
+set(VIEWER_DIST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/web/dist)
+# CONFIGURE_DEPENDS: re-glob on every build, so a rebuilt viewer (new hashed
+# asset names) is picked up without re-running cmake by hand.
+file(GLOB_RECURSE VIEWER_DIST_FILES CONFIGURE_DEPENDS ${VIEWER_DIST_DIR}/*)
+# Rewritten only when the file list changes, so a deleted file re-embeds too.
+file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/embedded_app.files
+     CONTENT "${VIEWER_DIST_FILES}")
+if(EXISTS ${VIEWER_DIST_DIR}/index.html)
+    message(STATUS "Embedding browser viewer from ${VIEWER_DIST_DIR}")
+elseif(VS_REQUIRE_VIEWER)
+    message(FATAL_ERROR "VS_REQUIRE_VIEWER: ${VIEWER_DIST_DIR}/index.html not found; "
+                        "run 'npm ci && npm run build' in web/ first")
+else()
+    message(WARNING "Browser viewer not built (no ${VIEWER_DIST_DIR}/index.html): "
+                    "/app/ will only work with --www-dir. Build it with "
+                    "'npm ci && npm run build' in web/.")
+endif()
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/embedded_app.cpp
+    COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${VIEWER_DIST_DIR}
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/embedded_app.cpp
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedDir.cmake
+    DEPENDS ${VIEWER_DIST_FILES} ${CMAKE_CURRENT_BINARY_DIR}/embedded_app.files
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedDir.cmake
+    COMMENT "Embedding browser viewer (web/dist)"
+    VERBATIM
+)
+
 # Create list of all embedded headers that will be generated
 set(EMBEDDED_HEADERS
     ${CMAKE_CURRENT_BINARY_DIR}/embedded_terminal.h
@@ -453,9 +487,11 @@ add_dependencies(VideoStream generate_embedded_headers)
 set(VSTREAM_EMBEDDED_SOURCES
     ${CMAKE_CURRENT_BINARY_DIR}/embedded_terminal.h 
     ${CMAKE_CURRENT_BINARY_DIR}/embedded_interface.h
+    ${CMAKE_CURRENT_BINARY_DIR}/embedded_app.cpp
 )
 
 target_sources(VideoStream PRIVATE ${VSTREAM_EMBEDDED_SOURCES})
+target_include_directories(VideoStream PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # EmbeddedApp.h
 target_include_directories(VideoStream PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 # Link with found libraries
@@ -582,9 +618,7 @@ if(APPLE AND MACOS_APP_BUNDLE)
             REGEX "\\.(NEW|thresholds|BAK|bak|orig|swp)$" EXCLUDE
             REGEX "\\.DS_Store$"                       EXCLUDE
             REGEX "history\\.txt$"                     EXCLUDE)
-    # Browser viewer (npm run build in web/); skipped if it wasn't built.
-    install(DIRECTORY web/dist/ DESTINATION ${APP_BUNDLE}/Contents/Resources/www/app
-            COMPONENT videostream OPTIONAL)
+    # (The browser viewer is embedded in the binary; see VS_REQUIRE_VIEWER.)
 
     # Bundle the Tcl stdlib so the relocated libtcl finds it at ../lib/tcl9.x
     # (relative to Contents/Frameworks). tcl9.x/ = packages, tcl9/ = Tcl modules.
@@ -700,9 +734,7 @@ elseif(NOT APPLE)
             REGEX "history\\.txt$"                     EXCLUDE)
     install(DIRECTORY www DESTINATION videostream COMPONENT videostream
             REGEX "\\.DS_Store$" EXCLUDE)
-    # Browser viewer (npm run build in web/); skipped if it wasn't built.
-    install(DIRECTORY web/dist/ DESTINATION videostream/www/app COMPONENT videostream
-            OPTIONAL)
+    # (The browser viewer is embedded in the binary; see VS_REQUIRE_VIEWER.)
 
     if(WITH_LUCID AND LUCID_BUNDLE_RUNTIME)
         # Arena runtime, unmodified (not stripped): only the acquisition closure

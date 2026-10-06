@@ -27,10 +27,6 @@
 #include <filesystem>
 #include <iterator>
 
-#if defined(__APPLE__)
-#include <mach-o/dyld.h>
-#endif
-
 // Use dgz format to store metadata about frames
 #include <df.h>
 #include <dynio.h>
@@ -80,6 +76,7 @@
 // our minified html pages (in www/*.html)
 #include "embedded_terminal.h"
 #include "embedded_interface.h"
+#include "EmbeddedApp.h"   // browser viewer (web/dist), served at /app/
 
 using namespace std;
 using namespace cv;
@@ -635,41 +632,66 @@ private:
     return "application/octet-stream";
   }
 
-  // Serve <app_dir>/<rest> for /app/<rest>. Files are small (a Vite build), so
-  // they are read whole on the loop thread.
+  // Serve /app/<rest> from app_dir (--www-dir) when set, else from the viewer
+  // embedded at build time. Files are small (a Vite build), so they are read
+  // whole on the loop thread.
   template <typename Res>
   void serveAppFile(Res* res, std::string_view url) {
     std::string rel(url.substr(std::min<size_t>(url.size(), 5)));  // strip "/app/"
-    if (rel.empty()) rel = "index.html";
+    if (rel.empty() || rel.back() == '/') rel += "index.html";
     if (rel.find("..") != std::string::npos || rel.find('\\') != std::string::npos ||
         rel[0] == '/') {
       res->writeStatus("400 Bad Request")->end("bad path");
       return;
     }
 
-    std::filesystem::path root(app_dir);
-    std::filesystem::path file = root / rel;
-    std::error_code ec;
-    if (std::filesystem::is_directory(file, ec)) file /= "index.html";
+    std::string body;
+    bool found = false;
+    std::string missing;  // why the whole viewer is unavailable, if it is
 
-    std::ifstream in(file, std::ios::binary);
-    if (!in) {
-      if (!std::filesystem::exists(root / "index.html", ec)) {
+    if (!app_dir.empty()) {
+      std::filesystem::path root(app_dir);
+      std::filesystem::path file = root / rel;
+      std::error_code ec;
+      if (std::filesystem::is_directory(file, ec)) {
+        file /= "index.html";
+        rel += "/index.html";
+      }
+      std::ifstream in(file, std::ios::binary);
+      if (in) {
+        body.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        found = true;
+      } else if (!std::filesystem::exists(root / "index.html", ec)) {
+        missing = "no browser viewer in --www-dir " + root.string() +
+                  " (run 'npm run build' in web/)";
+      }
+    } else {
+      for (size_t i = 0; i < embedded::app_file_count; i++) {
+        const embedded::AppFile &f = embedded::app_files[i];
+        if (rel == f.path) {
+          body.assign(reinterpret_cast<const char *>(f.data), f.size);
+          found = true;
+          break;
+        }
+      }
+      if (embedded::app_file_count == 0)
+        missing = "browser viewer was not built into this VideoStream; run "
+                  "'npm ci && npm run build' in web/ and rebuild, or pass --www-dir";
+    }
+
+    if (!found) {
+      if (!missing.empty())
         res->writeStatus("404 Not Found")
            ->writeHeader("Content-Type", "text/plain")
-           ->end("browser viewer not installed (looked in " + root.string() +
-                 "); build web/ or pass --www-dir");
-      } else {
+           ->end(missing);
+      else
         res->writeStatus("404 Not Found")->end("not found");
-      }
       return;
     }
-    std::string body((std::istreambuf_iterator<char>(in)),
-                     std::istreambuf_iterator<char>());
 
     // Vite puts content-hashed names under assets/, so those never go stale.
     bool hashed = rel.rfind("assets/", 0) == 0;
-    res->writeHeader("Content-Type", mimeType(file))
+    res->writeHeader("Content-Type", mimeType(rel))
        ->writeHeader("Cache-Control", hashed ? "public, max-age=31536000, immutable"
                                              : "no-cache")
        ->end(body);
@@ -679,7 +701,7 @@ public:
   bool m_bDone;
   int port;
   int listening_socket_fd;
-  std::string app_dir;   // browser viewer build (index.html + assets/)
+  std::string app_dir;   // --www-dir viewer build; empty = the embedded one
   
   WebSocketThread() : m_bDone(false), port(8080), listening_socket_fd(-1) {}
   
@@ -2988,34 +3010,6 @@ void processMacOSEvents(proginfo_t* p, float scale = 1.0, Mat* frame_to_display 
 }
 #endif
 
-static std::filesystem::path executable_dir(void)
-{
-  std::error_code ec;
-#if defined(__APPLE__)
-  char buf[4096];
-  uint32_t size = sizeof(buf);
-  if (_NSGetExecutablePath(buf, &size) == 0)
-    return std::filesystem::canonical(buf, ec).parent_path();
-#else
-  auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-  if (!ec) return exe.parent_path();
-#endif
-  return std::filesystem::current_path(ec);
-}
-
-// Installed viewer: <exe_dir>/www/app on Linux, Contents/Resources/www/app
-// in the macOS bundle.
-static std::string default_app_dir(void)
-{
-  std::filesystem::path exe_dir = executable_dir();
-  std::filesystem::path linux_dir = exe_dir / "www" / "app";
-  std::filesystem::path bundle_dir = exe_dir / ".." / "Resources" / "www" / "app";
-  std::error_code ec;
-  if (!std::filesystem::exists(linux_dir, ec) && std::filesystem::exists(bundle_dir, ec))
-    return std::filesystem::weakly_canonical(bundle_dir, ec).string();
-  return linux_dir.string();
-}
-
 int main(int argc, char **argv)
 {
   int camera_id = 0;
@@ -3060,7 +3054,8 @@ int main(int argc, char **argv)
   options.add_options()
     ("v,verbose", "Verbose mode", cxxopts::value<bool>(verbose))
     ("ws-port", "WebSocket server port", cxxopts::value<int>()->default_value("8080"))    
-    ("www-dir", "Browser viewer build to serve at /app/ (default <exe_dir>/www/app)",
+    ("www-dir", "Serve the browser viewer at /app/ from this build dir (e.g. web/dist) "
+                "instead of the one embedded in the binary",
      cxxopts::value<std::string>(www_dir))
     ("w,webcam", "Use webcam", cxxopts::value<bool>(use_webcam))
     ("flir", "Use flir", cxxopts::value<bool>(use_flir))
@@ -3261,7 +3256,12 @@ int main(int argc, char **argv)
 
   WebSocketThread wsServer;
   wsServer.port = ws_port;
-  wsServer.app_dir = www_dir.empty() ? default_app_dir() : www_dir;
+  wsServer.app_dir = www_dir;
+  if (!www_dir.empty())
+    std::cout << "browser viewer: serving " << www_dir << std::endl;
+  else if (embedded::app_file_count == 0)
+    std::cout << "browser viewer: not built into this binary; /app/ needs --www-dir"
+              << std::endl;
   g_wsServer = &wsServer;
  
   if (verbose)

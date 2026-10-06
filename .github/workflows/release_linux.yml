@@ -78,7 +78,7 @@ jobs:
       - name: Set up Node (browser viewer)
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
 
       - name: Build the browser viewer (web/dist)
         run: |
@@ -90,6 +90,7 @@ jobs:
         run: |
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D VS_REQUIRE_VIEWER=ON \
             -D DISTRO_SUFFIX=${{ matrix.distro }}
           cmake --build build -j
           cpack --config build/CPackConfig.cmake
@@ -212,7 +213,7 @@ jobs:
         if: steps.sdk.outputs.enabled == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
 
       - name: Build the browser viewer (web/dist)
         if: steps.sdk.outputs.enabled == 'true'
@@ -226,6 +227,7 @@ jobs:
         run: |
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D VS_REQUIRE_VIEWER=ON \
             -D DISTRO_SUFFIX=${{ matrix.distro }} \
             -D WITH_LUCID=ON \
             -D ARENA_SDK_DIR="$HOME/arena-sdk"
@@ -359,7 +361,7 @@ jobs:
         if: steps.priv.outputs.enabled == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
 
       - name: Build the browser viewer (web/dist)
         if: steps.priv.outputs.enabled == 'true'
@@ -373,6 +375,7 @@ jobs:
         run: |
           cmake -B build \
             -D PROJECT_VERSION=${{ github.ref_name }} \
+            -D VS_REQUIRE_VIEWER=ON \
             -D DISTRO_SUFFIX=${{ matrix.distro }} \
             -D WITH_FLIR=ON \
             -D SPINNAKER_SDK_DIR="$HOME/spinnaker-sdk"
