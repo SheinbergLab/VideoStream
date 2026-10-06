@@ -636,12 +636,35 @@ private:
     return "application/octet-stream";
   }
 
-  // Serve /app/<rest> from app_dir (--www-dir) when set, else from the viewer
+  // Read one file of the browser apps' build (web/dist: <app>/index.html,
+  // assets/, icons) from app_dir (--www-dir) when set, else from the copy
   // embedded at build time. Files are small (a Vite build), so they are read
   // whole on the loop thread.
+  bool loadAppFile(const std::string& rel, std::string& body) {
+    if (!app_dir.empty()) {
+      std::filesystem::path file = std::filesystem::path(app_dir) / rel;
+      std::error_code ec;
+      if (!std::filesystem::is_regular_file(file, ec)) return false;
+      std::ifstream in(file, std::ios::binary);
+      if (!in) return false;
+      body.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+      return true;
+    }
+    for (size_t i = 0; i < embedded::app_file_count; i++) {
+      const embedded::AppFile &f = embedded::app_files[i];
+      if (rel == f.path) {
+        body.assign(reinterpret_cast<const char *>(f.data), f.size);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Serve /<path> from the browser apps' build: /eyetracker/ is that app's
+  // page, /assets/... and the icons are shared. /<app> redirects to /<app>/.
   template <typename Res>
   void serveAppFile(Res* res, std::string_view url) {
-    std::string rel(url.substr(std::min<size_t>(url.size(), 5)));  // strip "/app/"
+    std::string rel(url.substr(std::min<size_t>(url.size(), 1)));  // strip "/"
     if (rel.empty() || rel.back() == '/') rel += "index.html";
     if (rel.find("..") != std::string::npos || rel.find('\\') != std::string::npos ||
         rel[0] == '/') {
@@ -650,48 +673,33 @@ private:
     }
 
     std::string body;
-    bool found = false;
-    std::string missing;  // why the whole viewer is unavailable, if it is
-
-    if (!app_dir.empty()) {
-      std::filesystem::path root(app_dir);
-      std::filesystem::path file = root / rel;
-      std::error_code ec;
-      if (std::filesystem::is_directory(file, ec)) {
-        file /= "index.html";
-        rel += "/index.html";
+    if (!loadAppFile(rel, body)) {
+      std::string ignored;
+      if (loadAppFile(rel + "/index.html", ignored)) {
+        res->writeStatus("301 Moved Permanently")
+           ->writeHeader("Location", "/" + rel + "/")
+           ->end();
+        return;
       }
-      std::ifstream in(file, std::ios::binary);
-      if (in) {
-        body.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        found = true;
-      } else if (!std::filesystem::exists(root / "index.html", ec)) {
-        missing = "no browser viewer in --www-dir " + root.string() +
-                  " (run 'npm run build' in web/)";
-      }
-    } else {
-      for (size_t i = 0; i < embedded::app_file_count; i++) {
-        const embedded::AppFile &f = embedded::app_files[i];
-        if (rel == f.path) {
-          body.assign(reinterpret_cast<const char *>(f.data), f.size);
-          found = true;
-          break;
-        }
-      }
-      if (embedded::app_file_count == 0)
-        missing = "browser viewer was not built into this VideoStream; run "
-                  "'npm ci && npm run build' in web/ and rebuild, or pass --www-dir";
-    }
-
-    if (!found) {
-      if (!missing.empty())
+      bool built = !app_dir.empty() ? std::filesystem::is_directory(app_dir)
+                                    : embedded::app_file_count > 0;
+      if (!built && rel.size() >= 10 &&
+          rel.compare(rel.size() - 10, 10, "index.html") == 0) {
         res->writeStatus("404 Not Found")
            ->writeHeader("Content-Type", "text/plain")
-           ->end(missing);
-      else
+           ->end(!app_dir.empty()
+                 ? "no browser app build in --www-dir " + app_dir +
+                   " (run 'npm run build' in web/)"
+                 : std::string("browser apps were not built into this VideoStream; run "
+                               "'npm ci && npm run build' in web/ and rebuild, "
+                               "or pass --www-dir"));
+      } else {
         res->writeStatus("404 Not Found")->end("not found");
+      }
       return;
     }
+    if (rel.size() >= 10 && rel.compare(rel.size() - 10, 10, "index.html") == 0)
+      std::cout << uptime_tag() << "browser page requested: /" << rel << std::endl;
 
     // Vite puts content-hashed names under assets/, so those never go stale.
     bool hashed = rel.rfind("assets/", 0) == 0;
@@ -868,16 +876,16 @@ void broadcastEvent(const VstreamEvent& event) {
          ->end(embedded::terminal_html);
     });
 
-    // Browser viewer (web/ build output)
+    // The eye-tracking viewer used to live at /app/ (bookmarks, old scripts)
     app.get("/app", [](auto *res, auto *req) {
       res->writeStatus("301 Moved Permanently")
-         ->writeHeader("Location", "/app/")
+         ->writeHeader("Location", "/eyetracker/")
          ->end();
     });
-    app.get("/app/*", [this](auto *res, auto *req) {
-      if (req->getUrl() == "/app/")  // the page itself, not each asset
-        std::cout << uptime_tag() << "browser page requested" << std::endl;
-      serveAppFile(res, req->getUrl());
+    app.get("/app/*", [](auto *res, auto *req) {
+      res->writeStatus("301 Moved Permanently")
+         ->writeHeader("Location", "/eyetracker/")
+         ->end();
     });
     
     // Health check
@@ -1236,6 +1244,11 @@ void broadcastEvent(const VstreamEvent& event) {
         
         std::cout << "WebSocket client disconnected: " << userData->client_name << std::endl;
       }
+    })
+    // Everything else: the browser apps' build (/eyetracker/, /assets/...).
+    // The routes above are more specific, so they still take precedence.
+    .get("/*", [this](auto *res, auto *req) {
+      serveAppFile(res, req->getUrl());
     })
     .listen(port, [this](auto *listen_socket) {
       if (listen_socket) {

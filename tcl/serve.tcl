@@ -1,7 +1,7 @@
 #
 # serve.tcl - headless playback of a recorded mp4 through the eye-tracking
 # plugin, for the browser viewer. No display window or widgets: open
-# http://<host>:8080/app/ (or your --ws-port) to watch the video and overlay.
+# http://<host>:8080/eyetracker/ (or your --ws-port) to watch the video and overlay.
 #
 #   ./build/VideoStream -f tcl/serve.tcl -- [fallback_mp4] [mag angle] [speed]
 #
@@ -510,5 +510,5 @@ if {$::S::have_model} {
 } else {
     puts "   no P4 model  speed=$::S::spd  pupil_p1 mode"
 }
-puts "   viewer: http://localhost:[expr {[info exists ::vstream::wsPort] ? $::vstream::wsPort : 8080}]/app/"
+puts "   viewer: http://localhost:[expr {[info exists ::vstream::wsPort] ? $::vstream::wsPort : 8080}]/eyetracker/"
 puts "=============================================="

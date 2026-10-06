@@ -379,7 +379,7 @@ embed_resource(
     interface_html
 )
 
-# Browser viewer: embed the Vite build (web/dist) so the binary serves /app/
+# Browser viewer: embed the Vite build (web/dist) so the binary serves the apps (/eyetracker/)
 # with no files beside it (--www-dir still overrides, for front-end work).
 # Node is only needed to build web/; without it the C++ still builds, just
 # with no embedded viewer. Release builds set VS_REQUIRE_VIEWER so they can't
@@ -399,7 +399,7 @@ elseif(VS_REQUIRE_VIEWER)
                         "run 'npm ci && npm run build' in web/ first")
 else()
     message(WARNING "Browser viewer not built (no ${VIEWER_DIST_DIR}/index.html): "
-                    "/app/ will only work with --www-dir. Build it with "
+                    "/eyetracker/ will only work with --www-dir. Build it with "
                     "'npm ci && npm run build' in web/.")
 endif()
 add_custom_command(

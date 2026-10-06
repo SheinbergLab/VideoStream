@@ -85,11 +85,15 @@ To build the self-contained, signed `.app`/`.dmg` locally, configure with
 `-D MACOS_APP_BUNDLE=ON` (and `-D MACOS_CODESIGN_IDENTITY="Developer ID Application: ..."`
 to sign); see the CMake `APPLE` branch and `release_macos.yml` for the full flow.
 
-### Browser viewer
+### Browser apps
 
-VideoStream serves a browser viewer at `http://<host>:8080/app/`. It is a
-TypeScript app in `web/` that is built with Node (version in `.nvmrc`) and then
-embedded in the binary, so build it **before** VideoStream:
+VideoStream serves browser apps by name: the eye-tracking viewer is at
+`http://<host>:8080/eyetracker/` (the old `/app/` redirects there). They are
+TypeScript pages in `web/` (one folder each, e.g. `web/eyetracker/`, listed in
+`web/vite.config.ts`; shared code in `web/src/`, icons in `web/public/`), all
+talking to VideoStream over the same `/ws` WebSocket. They are built with Node
+(version in `.nvmrc`) and then embedded in the binary, so build them
+**before** VideoStream:
 
 ```sh
 (cd web && npm ci && npm run build)   # -> web/dist
@@ -97,7 +101,7 @@ cmake -B build
 cmake --build build -j
 ```
 
-Without `web/dist` the C++ still builds (with a warning) but `/app/` is empty;
+Without `web/dist` the C++ still builds (with a warning) but serves no apps;
 `-D VS_REQUIRE_VIEWER=ON` (used by the release builds) makes that an error.
 Installed builds (the `.app`/`.pkg` and the `.deb`) started with no `-f` and
 no source option run their bundled `tcl/serve.tcl`, so double-clicking the app
@@ -111,7 +115,10 @@ bare. Startup scripts list folders for the viewer's file picker with
 share).
 For front-end work, serve the files from disk instead of the embedded copy with
 `--www-dir web/dist`, or run `npm run dev` in `web/` for a live-reloading dev
-server that proxies to VideoStream on port 8080.
+server (`http://localhost:5173/eyetracker/`) that proxies to VideoStream on
+port 8080. To add an app, create `web/<name>/index.html`, add `<name>` to the
+`apps` list in `web/vite.config.ts`, and it is served at `/<name>/`; no C++
+changes are needed.
 
 ## Building with FLIR support
 
