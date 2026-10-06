@@ -192,26 +192,30 @@ void WebPreview::run()
     if (overlay_) {
       // The JPEG was captured a moment ago. Analysis of that exact frame may
       // still be in flight, or already overwritten by a newer one. Wait until
-      // the overlay offered for this frame_id is that frame, so stored and
-      // live markers are never drawn on the neighboring picture.
+      // every plugin overlay that reports a frame_id is for this frame, so
+      // stored and live markers are never drawn on the neighboring picture.
+      // Overlays without a frame_id can't be matched and pass through. On
+      // timeout, only the overlays still on another frame are dropped.
       for (int attempt = 0; attempt < 40; ++attempt) {
         overlay = overlay_(info);
-        json_error_t err;
-        json_t* root = json_loads(overlay.c_str(), 0, &err);
-        long long of = -2;
-        if (root) {
-          json_t* et = json_object_get(root, "eye_tracking");
-          if (et) {
-            json_t* fid = json_object_get(et, "frame_id");
-            of = (fid && json_is_integer(fid)) ? json_integer_value(fid) : -1;
-          }
-          json_decref(root);
+        json_t* root = json_loads(overlay.c_str(), 0, nullptr);
+        if (!root) break;
+        std::vector<std::string> stale;
+        const char* name;
+        json_t* plugin;
+        json_object_foreach(root, name, plugin) {
+          json_t* fid = json_object_get(plugin, "frame_id");
+          if (fid && json_is_integer(fid) && json_integer_value(fid) != info.frame_id)
+            stale.push_back(name);
         }
-        if (of == -2 || of == info.frame_id) break;
-        if (attempt == 39) {
-          overlay = "{}";
-          break;
+        if (!stale.empty() && attempt == 39) {
+          for (const auto& n : stale) json_object_del(root, n.c_str());
+          char* out = json_dumps(root, JSON_COMPACT);
+          overlay = out ? out : "{}";
+          free(out);
         }
+        json_decref(root);
+        if (stale.empty() || attempt == 39) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
     }
