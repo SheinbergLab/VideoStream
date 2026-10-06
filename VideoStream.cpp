@@ -3335,10 +3335,15 @@ int main(int argc, char **argv)
         processDSCommands();
 
 #ifdef __APPLE__
-        processMacOSEvents(&programInfo);  // Process events even when idle
+        // Idle screen only when the display is on (-d / show_display); the
+        // running path gates on this too. Otherwise stay headless like Linux.
+        if (programInfo.display)
+          processMacOSEvents(&programInfo);  // Process events even when idle
+        else
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
 #else
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-#endif	
+#endif
       
         break;
 	
