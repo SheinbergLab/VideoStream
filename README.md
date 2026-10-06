@@ -24,7 +24,7 @@ with `-D WITH_FLIR=ON` (see [Building with FLIR support](#building-with-flir-sup
 
 ### macOS
 
-A signed and **notarized** `.pkg` (Apple Silicon, macOS 14 Sonoma or newer).
+A signed and **notarized** `.pkg` (Apple Silicon, macOS 15 Sequoia or newer).
 Double-click to install; it places `VideoStream.app` in `/Applications` and a
 `videostream` command-line launcher in `/usr/local/bin`. The app is
 self-contained (OpenCV and Tcl are bundled) — nothing else needs to be installed.

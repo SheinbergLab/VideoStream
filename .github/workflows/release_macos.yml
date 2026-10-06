@@ -9,7 +9,10 @@ jobs:
 
   release-macos:
     # Apple Silicon runner; build on not-the-latest for modest dep versions.
-    runs-on: macos-14
+    # Not macos-14: Homebrew dropped Sonoma (no bottles, so opencv@4's whole
+    # dependency tree builds from source for hours). The bundled brew dylibs
+    # set the floor, so the .pkg needs macOS 15+.
+    runs-on: macos-15
 
     permissions:
       contents: write

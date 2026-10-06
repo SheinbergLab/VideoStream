@@ -74,7 +74,7 @@ jobs:
           ! grep -q "initialization failed" vs.log
 
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-15   # Homebrew has no Sonoma (macos-14) bottles any more
     steps:
       - name: Install build dependencies
         run: |
