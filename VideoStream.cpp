@@ -3030,20 +3030,32 @@ static std::filesystem::path executable_dir(void)
 }
 
 // The script an installed VideoStream runs when given no -f and no source, so
-// that double-clicking the .app (or a bare `videostream`) gives the browser
-// viewer everything it calls into. Found by install layout: the .app's
-// Contents/Resources/tcl, the .deb's <exe_dir>/tcl. A dev build (build/) has
-// neither and keeps starting bare.
+// that double-clicking the .app (or a bare `videostream`) starts something
+// useful. ~/.config/videostream/startup.tcl, if present, picks the machine's
+// own default (e.g. a rig that isn't an eye tracker); otherwise the bundled
+// serve.tcl (eye tracking + the browser viewer's back end). "Installed" is
+// recognized by layout: the .app's Contents/Resources/tcl, the .deb's
+// <exe_dir>/tcl. A dev build (build/) has neither and keeps starting bare.
 static std::string installed_default_script(void)
 {
   std::filesystem::path exe_dir = executable_dir();
   std::error_code ec;
-  for (const auto &p : {exe_dir / ".." / "Resources" / "tcl" / "serve.tcl",
-                        exe_dir / "tcl" / "serve.tcl"}) {
-    if (std::filesystem::is_regular_file(p, ec))
-      return std::filesystem::weakly_canonical(p, ec).string();
+  std::filesystem::path tcl_dir;
+  for (const auto &d : {exe_dir / ".." / "Resources" / "tcl", exe_dir / "tcl"}) {
+    if (std::filesystem::is_regular_file(d / "serve.tcl", ec)) {
+      tcl_dir = d;
+      break;
+    }
   }
-  return "";
+  if (tcl_dir.empty()) return "";
+
+  std::filesystem::path script = tcl_dir / "serve.tcl";
+  if (const char *home = std::getenv("HOME")) {
+    std::filesystem::path own =
+        std::filesystem::path(home) / ".config" / "videostream" / "startup.tcl";
+    if (std::filesystem::is_regular_file(own, ec)) script = own;
+  }
+  return std::filesystem::weakly_canonical(script, ec).string();
 }
 
 int main(int argc, char **argv)
@@ -3103,9 +3115,10 @@ int main(int argc, char **argv)
     ("o,overwrite", "Overwrite file", cxxopts::value<bool>(overwrite))
     ("s,scale", "Scale factor", cxxopts::value<float>(scale))
     ("n,showevery", "Show every n frames", cxxopts::value<int>(display_every))
-    ("f,file", "Startup file name (installed builds default to their tcl/serve.tcl)",
+    ("f,file", "Startup file name (installed builds default to "
+               "~/.config/videostream/startup.tcl if present, else their tcl/serve.tcl)",
      cxxopts::value<std::string>())
-    ("bare", "Installed builds: don't run serve.tcl when no -f or source is given",
+    ("bare", "Installed builds: don't run a default script when no -f or source is given",
      cxxopts::value<bool>(bare))
     ("e,flipcode", "Flip code (OpenCV)", cxxopts::value<int>(flip_code))
     ("l,flip", "Flip video(OpenCV)", cxxopts::value<bool>(flip_view))

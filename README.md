@@ -102,8 +102,13 @@ Without `web/dist` the C++ still builds (with a warning) but `/app/` is empty;
 Installed builds (the `.app`/`.pkg` and the `.deb`) started with no `-f` and
 no source option run their bundled `tcl/serve.tcl`, so double-clicking the app
 or running a bare `videostream` gives the viewer a working back end (script
-arguments still go after `--`, e.g. `videostream -- recording.mp4`); pass
-`--bare` to start without it. A dev build in `build/` still starts bare.
+arguments still go after `--`, e.g. `videostream -- recording.mp4`). A machine
+used for something other than eye tracking can put its own default in
+`~/.config/videostream/startup.tcl`, which installed builds run instead; pass
+`--bare` to start with no script at all. A dev build in `build/` still starts
+bare. Startup scripts list folders for the viewer's file picker with
+`vstream::mediaPlaces {label path ...}` (`serve.tcl` adds the eye-tracking data
+share).
 For front-end work, serve the files from disk instead of the embedded copy with
 `--www-dir web/dist`, or run `npm run dev` in `web/` for a live-reloading dev
 server that proxies to VideoStream on port 8080.
