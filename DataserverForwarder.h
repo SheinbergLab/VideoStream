@@ -163,6 +163,9 @@ public:
     }
     
     bool isConnected() const { return connected.load(); }
+    bool isDrainOnly() const { return drain_only.load(); }
+    const std::string& host() const { return server_address; }
+    int port() const { return server_port; }
 
   
   // Write a whole message.  The socket is non-blocking, so a large write
@@ -257,8 +260,11 @@ public:
 	  if (connect()) {
 	    std::cout << "DataserverForwarder: Connection established" << std::endl;
 	  } else {
-	    std::this_thread::sleep_for(
-					std::chrono::milliseconds(RECONNECT_DELAY_MS));
+	    // Wait before retrying, in short steps so stop() (a runtime
+	    // disconnect or switch to another dserv) doesn't block on it.
+	    for (int waited = 0; waited < RECONNECT_DELAY_MS && should_run.load();
+		 waited += 100)
+	      std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	    continue;
 	  }
 	}

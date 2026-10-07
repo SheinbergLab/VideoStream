@@ -17,7 +17,7 @@ jobs:
         run: |
           apt update
           apt install -y sudo wget curl git ca-certificates jq build-essential cmake pkg-config
-          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev
+          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev libavahi-compat-libdnssd-dev
 
       - name: Check out our code
         uses: actions/checkout@v4

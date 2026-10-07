@@ -80,7 +80,8 @@
 // our minified html pages (in www/*.html)
 #include "embedded_terminal.h"
 #include "embedded_interface.h"
-#include "EmbeddedApp.h"   // browser viewer (web/dist), served at /app/
+#include "EmbeddedApp.h"   // browser apps (web/dist), served at /<app>/
+#include "ServiceDiscovery.h"
 
 using namespace std;
 using namespace cv;
@@ -90,6 +91,59 @@ WidgetManager g_widgetManager;
 
 SharedQueue<DataPoint> ds_forward_queue;
 DataserverForwarder* g_dataForwarder = nullptr;
+static std::mutex g_forwarder_mutex;
+
+// Point the forwarder at host:port, or with host "" just drain the queue
+// (results are discarded). Replaces the running forwarder; a no-op if it is
+// already the same target. Used for --ds-host at startup and by
+// vstream::dsForward at runtime.
+void ds_forward_set(const std::string& host, int port)
+{
+  std::lock_guard<std::mutex> lock(g_forwarder_mutex);
+  if (g_dataForwarder) {
+    bool same = host.empty() ? g_dataForwarder->isDrainOnly()
+                             : (!g_dataForwarder->isDrainOnly() &&
+                                g_dataForwarder->host() == host &&
+                                g_dataForwarder->port() == port);
+    if (same) return;
+    g_dataForwarder->stop();
+    delete g_dataForwarder;
+    g_dataForwarder = nullptr;
+  }
+  if (host.empty()) {
+    g_dataForwarder = new DataserverForwarder("", 0);
+    g_dataForwarder->startDrainOnly();
+    std::cout << "Dataserver forwarding disabled (queue draining only)" << std::endl;
+  } else {
+    g_dataForwarder = new DataserverForwarder(host, port);
+    g_dataForwarder->start();
+    std::cout << "Forwarding to dataserver " << host << ":" << port << std::endl;
+  }
+}
+
+// Where results go: host "" when not forwarding. Returns whether connected.
+bool ds_forward_status(std::string& host, int& port)
+{
+  std::lock_guard<std::mutex> lock(g_forwarder_mutex);
+  if (!g_dataForwarder || g_dataForwarder->isDrainOnly()) {
+    host.clear();
+    port = 0;
+    return false;
+  }
+  host = g_dataForwarder->host();
+  port = g_dataForwarder->port();
+  return g_dataForwarder->isConnected();
+}
+
+static void ds_forward_shutdown()
+{
+  std::lock_guard<std::mutex> lock(g_forwarder_mutex);
+  if (g_dataForwarder) {
+    g_dataForwarder->stop();
+    delete g_dataForwarder;
+    g_dataForwarder = nullptr;
+  }
+}
 
 // Global frame source pointer
 IFrameSource* g_frameSource = nullptr;
@@ -3304,16 +3358,9 @@ int main(int argc, char **argv)
   // Used to take video samples and store in review source
   programInfo.samplingManager = new SamplingManager(&programInfo);
 
-  if (!ds_host.empty()) {
-    g_dataForwarder = new DataserverForwarder(ds_host, ds_port);
-    g_dataForwarder->start();
-    std::cout << "Started dataserver forwarder to " << ds_host << ":" << ds_port << std::endl;
-  } else {
-    // Start the queue draining thread even without connection
-    g_dataForwarder = new DataserverForwarder("", 0);  // Dummy values
-    g_dataForwarder->startDrainOnly();
-    std::cout << "Dataserver forwarding disabled (queue draining only)" << std::endl;
-  }
+  // Without --ds-host the queue is just drained until a script (or the
+  // browser, through dserv_connect) points it at a dserv.
+  ds_forward_set(ds_host, ds_port);
   
   std::signal(SIGINT, signal_handler);
   
@@ -3334,9 +3381,32 @@ int main(int argc, char **argv)
   if (!www_dir.empty())
     std::cout << "browser viewer: serving " << www_dir << std::endl;
   else if (embedded::app_file_count == 0)
-    std::cout << "browser viewer: not built into this binary; /app/ needs --www-dir"
+    std::cout << "browser viewer: not built into this binary; /eyetracker/ needs --www-dir"
               << std::endl;
   g_wsServer = &wsServer;
+
+  // Find dservs on the link and advertise ourselves, listing the browser
+  // apps we serve (<app>/index.html in the build).
+  {
+    std::string apps;
+    auto add_app = [&apps](const std::string& rel) {
+      const std::string tail = "/index.html";
+      if (rel.size() > tail.size() &&
+          rel.compare(rel.size() - tail.size(), tail.size(), tail) == 0 &&
+          rel.find('/') == rel.size() - tail.size())
+        apps += (apps.empty() ? "" : ",") + rel.substr(0, rel.size() - tail.size());
+    };
+    if (!www_dir.empty()) {
+      std::error_code ec;
+      for (const auto& e : std::filesystem::directory_iterator(www_dir, ec))
+        if (std::filesystem::is_regular_file(e.path() / "index.html", ec))
+          add_app(e.path().filename().string() + "/index.html");
+    } else {
+      for (size_t i = 0; i < embedded::app_file_count; i++)
+        add_app(embedded::app_files[i].path);
+    }
+    discovery::start(ws_port, port, VIDEOSTREAM_VERSION, apps);
+  }
  
   if (verbose)
     cout << "Starting WebSocket server on port " << wsServer.port << std::endl;
@@ -3374,11 +3444,9 @@ int main(int argc, char **argv)
       if (ws_thread.joinable()) ws_thread.detach();
       if (net_thread.joinable()) net_thread.join();
       if (ds_thread.joinable()) ds_thread.join();
-      
-      if (g_dataForwarder) {
-	g_dataForwarder->stop();
-	delete g_dataForwarder;
-      }
+
+      ds_forward_shutdown();
+      discovery::stop();
       
       processShutdownCommands();
       return 0;
@@ -3663,11 +3731,9 @@ cleanup:
   g_wsServer = nullptr;
 
   
-  if (g_dataForwarder) {
-    g_dataForwarder->stop();
-    delete g_dataForwarder;
-  }
-  
+  ds_forward_shutdown();
+  discovery::stop();
+
   g_sourceManager.stopSource();
   std::cout << "Shutdown: source closed after "
             << std::chrono::duration_cast<std::chrono::milliseconds>(

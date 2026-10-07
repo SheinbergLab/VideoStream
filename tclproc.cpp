@@ -35,9 +35,9 @@
 
 #include "VideoStream.h"
 #include "AnalysisPluginRegistry.h"
-#include "ViewerMediaApi.h"
 #include "WebPreview.h"
 #include "ViewerMediaApi.h"
+#include "ServiceDiscovery.h"
 
 extern AnalysisPluginRegistry g_pluginRegistry;
 
@@ -1742,6 +1742,85 @@ static int hideCmd(ClientData clientData, Tcl_Interp *interp,
 /*                    Dataserver Commands (C++)                      */
 /*********************************************************************/
 
+// Defined in VideoStream.cpp: where datapoints (eyetracking/results, ...) go.
+void ds_forward_set(const std::string& host, int port);
+bool ds_forward_status(std::string& host, int& port);
+
+/*
+ * vstream::dsForward ?host ?port??     (port default 4620)
+ * vstream::dsForward off
+ *   Point the datapoint forwarder at a dserv (replacing --ds-host), or stop
+ *   forwarding (results are then discarded). Returns the status dict
+ *   {host H port P connected 0|1}; host is "" when not forwarding. Connecting
+ *   happens in the background and retries until it succeeds.
+ */
+static int dsForwardCmd(ClientData clientData, Tcl_Interp *interp,
+                        int objc, Tcl_Obj *const objv[])
+{
+  if (objc > 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "?host ?port?? | off");
+    return TCL_ERROR;
+  }
+  if (objc >= 2) {
+    std::string host = Tcl_GetString(objv[1]);
+    int port = 4620;
+    if (objc == 3 && (Tcl_GetIntFromObj(interp, objv[2], &port) != TCL_OK ||
+                      port <= 0 || port > 65535)) {
+      Tcl_SetObjResult(interp, Tcl_NewStringObj("port must be 1-65535", -1));
+      return TCL_ERROR;
+    }
+    if (host == "off") host.clear();
+    ds_forward_set(host, port);
+  }
+  std::string host;
+  int port = 0;
+  bool connected = ds_forward_status(host, port);
+  Tcl_Obj *d = Tcl_NewDictObj();
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("host", -1), Tcl_NewStringObj(host.c_str(), -1));
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("port", -1), Tcl_NewIntObj(port));
+  Tcl_DictObjPut(interp, d, Tcl_NewStringObj("connected", -1), Tcl_NewBooleanObj(connected));
+  Tcl_SetObjResult(interp, d);
+  return TCL_OK;
+}
+
+/*
+ * vstream::dservList
+ *   dservs advertising `_dserv._tcp` on the local link (mDNS), as a list of
+ *   dicts: name host ip port dp web ssl wg ver. `dp` is the datapoint port to
+ *   give dsForward / dsRegister.
+ */
+static int dservListCmd(ClientData clientData, Tcl_Interp *interp,
+                        int objc, Tcl_Obj *const objv[])
+{
+  Tcl_Obj *list = Tcl_NewListObj(0, NULL);
+  for (const auto& d : discovery::dservs()) {
+    Tcl_Obj *o = Tcl_NewDictObj();
+    auto put = [&](const char *k, Tcl_Obj *v) {
+      Tcl_DictObjPut(interp, o, Tcl_NewStringObj(k, -1), v);
+    };
+    put("name", Tcl_NewStringObj(d.name.c_str(), -1));
+    put("host", Tcl_NewStringObj(d.host.c_str(), -1));
+    put("ip", Tcl_NewStringObj(d.ip.c_str(), -1));
+    put("port", Tcl_NewIntObj(d.port));
+    put("dp", Tcl_NewIntObj(d.dp_port));
+    put("web", Tcl_NewIntObj(d.web_port));
+    put("ssl", Tcl_NewBooleanObj(d.ssl));
+    put("wg", Tcl_NewStringObj(d.workgroup.c_str(), -1));
+    put("ver", Tcl_NewStringObj(d.version.c_str(), -1));
+    Tcl_ListObjAppendElement(interp, list, o);
+  }
+  Tcl_SetObjResult(interp, list);
+  return TCL_OK;
+}
+
+// vstream::dservDiscovery -> "browsing", or why discovery is off
+static int dservDiscoveryCmd(ClientData clientData, Tcl_Interp *interp,
+                             int objc, Tcl_Obj *const objv[])
+{
+  Tcl_SetObjResult(interp, Tcl_NewStringObj(discovery::state().c_str(), -1));
+  return TCL_OK;
+}
+
 // vstream::dsRegister server ?port?
 static int dsRegisterCmd(ClientData clientData, Tcl_Interp *interp,
                         int objc, Tcl_Obj *const objv[]) {
@@ -2262,6 +2341,9 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
     Tcl_CreateObjCommand(interp, "vstream::dsConnections",
                         (Tcl_ObjCmdProc *)dsConnectionsCmd,
                         (ClientData)p, NULL);
+    Tcl_CreateObjCommand(interp, "vstream::dsForward", dsForwardCmd, p, NULL);
+    Tcl_CreateObjCommand(interp, "vstream::dservList", dservListCmd, p, NULL);
+    Tcl_CreateObjCommand(interp, "vstream::dservDiscovery", dservDiscoveryCmd, p, NULL);
 
     Tcl_CreateObjCommand(interp, "vstream::resetPlugins",
                         (Tcl_ObjCmdProc *)resetPluginsCmd,

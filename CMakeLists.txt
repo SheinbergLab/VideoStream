@@ -448,7 +448,35 @@ add_executable( VideoStream VideoStream.cpp FrameBufferManager.cpp DservSocket.c
 		FlirCameraSource.cpp LucidCameraSource.cpp CameraCommands.cpp
 		VideoFileSource.cpp StorageManager.cpp
 		AnalysisPluginRegistry.cpp tclproc.cpp WebPreview.cpp ViewerMediaApi.cpp ConsoleCapture.cpp
+		ServiceDiscovery.cpp
 		external/sqlite/sqlite3.c)
+
+target_compile_definitions(VideoStream PRIVATE VIDEOSTREAM_VERSION="${PROJECT_VERSION}")
+
+# mDNS (DNS-SD): find dservs on the link (`_dserv._tcp`) and advertise this
+# VideoStream (`_videostream._tcp`). dns_sd.h is part of libSystem on macOS;
+# on Linux it is Avahi's Bonjour shim, as for dserv's mdns module (build:
+# libavahi-compat-libdnssd-dev; run: libavahi-compat-libdnssd1 + avahi-daemon).
+# Without it VideoStream still builds, just without discovery.
+if(APPLE)
+    set(HAVE_DNSSD ON)
+else()
+    find_path(DNSSD_INCLUDE_DIR dns_sd.h PATH_SUFFIXES avahi-compat-libdns_sd)
+    find_library(LIBDNSSD NAMES dns_sd)
+    if(DNSSD_INCLUDE_DIR AND LIBDNSSD)
+        set(HAVE_DNSSD ON)
+        target_include_directories(VideoStream PRIVATE ${DNSSD_INCLUDE_DIR})
+        target_link_libraries(VideoStream ${LIBDNSSD})
+    else()
+        set(HAVE_DNSSD OFF)
+        message(WARNING "dns_sd.h / libdns_sd not found -- no dserv discovery or "
+                        "mDNS advertisement (apt install libavahi-compat-libdnssd-dev)")
+    endif()
+endif()
+if(HAVE_DNSSD)
+    target_compile_definitions(VideoStream PRIVATE HAVE_DNSSD)
+    message(STATUS "mDNS discovery/advertisement: enabled")
+endif()
 
 # Camera SDK rpaths (Linux). Build tree: find each SDK where it is. Installed:
 # with *_BUNDLE_RUNTIME the runtime libraries travel with the binary under
@@ -825,6 +853,13 @@ elseif(NOT APPLE)
     if(NOT _vs_pkg STREQUAL "videostream")
         set(CPACK_DEBIAN_PACKAGE_REPLACES "videostream")
         set(CPACK_DEBIAN_PACKAGE_PROVIDES "videostream")
+    endif()
+    if(HAVE_DNSSD)
+        # dserv discovery / advertisement through Avahi's Bonjour shim, as
+        # dserv's own .deb. avahi-daemon does the multicast; libnss-mdns lets
+        # getaddrinfo resolve the discovered .local names.
+        set(_vs_deb_deps "${_vs_deb_deps}, libavahi-compat-libdnssd1")
+        set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "avahi-daemon, libnss-mdns")
     endif()
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "${_vs_deb_deps}")
 

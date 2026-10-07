@@ -52,7 +52,7 @@ jobs:
         run: |
           apt update
           apt install -y sudo wget curl git ca-certificates jq build-essential cmake pkg-config
-          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev
+          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev libavahi-compat-libdnssd-dev
 
       - name: Check out our code for the current tag
         uses: actions/checkout@v4
@@ -163,7 +163,7 @@ jobs:
         run: |
           apt update
           apt install -y sudo wget curl git ca-certificates jq build-essential cmake pkg-config
-          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev libibverbs1 librdmacm1
+          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev libavahi-compat-libdnssd-dev libibverbs1 librdmacm1
 
       - name: Check out our code for the current tag
         if: steps.sdk.outputs.enabled == 'true'
@@ -315,7 +315,7 @@ jobs:
         run: |
           apt update
           apt install -y sudo wget curl git ca-certificates jq build-essential cmake pkg-config
-          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev libgomp1 libusb-1.0-0
+          apt install -y libopencv-dev zlib1g-dev liblz4-dev libjansson-dev libavahi-compat-libdnssd-dev libgomp1 libusb-1.0-0
 
       - name: Check out our code for the current tag
         if: steps.priv.outputs.enabled == 'true'
