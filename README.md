@@ -348,9 +348,16 @@ From Tcl (`tcl/dserv_link.tcl`, sourced by `serve.tcl` and `tracker.tcl`):
 and underneath, in the core:
 ```
  vstream::dsForward ?host ?port?? | off   where results are forwarded
+ vstream::dsSubscribe host ?port? ?matches?  %reg + %match on a worker thread
+ vstream::dsUnsubscribe host ?port?          %unreg, queued behind it
+ vstream::dsSubscribeStatus               state (pending|ok|failed) error ...
  vstream::dservList                       dservs found on the link (mDNS)
  vstream::dservDiscovery                  "browsing", or why discovery is off
 ```
+Subscribing never runs on the main loop: an unreachable dserv would make each
+attempt wait out a 2 s connect timeout there, about the whole frame buffer at
+250 Hz. (`vstream::dsRegister`/`dsAddMatch` remain, synchronous, for older
+scripts.)
 
 VideoStream also advertises itself as `_videostream._tcp` on its web port,
 with TXT `tcl` (command port), `apps` (browser apps) and `ver`. Discovery uses

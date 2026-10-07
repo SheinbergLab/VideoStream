@@ -70,6 +70,9 @@ public:
   std::string dsaddr;
   
   std::mutex mutex;
+  // Serializes %reg/%unreg/%match/%unmatch: they share myIP, and the async
+  // subscriber (vstream::dsSubscribe) runs them off the Tcl thread.
+  std::mutex cmd_mutex;
   std::condition_variable cond;
 
   // Startup handshake state: 0 = pending, 1 = listening, -1 = failed.
@@ -519,6 +522,7 @@ public:
 
   int reg(std::string host, int port=4620)
   {
+    std::lock_guard<std::mutex> cmd_lock(cmd_mutex);
     unsigned int myPort;    
     struct sockaddr_in local_sin;
     socklen_t local_sinlen = sizeof(local_sin);
@@ -564,6 +568,7 @@ public:
   
   int unreg(std::string host, int port=4620)
   {
+    std::lock_guard<std::mutex> cmd_lock(cmd_mutex);
     unsigned int myPort;    
     struct sockaddr_in local_sin;
     socklen_t local_sinlen = sizeof(local_sin);
@@ -613,6 +618,7 @@ public:
 
   int add_match(std::string host, std::string matchstr, int every=1, int port=4620)
   {
+    std::lock_guard<std::mutex> cmd_lock(cmd_mutex);
     int sock = client_socket(host.c_str(), port);
     if (sock <= 0) return sock;
 
@@ -635,6 +641,7 @@ public:
   
   int remove_match(std::string host, std::string matchstr, int port=4620)
   {
+    std::lock_guard<std::mutex> cmd_lock(cmd_mutex);
     int sock = client_socket(host.c_str(), port);
     if (sock <= 0) return sock;
 

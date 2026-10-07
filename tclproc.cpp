@@ -20,6 +20,13 @@
 #include <math.h>
 #include <tcl.h>
 
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
 #include "DservSocket.h"
 #include "VstreamEvent.h"
 #include "IFrameSource.h"
@@ -1821,6 +1828,191 @@ static int dservDiscoveryCmd(ClientData clientData, Tcl_Interp *interp,
   return TCL_OK;
 }
 
+// ---- asynchronous subscription ---------------------------------------------
+//
+// %reg/%match each open a short command socket to dserv, and a dserv that is
+// down or unplugged makes every one of them wait out DservSocket's 2 s
+// connect bound. Run on the Tcl thread -- which is the main loop that
+// processes frames -- that stalls tracking for ~2 s per attempt (the whole
+// frame buffer at 250 Hz). So subscribing runs on one worker thread, in
+// order with unsubscribing; Tcl queues a job and polls its outcome
+// (dserv_link.tcl), and nothing here touches the interpreter.
+namespace {
+
+struct DsJob {
+  bool subscribe = true;
+  std::string host;
+  int port = 4620;
+  std::vector<std::string> matches;
+  long long seq = 0;
+};
+
+struct DsSubStatus {
+  std::string state = "idle";   // idle | pending | ok | failed
+  std::string host;
+  int port = 0;
+  std::string error;
+  long long seq = 0;            // the subscribe job this status is about
+};
+
+class DsSubscriber {
+public:
+  long long enqueue(DservSocket* ds, DsJob job) {
+    std::lock_guard<std::mutex> lock(m_);
+    ds_ = ds;
+    if (!thread_.joinable()) thread_ = std::thread([this] { run(); });
+    if (job.subscribe) {
+      job.seq = ++seq_;
+      status_ = DsSubStatus{"pending", job.host, job.port, "", job.seq};
+    }
+    jobs_.push_back(std::move(job));
+    cv_.notify_one();
+    return seq_;
+  }
+
+  DsSubStatus status(bool& busy) {
+    std::lock_guard<std::mutex> lock(m_);
+    busy = running_ || !jobs_.empty();
+    return status_;
+  }
+
+  void shutdown() {
+    {
+      std::lock_guard<std::mutex> lock(m_);
+      stop_ = true;
+      jobs_.clear();
+    }
+    cv_.notify_one();
+    if (thread_.joinable()) thread_.join();
+  }
+
+private:
+  void run() {
+    std::unique_lock<std::mutex> lock(m_);
+    for (;;) {
+      cv_.wait(lock, [this] { return stop_ || !jobs_.empty(); });
+      if (stop_) return;
+      DsJob job = std::move(jobs_.front());
+      jobs_.pop_front();
+      DservSocket* ds = ds_;
+      running_ = true;
+      lock.unlock();
+
+      std::string error;
+      if (!ds) {
+        error = "DservSocket not initialized";
+      } else if (!job.subscribe) {
+        ds->unreg(job.host, job.port);
+      } else if (ds->reg(job.host, job.port) <= 0) {
+        error = "could not register with " + job.host + ":" + std::to_string(job.port) +
+                " (unreachable or refused)";
+      } else {
+        for (const auto& m : job.matches) {
+          if (ds->add_match(job.host, m, 1, job.port) <= 0) {
+            error = "registered, but adding a match for " + m + " failed";
+            break;
+          }
+        }
+      }
+
+      lock.lock();
+      running_ = false;
+      // A newer subscribe may have been queued meanwhile; its status wins.
+      if (job.subscribe && status_.seq == job.seq) {
+        status_.state = error.empty() ? "ok" : "failed";
+        status_.error = error;
+      }
+    }
+  }
+
+  std::mutex m_;
+  std::condition_variable cv_;
+  std::deque<DsJob> jobs_;
+  std::thread thread_;
+  DservSocket* ds_ = nullptr;
+  DsSubStatus status_;
+  long long seq_ = 0;
+  bool running_ = false;
+  bool stop_ = false;
+};
+
+DsSubscriber g_dsSubscriber;
+
+}  // namespace
+
+// Called at shutdown, while the DservSocket still exists.
+void ds_subscriber_shutdown() { g_dsSubscriber.shutdown(); }
+
+/*
+ * vstream::dsSubscribe host ?port? ?matches?
+ *   Register with dserv and add a match for each pattern in `matches`, on a
+ *   background thread. Returns at once; poll vstream::dsSubscribeStatus.
+ */
+static int dsSubscribeCmd(ClientData clientData, Tcl_Interp *interp,
+                          int objc, Tcl_Obj *const objv[])
+{
+  proginfo_t *p = (proginfo_t *)clientData;
+  if (objc < 2 || objc > 4) {
+    Tcl_WrongNumArgs(interp, 1, objv, "host ?port? ?matches?");
+    return TCL_ERROR;
+  }
+  DsJob job;
+  job.host = Tcl_GetString(objv[1]);
+  if (objc >= 3 && Tcl_GetIntFromObj(interp, objv[2], &job.port) != TCL_OK)
+    return TCL_ERROR;
+  if (objc == 4) {
+    Tcl_Size n;
+    Tcl_Obj **elems;
+    if (Tcl_ListObjGetElements(interp, objv[3], &n, &elems) != TCL_OK) return TCL_ERROR;
+    for (Tcl_Size i = 0; i < n; i++) job.matches.push_back(Tcl_GetString(elems[i]));
+  }
+  if (!p->dservSocket) {
+    Tcl_SetObjResult(interp, Tcl_NewStringObj("DservSocket not initialized", -1));
+    return TCL_ERROR;
+  }
+  Tcl_SetObjResult(interp, Tcl_NewWideIntObj(g_dsSubscriber.enqueue(p->dservSocket, job)));
+  return TCL_OK;
+}
+
+// vstream::dsUnsubscribe host ?port? -- %unreg, queued behind any subscribe
+static int dsUnsubscribeCmd(ClientData clientData, Tcl_Interp *interp,
+                            int objc, Tcl_Obj *const objv[])
+{
+  proginfo_t *p = (proginfo_t *)clientData;
+  if (objc < 2 || objc > 3) {
+    Tcl_WrongNumArgs(interp, 1, objv, "host ?port?");
+    return TCL_ERROR;
+  }
+  DsJob job;
+  job.subscribe = false;
+  job.host = Tcl_GetString(objv[1]);
+  if (objc == 3 && Tcl_GetIntFromObj(interp, objv[2], &job.port) != TCL_OK)
+    return TCL_ERROR;
+  if (p->dservSocket) g_dsSubscriber.enqueue(p->dservSocket, job);
+  return TCL_OK;
+}
+
+// vstream::dsSubscribeStatus -> dict: state (idle|pending|ok|failed) host
+// port error seq busy (a job is queued or running)
+static int dsSubscribeStatusCmd(ClientData clientData, Tcl_Interp *interp,
+                                int objc, Tcl_Obj *const objv[])
+{
+  bool busy = false;
+  DsSubStatus s = g_dsSubscriber.status(busy);
+  Tcl_Obj *d = Tcl_NewDictObj();
+  auto put = [&](const char *k, Tcl_Obj *v) {
+    Tcl_DictObjPut(interp, d, Tcl_NewStringObj(k, -1), v);
+  };
+  put("state", Tcl_NewStringObj(s.state.c_str(), -1));
+  put("host", Tcl_NewStringObj(s.host.c_str(), -1));
+  put("port", Tcl_NewIntObj(s.port));
+  put("error", Tcl_NewStringObj(s.error.c_str(), -1));
+  put("seq", Tcl_NewWideIntObj(s.seq));
+  put("busy", Tcl_NewBooleanObj(busy));
+  Tcl_SetObjResult(interp, d);
+  return TCL_OK;
+}
+
 // vstream::dsRegister server ?port?
 static int dsRegisterCmd(ClientData clientData, Tcl_Interp *interp,
                         int objc, Tcl_Obj *const objv[]) {
@@ -2342,6 +2534,9 @@ void addTclCommands(Tcl_Interp *interp, proginfo_t *p)
                         (Tcl_ObjCmdProc *)dsConnectionsCmd,
                         (ClientData)p, NULL);
     Tcl_CreateObjCommand(interp, "vstream::dsForward", dsForwardCmd, p, NULL);
+    Tcl_CreateObjCommand(interp, "vstream::dsSubscribe", dsSubscribeCmd, p, NULL);
+    Tcl_CreateObjCommand(interp, "vstream::dsUnsubscribe", dsUnsubscribeCmd, p, NULL);
+    Tcl_CreateObjCommand(interp, "vstream::dsSubscribeStatus", dsSubscribeStatusCmd, p, NULL);
     Tcl_CreateObjCommand(interp, "vstream::dservList", dservListCmd, p, NULL);
     Tcl_CreateObjCommand(interp, "vstream::dservDiscovery", dservDiscoveryCmd, p, NULL);
 

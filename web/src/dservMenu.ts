@@ -22,6 +22,7 @@ interface DservStatus {
   port: string;
   forwarding: boolean;
   subscribed: boolean;
+  error: string; // why the last subscribe failed
   discovery: string;
   found: FoundDserv[];
 }
@@ -64,6 +65,7 @@ function parseStatus(raw: string): DservStatus {
     port: d.port ?? "",
     forwarding: d.forwarding === "1",
     subscribed: d.subscribed === "1",
+    error: d.error ?? "",
     discovery: d.discovery ?? "",
     found,
   };
@@ -116,7 +118,8 @@ export function attachDservMenu(opts: DservMenuOptions): {
       opts.button.title =
         `${s.host}:${s.port}\n` +
         `results forwarded: ${s.forwarding ? "yes" : "connecting…"}\n` +
-        `ess/in_obs, ess/datafile: ${s.subscribed ? "subscribed" : "registering…"}`;
+        `ess/in_obs, ess/datafile: ${s.subscribed ? "subscribed" : "registering…"}` +
+        (s.error && !s.subscribed ? `\n${s.error}` : "");
     }
 
     // Found on the network
@@ -154,7 +157,8 @@ export function attachDservMenu(opts: DservMenuOptions): {
     if (s?.host) {
       opts.statusEl.textContent =
         `${s.host}:${s.port} — results ${s.forwarding ? "forwarded" : "connecting…"}, ` +
-        `obs/datafile ${s.subscribed ? "subscribed" : "registering…"}`;
+        `obs/datafile ${s.subscribed ? "subscribed" : "registering…"}` +
+        (s.error && !s.subscribed ? ` (${s.error})` : "");
     }
     opts.disconnectBtn.disabled = busy;
     opts.refreshBtn.disabled = busy;

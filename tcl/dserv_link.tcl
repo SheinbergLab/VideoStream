@@ -6,7 +6,12 @@
 #   forwarding    our datapoints (eyetracking/results, ...) go to the dserv
 #                 (vstream::dsForward; reconnects by itself)
 #   subscription  the dserv pushes ess/in_obs and ess/datafile to us
-#                 (vstream::dsRegister + dsAddMatch), arriving as ds/* events
+#                 (%reg + %match), arriving as ds/* events
+#
+# Subscribing never blocks this (main-loop) thread: vstream::dsSubscribe
+# queues the %reg/%match on a worker and returns, and ::dsl::poll picks up
+# the outcome. Done here instead, an unreachable dserv stalled the main loop
+# up to 2 s per attempt -- the whole frame buffer at 250 Hz.
 #
 # dserv delivers subscriptions over ONE persistent connect-back socket per
 # registration, opened by %reg and closed if dserv reaps us (send stall,
@@ -15,17 +20,19 @@
 # subscription, never heard about a datafile open, and four sessions of eye
 # timing were logged against a 10-day-old anchor.  vstream::dsConnections
 # counts the live connect-back sockets; a registered client with zero of
-# them has lost its subscriptions, so the watchdog re-registers and calls
-# the launcher's ::dserv_on_subscribed (tracker.tcl: ask dserv for the
-# current datafile, what the push would have said).
+# them has lost its subscriptions, so the watchdog re-subscribes (backing
+# off 2..30 s while the dserv is unreachable) and then calls the launcher's
+# ::dserv_on_subscribed (tracker.tcl: ask dserv for the current datafile,
+# what the push would have said).
 #
 # Commands:
 #   dserv_connect host ?port?    connect both links (port: the dserv's
 #                                datapoint port, 4620 unless it advertises
-#                                another); replaces any current dserv
+#                                another); replaces any current dserv.
+#                                Returns at once; the subscription follows.
 #   dserv_disconnect             drop both links
 #   dserv_status                 dict: host port forwarding subscribed
-#                                discovery found
+#                                subscribing error discovery found
 #   dserv_startup                at launch: --ds-host if given, else the
 #                                dserv saved in the viewer settings
 #
@@ -34,7 +41,7 @@
 # dserv_disconnect and is remembered for the next start.
 #
 # Optional launcher hooks:
-#   ::dserv_on_subscribed        after each (re)registration
+#   ::dserv_on_subscribed        after each successful (re)subscription
 #   ::dserv_matches              datapoints to subscribe to (default below)
 #
 
@@ -42,11 +49,16 @@ namespace eval ::dsl {
     variable host ""
     variable port 4620
     variable subscribed 0
+    variable ever_subscribed 0       ;# for "connected" vs "re-registered" in the log
     variable lost_logged 0
+    variable error ""                ;# why the last subscribe failed
     variable watch_ms 2000           ;# subscription liveness check period
     variable retry_max_ms 30000      ;# backoff ceiling while dserv is unreachable
     variable retry_ms 2000           ;# current delay before the next check
     variable watch_id ""
+    variable sub_seq 0               ;# the subscribe job we are waiting for
+    variable poll_id ""
+    variable poll_ms 100
     variable default_matches {ess/in_obs ess/datafile}
 }
 
@@ -60,61 +72,80 @@ proc ::dsl::announce {} {
     }
 }
 
-proc ::dsl::subscribe {} {
+# Queue a subscribe to the current dserv and start polling for its outcome.
+proc ::dsl::request_subscribe {} {
     variable host
     variable port
-    variable subscribed
+    variable sub_seq
+    variable poll_id
+    variable poll_ms
     variable default_matches
-    if { [catch { vstream::dsRegister $host $port } ok] || !$ok } {
-        set subscribed 0
-        return 0
-    }
     set matches $default_matches
     if { [info exists ::dserv_matches] } { set matches $::dserv_matches }
-    foreach m $matches {
-        vstream::dsAddMatch $host $m $port
-    }
-    set subscribed 1
-    if { [llength [info commands ::dserv_on_subscribed]] } {
-        if { [catch ::dserv_on_subscribed err] } {
-            log "dserv_on_subscribed: $err"
-        }
-    }
-    return 1
+    set sub_seq [vstream::dsSubscribe $host $port $matches]
+    if { $poll_id eq "" } { set poll_id [after $poll_ms ::dsl::poll] }
 }
 
-# Registering runs on the Tcl (main loop) thread and can take up to
-# DservSocket's 2 s connect bound when the dserv is unreachable, so the next
-# check is scheduled only after this one finishes, and failed attempts back
-# off (2, 4, 8 ... 30 s). Rescheduling up front at a fixed 2 s let failed
-# attempts run back to back and kept the main loop blocked nearly all the time.
+proc ::dsl::poll {} {
+    variable host
+    variable subscribed
+    variable ever_subscribed
+    variable lost_logged
+    variable error
+    variable sub_seq
+    variable poll_id
+    variable poll_ms
+    variable retry_ms
+    variable retry_max_ms
+    variable watch_ms
+    set poll_id ""
+    if { $host eq "" } { return }
+    set st [vstream::dsSubscribeStatus]
+    if { [dict get $st seq] != $sub_seq || [dict get $st state] eq "pending" } {
+        set poll_id [after $poll_ms ::dsl::poll]
+        return
+    }
+    if { [dict get $st state] eq "ok" } {
+        set subscribed 1
+        set error ""
+        set retry_ms $watch_ms
+        log [expr { $ever_subscribed ? "re-registered with $host" : "connected to $host" }]
+        set ever_subscribed 1
+        set lost_logged 0
+        if { [llength [info commands ::dserv_on_subscribed]] } {
+            if { [catch ::dserv_on_subscribed err] } { log "dserv_on_subscribed: $err" }
+        }
+    } else {
+        set subscribed 0
+        set error [dict get $st error]
+        if { !$lost_logged } {
+            log "$error; will keep retrying"
+            set lost_logged 1
+        }
+        set retry_ms [expr { min($retry_ms * 2, $retry_max_ms) }]
+    }
+    announce
+}
+
+# Liveness check. Runs every retry_ms; queues a re-subscribe when the
+# subscription is gone and none is already in flight.
 proc ::dsl::watch {} {
     variable host
     variable subscribed
     variable lost_logged
-    variable watch_ms
     variable retry_ms
-    variable retry_max_ms
     variable watch_id
+    variable poll_id
     set watch_id ""
     if { $host eq "" } { return }
-
-    if { $subscribed && [vstream::dsConnections] > 0 } {
-        set lost_logged 0
-        set retry_ms $watch_ms
-    } else {
-        if { !$lost_logged } {
+    if { $poll_id eq "" } {
+        if { $subscribed && [vstream::dsConnections] == 0 } {
+            set subscribed 0
             log "subscription to $host lost (no live connect-back); re-registering"
             set lost_logged 1
-        }
-        if { [subscribe] } {
-            log "re-registered with $host"
-            set lost_logged 0
-            set retry_ms $watch_ms
             announce
-        } else {
-            set retry_ms [expr { min($retry_ms * 2, $retry_max_ms) }]
         }
+        if { !$subscribed } { request_subscribe }
     }
     set watch_id [after $retry_ms ::dsl::watch]
 }
@@ -129,15 +160,14 @@ proc dserv_connect { host {port 4620} } {
 
     set ::dsl::host $host
     set ::dsl::port $port
+    set ::dsl::subscribed 0
+    set ::dsl::ever_subscribed 0
     set ::dsl::lost_logged 0
+    set ::dsl::error ""
     set ::dsl::retry_ms $::dsl::watch_ms
     vstream::dsForward $host $port
-    if { [::dsl::subscribe] } {
-        ::dsl::log "connected to $host:$port"
-    } else {
-        ::dsl::log "registration with $host:$port failed; will keep retrying"
-        set ::dsl::lost_logged 1
-    }
+    ::dsl::log "connecting to $host:$port"
+    ::dsl::request_subscribe
     if { $::dsl::watch_id eq "" } {
         set ::dsl::watch_id [after $::dsl::retry_ms ::dsl::watch]
     }
@@ -147,15 +177,23 @@ proc dserv_connect { host {port 4620} } {
 
 proc dserv_disconnect {} {
     if { $::dsl::host ne "" } {
-        catch { vstream::dsUnregister }
+        # Only a dserv that ever accepted our %reg has anything to drop; one
+        # that never answered would just cost the worker another 2 s timeout
+        # ahead of the next connect.
+        if { $::dsl::ever_subscribed } {
+            vstream::dsUnsubscribe $::dsl::host $::dsl::port
+        }
         ::dsl::log "disconnected from $::dsl::host"
     }
     vstream::dsForward off
     set ::dsl::host ""
     set ::dsl::subscribed 0
-    if { $::dsl::watch_id ne "" } {
-        after cancel $::dsl::watch_id
-        set ::dsl::watch_id ""
+    set ::dsl::error ""
+    foreach id {watch_id poll_id} {
+        if { [set ::dsl::$id] ne "" } {
+            after cancel [set ::dsl::$id]
+            set ::dsl::$id ""
+        }
     }
     ::dsl::announce
     return [dserv_status]
@@ -169,6 +207,8 @@ proc dserv_status {} {
                 port [expr { $::dsl::host eq "" ? "" : $::dsl::port }] \
                 forwarding [dict get $fwd connected] \
                 subscribed $subscribed \
+                subscribing [expr { $::dsl::poll_id ne "" }] \
+                error $::dsl::error \
                 discovery [vstream::dservDiscovery] \
                 found [vstream::dservList]]
 }

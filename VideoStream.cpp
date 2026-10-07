@@ -135,6 +135,8 @@ bool ds_forward_status(std::string& host, int& port)
   return g_dataForwarder->isConnected();
 }
 
+void ds_subscriber_shutdown();   // tclproc.cpp: the async dserv subscriber
+
 static void ds_forward_shutdown()
 {
   std::lock_guard<std::mutex> lock(g_forwarder_mutex);
@@ -3445,6 +3447,7 @@ int main(int argc, char **argv)
       if (net_thread.joinable()) net_thread.join();
       if (ds_thread.joinable()) ds_thread.join();
 
+      ds_subscriber_shutdown();
       ds_forward_shutdown();
       discovery::stop();
       
@@ -3731,6 +3734,7 @@ cleanup:
   g_wsServer = nullptr;
 
   
+  ds_subscriber_shutdown();
   ds_forward_shutdown();
   discovery::stop();
 
