@@ -808,6 +808,10 @@ private:
   // a moment when the pupil is known-good, so the crop follows the eye without
   // any extra operator action. eyetracking::autoCenterROI 0|1 to disable.
   bool auto_center_roi_on_p4_ = true;
+  // autoDetect suggests an ROI this much larger (linear) than the 3.5r x 3.0r
+  // box it analyzes, to leave room for gaze movement the paused frame
+  // doesn't show. eyetracking::autoRoiScale.
+  float auto_roi_scale_ = 1.3f;
 
   // Violation accumulators: shift ROI origin in 10 px steps after 100
   // violation-frames on an axis (eyetracking::roiFollow).
@@ -3291,6 +3295,24 @@ static int autoCenterROICmd(ClientData clientData, Tcl_Interp *interp,
     return TCL_OK;
 }
 
+// eyetracking::autoRoiScale ?s? — how much larger (linear, 1.0-3.0) than its
+// analysis box the ROI autoDetect suggests is. Returns the current value.
+static int autoRoiScaleCmd(ClientData clientData, Tcl_Interp *interp,
+                           int objc, Tcl_Obj *const objv[]) {
+    EyeTrackingPlugin* plugin = static_cast<EyeTrackingPlugin*>(clientData);
+    if (objc >= 2) {
+        double s;
+        if (Tcl_GetDoubleFromObj(interp, objv[1], &s) != TCL_OK) return TCL_ERROR;
+        if (s < 1.0 || s > 3.0) {
+            Tcl_SetObjResult(interp, Tcl_NewStringObj("autoRoiScale must be 1.0-3.0", -1));
+            return TCL_ERROR;
+        }
+        plugin->auto_roi_scale_ = static_cast<float>(s);
+    }
+    Tcl_SetObjResult(interp, Tcl_NewDoubleObj(plugin->auto_roi_scale_));
+    return TCL_OK;
+}
+
 // eyetracking::roiFollow ?0|1? — violation-accumulator ROI shift (move only).
 static int roiFollowCmd(ClientData clientData, Tcl_Interp *interp,
                         int objc, Tcl_Obj *const objv[]) {
@@ -4827,8 +4849,16 @@ static int autoDetectCmd(ClientData clientData, Tcl_Interp *interp,
     Tcl_DictObjPut(interp, d, Tcl_NewStringObj(k, -1), v);
   };
   put("status", Tcl_NewStringObj("ok", -1));
+  // res.roi is the box the pupil/P1/P4/quality were measured in (and what the
+  // *_x/_y below are relative to). The ROI suggested for tracking is the same
+  // box around the same pupil, scaled up for gaze movement, so extra lid and
+  // lash in the margin can't change what auto-detect measured.
+  cv::Point2f pupil_full = res.pupil.at.center + cv::Point2f(res.roi.x, res.roi.y);
+  cv::Rect suggested = plugin->proposeRoi(pupil_full,
+                                          res.pupil.at.radius * plugin->auto_roi_scale_,
+                                          a.size());
   Tcl_Obj* roi_list = Tcl_NewListObj(0, nullptr);
-  for (int v : {res.roi.x, res.roi.y, res.roi.width, res.roi.height}) {
+  for (int v : {suggested.x, suggested.y, suggested.width, suggested.height}) {
     Tcl_ListObjAppendElement(interp, roi_list, Tcl_NewIntObj(v));
   }
   put("roi", roi_list);
@@ -5201,6 +5231,8 @@ public:
                             centerROICmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::autoCenterROI",
                             autoCenterROICmd, this, NULL);
+        Tcl_CreateObjCommand(interp, "::eyetracking::autoRoiScale",
+                            autoRoiScaleCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::roiFollow",
                             roiFollowCmd, this, NULL);
         Tcl_CreateObjCommand(interp, "::eyetracking::loadReference",
