@@ -56,6 +56,7 @@ namespace eval ::dsl {
     variable retry_max_ms 30000      ;# backoff ceiling while dserv is unreachable
     variable retry_ms 2000           ;# current delay before the next check
     variable watch_id ""
+    variable link_seen 0             ;# a live connect-back since the last %reg
     variable sub_seq 0               ;# the subscribe job we are waiting for
     variable poll_id ""
     variable poll_ms 100
@@ -106,12 +107,16 @@ proc ::dsl::poll {} {
         return
     }
     if { [dict get $st state] eq "ok" } {
+        # Registered; whether dserv's connect-back arrives is for ::dsl::watch
+        # to see, so the backoff, the error and the "already reported" flag
+        # are only reset once it does -- otherwise a dserv that can't connect
+        # back would log every cycle.
         set subscribed 1
-        set error ""
-        set retry_ms $watch_ms
-        log [expr { $ever_subscribed ? "re-registered with $host" : "connected to $host" }]
+        set ::dsl::link_seen 0
+        if { !$lost_logged } {
+            log [expr { $ever_subscribed ? "re-registered with $host" : "connected to $host" }]
+        }
         set ever_subscribed 1
-        set lost_logged 0
         if { [llength [info commands ::dserv_on_subscribed]] } {
             if { [catch ::dserv_on_subscribed err] } { log "dserv_on_subscribed: $err" }
         }
@@ -129,20 +134,51 @@ proc ::dsl::poll {} {
 
 # Liveness check. Runs every retry_ms; queues a re-subscribe when the
 # subscription is gone and none is already in flight.
+#
+# Two ways a registered subscription can have no connect-back:
+#   lost          it was live and went away (dserv restarted or reaped us):
+#                 re-register at once
+#   never arrived %reg succeeded but dserv could not connect back to our
+#                 listener (the -p port + 1, 4631 by default: blocked, not
+#                 listening, wrong address): re-registering will not help, so
+#                 back off like a failed %reg and say why. Without this it
+#                 re-registered every 2 s indefinitely (2026-10-07).
 proc ::dsl::watch {} {
     variable host
     variable subscribed
     variable lost_logged
+    variable link_seen
+    variable error
     variable retry_ms
+    variable retry_max_ms
+    variable watch_ms
     variable watch_id
     variable poll_id
     set watch_id ""
     if { $host eq "" } { return }
     if { $poll_id eq "" } {
-        if { $subscribed && [vstream::dsConnections] == 0 } {
+        if { $subscribed && [vstream::dsConnections] > 0 } {
+            if { !$link_seen && $lost_logged } { log "subscription to $host is live" }
+            set link_seen 1
+            set lost_logged 0
+            set error ""
+            set retry_ms $watch_ms
+        } elseif { $subscribed } {
             set subscribed 0
-            log "subscription to $host lost (no live connect-back); re-registering"
-            set lost_logged 1
+            if { $link_seen } {
+                log "subscription to $host lost (no live connect-back); re-registering"
+                set lost_logged 1
+                set retry_ms $watch_ms
+            } else {
+                set error "registered with $host, but its connection back to\
+                           this machine never arrived (is our dserv listener,\
+                           the -p port + 1 (4631 by default), reachable from $host?)"
+                if { !$lost_logged } {
+                    log "$error; retrying with backoff"
+                    set lost_logged 1
+                }
+                set retry_ms [expr { min($retry_ms * 2, $retry_max_ms) }]
+            }
             announce
         }
         if { !$subscribed } { request_subscribe }

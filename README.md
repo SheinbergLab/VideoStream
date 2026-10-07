@@ -67,7 +67,9 @@ viewer is at `http://<host>:8080/eyetracker/`. It stops with SIGINT (closing
 any open recording cleanly) and restarts after a crash but not after a
 deliberate quit. To pass options, `sudo systemctl edit videostream@lab` and
 override `ExecStart`. Only one instance per machine unless the others get
-different ports.
+different ports (`-p`): VideoStream refuses to start (exit code 2) when its
+command port or the dserv connect-back port above it is taken, so the service
+retries until, e.g., a hand-started copy has been stopped.
 
 For GigE cameras (Lucid Triton), raise the socket receive buffers once:
 

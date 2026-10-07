@@ -3127,6 +3127,29 @@ static std::string installed_default_script(void)
   return std::filesystem::weakly_canonical(script, ec).string();
 }
 
+// Whether a TCP listener could bind INADDR_ANY:port right now, the way the
+// command server and DservSocket do (SO_REUSEADDR, so a port that only has
+// TIME_WAIT leftovers from a previous run still counts as free).
+static bool tcp_port_free(int port)
+{
+#ifdef _WIN32
+  return true;
+#else
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) return true;  // can't tell; let the real listener report it
+  int on = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = INADDR_ANY;
+  addr.sin_port = htons(port);
+  bool ok = ::bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 && ::listen(fd, 1) == 0;
+  close(fd);
+  return ok;
+#endif
+}
+
 int main(int argc, char **argv)
 {
   int camera_id = 0;
@@ -3250,6 +3273,20 @@ int main(int argc, char **argv)
     if (!script.empty()) {
       startup_file = strdup(script.c_str());
       std::cout << "no -f given: running " << script << " (--bare to skip)" << std::endl;
+    }
+  }
+
+  // The command port and dserv's connect-back port (port+1) must be ours.
+  // If another VideoStream holds them, the listener threads below would only
+  // log a bind error and the rest would run half-connected: no Tcl control,
+  // no dserv subscriptions (2026-10-07, a service started while a hand-run
+  // tracker was still up). Refuse to start instead; under systemd
+  // (Restart=on-failure) that retries until the ports are free.
+  for (int p : {port, port + 1}) {
+    if (!tcp_port_free(p)) {
+      std::cerr << "VideoStream: port " << p << " is in use (another VideoStream "
+                << "running?); not starting. Use -p to pick other ports." << std::endl;
+      return 2;
     }
   }
 
