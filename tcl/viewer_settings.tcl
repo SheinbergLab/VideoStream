@@ -33,6 +33,9 @@
 #   cam.<vendor>.gain|exposure_us|fps|binning     per camera backend, e.g. cam.lucid.gain
 #   ui.layers ui.layersOpen ui.tuningOpen ui.history.open ui.history.window
 #   ui.pickerSort playback.speed
+#   dserv                 "host port" of the dserv to connect to, "" for none
+#                         (applied by dserv_connect / dserv_disconnect from
+#                         dserv_link.tcl; reconnected at start by dserv_startup)
 #
 # Events (to every browser, via vstream/*):
 #   vstream/settings        {key value}
@@ -116,6 +119,15 @@ namespace eval ::vs {
                 return $value
             }
             ui.layers - ui.pickerSort { return $value }
+            dserv {
+                if {$value eq ""} { return "" }
+                if {[llength $value] != 2 || [lindex $value 0] eq ""
+                    || ![string is integer -strict [lindex $value 1]]
+                    || [lindex $value 1] < 1 || [lindex $value 1] > 65535} {
+                    return -code error "dserv must be: host port (or empty for none)"
+                }
+                return [join $value " "]
+            }
         }
         if {[regexp {^cam\.([a-z0-9]+)\.([a-z_]+)$} $key -> vendor field]} {
             if {$vendor ni $camera_vendors} { return -code error "unknown camera backend $vendor" }
@@ -165,6 +177,11 @@ namespace eval ::vs {
             roi.follow { eyetracking::roiFollow $value }
             playback.speed {
                 if {[llength [info commands ::set_playback_speed]]} { ::set_playback_speed $value }
+            }
+            dserv {
+                if {[llength [info commands ::dserv_connect]]} {
+                    if {$value eq ""} { ::dserv_disconnect } else { ::dserv_connect {*}$value }
+                }
             }
         }
         if {[regexp {^cam\.([a-z0-9]+)\.([a-z_]+)$} $key -> vendor field]} {

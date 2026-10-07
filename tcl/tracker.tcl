@@ -11,6 +11,9 @@ if {![info exists ::camera_type]} { set ::camera_type flir }
 source [file join [file dirname [info script]] et_camera.tcl]
 # Settings changed in the browser viewer are kept by the server, here.
 source [file join [file dirname [info script]] viewer_settings.tcl]
+# The dserv connection (forwarding + ess/in_obs, ess/datafile subscription),
+# also chosen from the viewer.
+source [file join [file dirname [info script]] dserv_link.tcl]
 
 # Live-camera settings per backend, applied once by go_live (see et_camera.tcl).
 # Lucid: 430 us exposure at 250 Hz (4001 us frame time), Line1 drives the IR
@@ -47,11 +50,6 @@ namespace eval ::Registry {
     variable in_obs_indicator -1
     variable paused 0
     variable camera_initialized 0
-    variable ds_host {}
-    variable ds_port 4620
-    variable ds_connected 0
-    variable ds_watch_ms 2000     ;# subscription liveness check period
-    variable ds_lost_logged 0
     variable datafile {}
     variable datafile_indicator -1
     variable video_folder /home/lab/Videos
@@ -907,39 +905,20 @@ proc live_mode { } {
 # ============================================================================
 
 #
-# dserv delivers subscriptions over ONE persistent connect-back socket per
-# registration, opened by %reg and closed if dserv reaps us (send stall,
-# hard error) or restarts.  It never reconnects on its own and nothing
-# tells the client.  On 2026-09-10 this tracker ran ~10 days with a dead
-# subscription, never heard about a datafile open, and four sessions of eye
-# timing were logged against a 10-day-old anchor.  vstream::dsConnections
-# counts the live connect-back sockets; a registered tracker with zero of
-# them has lost its subscriptions, so ds_watch re-registers and then asks
-# dserv for the current datafile (what the push would have said).
+# Connecting, subscribing (ess/in_obs, ess/datafile) and the dead-subscription
+# watchdog are in dserv_link.tcl (dserv_connect / dserv_startup), shared with
+# serve.tcl and driven from the viewer too. What is specific to the tracker:
+# after every (re)registration, ask dserv for the current datafile, since a
+# push that happened while the subscription was dead never arrives.
 
-proc ds_log { msg } {
-    puts "\[[clock format [clock seconds] -format %H:%M:%S]\] dserv: $msg"
-}
-
-proc ds_subscribe { host port } {
-    if { ![vstream::dsRegister $host $port] } {
-	set ::Registry::ds_connected 0
-	return 0
-    }
-    # Obs period controls
-    vstream::dsAddMatch $host ess/in_obs $port
-    # Datafile controls
-    vstream::dsAddMatch $host ess/datafile $port
-    set ::Registry::ds_connected 1
-    return 1
-}
+proc ds_log { msg } { ::dsl::log $msg }
 
 # Ask dserv for the datafile right now and act on any difference from what
 # we believe -- catches an open (or close) that happened while the
 # subscription was dead, and a tracker started mid-session.
 proc ds_reconcile_datafile {} {
-    if { [catch { vstream::dsGet $::Registry::ds_host ess/datafile \
-		      $::Registry::ds_port } reply] } {
+    if { $::dsl::host eq "" } { return }
+    if { [catch { vstream::dsGet $::dsl::host ess/datafile $::dsl::port } reply] } {
 	return
     }
     if { [catch { ds_get_value $reply ess/datafile } df] } {
@@ -968,35 +947,8 @@ proc ds_get_value { reply name } {
     return [lindex $reply 5]
 }
 
-proc ds_watch {} {
-    after $::Registry::ds_watch_ms ds_watch
-    if { $::Registry::ds_host eq "" } { return }
-
-    if { $::Registry::ds_connected && [vstream::dsConnections] > 0 } {
-	set ::Registry::ds_lost_logged 0
-	return
-    }
-    if { !$::Registry::ds_lost_logged } {
-	ds_log "subscription to $::Registry::ds_host lost (no live connect-back); re-registering"
-	set ::Registry::ds_lost_logged 1
-    }
-    if { [ds_subscribe $::Registry::ds_host $::Registry::ds_port] } {
-	ds_log "re-registered with $::Registry::ds_host"
-	set ::Registry::ds_lost_logged 0
-	ds_reconcile_datafile
-    }
-}
-
-proc connect_to_dataserver { host {port 4620} } {
-    set ::Registry::ds_host $host
-    set ::Registry::ds_port $port
-    if { [ds_subscribe $host $port] } {
-	ds_reconcile_datafile
-    } else {
-	ds_log "registration with $host:$port failed; will keep retrying"
-    }
-    ds_watch
-}
+# dserv_link.tcl hook: after each (re)registration
+proc dserv_on_subscribed {} { ds_reconcile_datafile }
 
 # ============================================================================
 # INITIALIZATION
@@ -1093,9 +1045,8 @@ vstream::addShutdownCmd ::vs::flush
 vstream::onlySaveInObs 0
 vstream::obsSource $::obs_source
 
-if { $vstream::dsHost != "" } {
-    connect_to_dataserver $vstream::dsHost 4620
-}
+# --ds-host if given, else the dserv last chosen in the viewer
+dserv_startup
 
 live_mode
 

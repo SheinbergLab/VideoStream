@@ -88,6 +88,7 @@ The default build is FLIR-free (webcam/UVC + mp4 + review/reprocess).
 ```sh
 sudo apt install build-essential cmake pkg-config
 sudo apt install libopencv-dev zlib1g-dev liblz4-dev libjansson-dev
+sudo apt install libavahi-compat-libdnssd-dev   # optional: dserv discovery (mDNS)
 # Tcl 9: build from the deps/tcl submodule, or install libtcl9.0/tcl9.0-dev where available
 # libdg: install the dlsh-dg .deb from https://github.com/SheinbergLab/dlsh/releases
 
@@ -327,6 +328,34 @@ whichever source is used, and `recording_metadata.obs_source` records the
 choice, so `scripts/obs_compare.py recording.db` can report, per observation,
 how many frames the used boundaries differ from the wire's transitions before
 the wire is retired.
+
+## Connecting to dserv
+
+VideoStream sends its results (e.g. `eyetracking/results`) to a dserv and
+takes `ess/in_obs` and `ess/datafile` from it. Pick the dserv in the browser
+viewer's **dserv** menu (top right): it lists the dservs on the local network,
+found over mDNS (they advertise `_dserv._tcp`, with their datapoint port in
+the `dp` TXT entry), or takes a host and port by hand. The choice is saved
+(`dserv` in the viewer settings) and restored at the next start; `--ds-host`
+on the command line takes precedence.
+
+From Tcl (`tcl/dserv_link.tcl`, sourced by `serve.tcl` and `tracker.tcl`):
+```
+ dserv_connect host ?port?   forward results + subscribe (default port 4620)
+ dserv_disconnect
+ dserv_status                host port forwarding subscribed discovery found
+```
+and underneath, in the core:
+```
+ vstream::dsForward ?host ?port?? | off   where results are forwarded
+ vstream::dservList                       dservs found on the link (mDNS)
+ vstream::dservDiscovery                  "browsing", or why discovery is off
+```
+
+VideoStream also advertises itself as `_videostream._tcp` on its web port,
+with TXT `tcl` (command port), `apps` (browser apps) and `ver`. Discovery uses
+`dns_sd`: built into macOS; on Linux, Avahi (`avahi-daemon`, with
+`libnss-mdns` to resolve `.local` names; the .deb recommends both).
 
 ## General functions
 ```

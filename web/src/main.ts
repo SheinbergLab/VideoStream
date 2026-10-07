@@ -21,6 +21,7 @@ import {
 } from "./playbackSpeed";
 import { attachRefPicker } from "./refPicker";
 import { attachSourceMenu } from "./sourceMenu";
+import { attachDservMenu } from "./dservMenu";
 import { attachConsolePanel, type ConsolePanel } from "./consolePanel";
 import { settings } from "./settings";
 import { attachTuningPanel } from "./tuningPanel";
@@ -497,7 +498,10 @@ let consolePanel: ConsolePanel | null = null;
 const conn = new Connection({
   fps,
   quality,
-  onEvent: (event, data) => settings.handleEvent(event, data),
+  onEvent: (event, data) => {
+    settings.handleEvent(event, data);
+    dservMenu.handleEvent(event);
+  },
   onLog: (lines) => consolePanel?.append(lines),
   onLogReset: () => consolePanel?.reset(),
   onFrame: (msg) => {
@@ -544,6 +548,7 @@ const conn = new Connection({
         .catch(() => {});
     }
     tuningPanel.setEnabled(up);
+    dservMenu.setEnabled(up);
     if (up) {
       // The server's settings first: every panel below adopts them.
       void settings.load();
@@ -616,6 +621,24 @@ const tuningPanel = attachTuningPanel(
     getTuneProposal,
   },
 );
+
+const dservMenu = attachDservMenu({
+  conn,
+  settings,
+  wrap: $("dserv-wrap"),
+  button: $("dserv-picker") as HTMLButtonElement,
+  label: $("dserv-label"),
+  menu: $("dserv-menu"),
+  foundList: $("dserv-menu-found"),
+  refreshBtn: $("dserv-menu-refresh") as HTMLButtonElement,
+  manualForm: $("dserv-menu-manual") as HTMLFormElement,
+  hostInput: $("dserv-menu-host") as HTMLInputElement,
+  portInput: $("dserv-menu-port") as HTMLInputElement,
+  currentSection: $("dserv-menu-current"),
+  statusEl: $("dserv-menu-status"),
+  disconnectBtn: $("dserv-menu-disconnect") as HTMLButtonElement,
+  errorEl: $("dserv-menu-error"),
+});
 
 const filePicker = attachFilePicker(conn);
 sourceMenu = attachSourceMenu({

@@ -1798,3 +1798,93 @@ button.bar-control:disabled {
 .console-line.err {
   color: #e8a07a;
 }
+
+/* ---- dserv picker (top bar, right) ------------------------------------------ */
+
+.dserv-wrap[hidden] {
+  display: none !important;
+}
+
+.dserv-picker {
+  max-width: min(260px, 36vw);
+}
+
+.dserv-picker::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: #666;
+}
+
+.dserv-picker.dserv-up::before {
+  background: #5fd27a;
+  box-shadow: 0 0 6px rgba(95, 210, 122, 0.6);
+}
+
+.dserv-picker.dserv-partial::before {
+  background: #e0b24a;
+}
+
+.dserv-picker.dserv-none {
+  color: var(--dim);
+}
+
+.dserv-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* opens leftward from the right edge of the bar */
+.dserv-menu {
+  left: auto;
+  right: 0;
+}
+
+.dserv-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.dserv-item-meta {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.dserv-empty,
+.dserv-status {
+  margin: 2px 10px 6px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.dserv-manual {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+}
+
+.dserv-manual input {
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: #1c1c1c;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+#dserv-menu-host {
+  flex: 1;
+  min-width: 0;
+}
+
+#dserv-menu-port {
+  width: 56px;
+}

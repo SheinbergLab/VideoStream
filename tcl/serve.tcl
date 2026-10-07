@@ -49,6 +49,9 @@ vstream::mediaPlaces $::S::places
 
 # Settings changed in the browser viewer are kept by the server, here.
 source [file join [file dirname [info script]] viewer_settings.tcl]
+# The dserv connection (results forwarded, ess/in_obs + ess/datafile
+# subscribed), chosen from the viewer or --ds-host.
+source [file join [file dirname [info script]] dserv_link.tcl]
 
 # Detector tuning defaults (same as watch.tcl and the headless reprocess
 # path). The viewer's tuning panel calls this for "Reset to defaults".
@@ -494,6 +497,7 @@ proc start_default_source {} {
 ::vs::load
 ::vs::apply_saved
 vstream::addShutdownCmd ::vs::flush
+dserv_startup   ;# --ds-host if given, else the dserv last chosen in the viewer
 
 set ::S::started_as [start_default_source]
 

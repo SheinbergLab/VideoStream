@@ -100,6 +100,44 @@
         <div id="badges" class="badges"></div>
       </div>
       <div class="topbar-right">
+        <div id="dserv-wrap" class="source-picker-wrap dserv-wrap" hidden>
+          <button
+            type="button"
+            id="dserv-picker"
+            class="bar-control dserv-picker dserv-none"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="dserv-menu"
+            disabled
+          >
+            <span id="dserv-label" class="dserv-label">dserv: none</span>
+            <span class="source-picker-chevron" aria-hidden="true">▾</span>
+          </button>
+          <div id="dserv-menu" class="source-menu dserv-menu" role="menu" aria-labelledby="dserv-picker" hidden>
+            <p id="dserv-menu-error" class="source-menu-error" hidden></p>
+            <section class="source-menu-section">
+              <div class="source-menu-heading-row">
+                <h3 class="source-menu-heading">On this network</h3>
+                <button type="button" id="dserv-menu-refresh" class="source-menu-refresh" title="Look for dservs again">
+                  Refresh
+                </button>
+              </div>
+              <div id="dserv-menu-found" class="source-menu-list"></div>
+            </section>
+            <section class="source-menu-section">
+              <h3 class="source-menu-heading">Other</h3>
+              <form id="dserv-menu-manual" class="dserv-manual">
+                <input id="dserv-menu-host" type="text" placeholder="host or IP" autocomplete="off" spellcheck="false" />
+                <input id="dserv-menu-port" type="text" inputmode="numeric" value="4620" title="datapoint port" />
+                <button type="submit" class="source-menu-refresh">Connect</button>
+              </form>
+            </section>
+            <section id="dserv-menu-current" class="source-menu-section" hidden>
+              <p id="dserv-menu-status" class="dserv-status"></p>
+              <button type="button" id="dserv-menu-disconnect" class="source-menu-item">Disconnect</button>
+            </section>
+          </div>
+        </div>
         <span id="file-tag" class="badge badge-ok" hidden>FILE OPEN</span>
       </div>
     </header>
