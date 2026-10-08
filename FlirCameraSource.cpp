@@ -517,8 +517,17 @@ bool FlirCameraSource::configureFrameRate(float frameRate, float* actualRate) {
     if (!IsAvailable(ptrFrameRate) || !IsWritable(ptrFrameRate))
       return false;
     
-    ptrFrameRate->SetValue(frameRate);
-    
+    // Spinnaker throws OutOfRange past the node's limits (a script asking for
+    // 250 fps on a camera that tops out at 85). Clamp and report so a
+    // too-fast request degrades to "as fast as possible", as the Lucid
+    // source does.
+    double lo = ptrFrameRate->GetMin(), hi = ptrFrameRate->GetMax();
+    double target = std::max(lo, std::min((double) frameRate, hi));
+    if (target != frameRate)
+      std::cerr << "AcquisitionFrameRate " << frameRate << " outside [" << lo
+                << ", " << hi << "], using " << target << std::endl;
+    ptrFrameRate->SetValue(target);
+
     // Read back actual value
     fps = static_cast<float>(ptrFrameRate->GetValue());
     if (actualRate) *actualRate = fps;
