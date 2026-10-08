@@ -681,17 +681,44 @@ bool FlirCameraSource::configureBinning(int horizontal, int vertical)
     if (IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMin());
     if (IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMin());
     
-    // Now set binning selector and binning amount
+    // Prefer on-sensor binning (raises the achievable frame rate), falling
+    // back to "All" (done after readout, so it shrinks the image but not the
+    // readout time). A selector entry can exist yet allow no binning on a
+    // given sensor (the BFS-PGE-13Y3M's "Sensor" tops out at 1), so only
+    // use one whose range reaches the requested binning. Clear every
+    // selector first so a previous choice doesn't stack with the new one.
     CEnumerationPtr ptrBinningSelector = nodeMap.GetNode("BinningSelector");
+    Spinnaker::GenApi::CIntegerPtr ptrBinH = nodeMap.GetNode("BinningHorizontal");
+    Spinnaker::GenApi::CIntegerPtr ptrBinV = nodeMap.GetNode("BinningVertical");
     if (IsWritable(ptrBinningSelector)) {
-      CEnumEntryPtr ptrBinningSelectorAll = ptrBinningSelector->GetEntryByName("All");
-      if (IsReadable(ptrBinningSelectorAll)) {
-        ptrBinningSelector->SetIntValue(ptrBinningSelectorAll->GetValue());
+      const char* preferred[] = {"Sensor", "All"};
+      for (const char* name : preferred) {
+        CEnumEntryPtr entry = ptrBinningSelector->GetEntryByName(name);
+        if (!IsAvailable(entry)) continue;
+        ptrBinningSelector->SetIntValue(entry->GetValue());
+        if (IsWritable(ptrBinH)) ptrBinH->SetValue(ptrBinH->GetMin());
+        if (IsWritable(ptrBinV)) ptrBinV->SetValue(ptrBinV->GetMin());
+      }
+      bool chosen = false;
+      for (const char* name : preferred) {
+        CEnumEntryPtr entry = ptrBinningSelector->GetEntryByName(name);
+        if (!IsAvailable(entry)) continue;
+        ptrBinningSelector->SetIntValue(entry->GetValue());
+        if (IsWritable(ptrBinH) && IsWritable(ptrBinV) &&
+            ptrBinH->GetMax() >= horizontal && ptrBinV->GetMax() >= vertical) {
+          std::cout << "Binning via the " << name << " selector" << std::endl;
+          chosen = true;
+          break;
+        }
+      }
+      if (!chosen) {
+        CEnumEntryPtr all = ptrBinningSelector->GetEntryByName("All");
+        if (IsAvailable(all)) ptrBinningSelector->SetIntValue(all->GetValue());
       }
     }
-    
-    Spinnaker::GenApi::CIntegerPtr ptrBinningHorizontal = nodeMap.GetNode("BinningHorizontal");
-    Spinnaker::GenApi::CIntegerPtr ptrBinningVertical = nodeMap.GetNode("BinningVertical");
+
+    Spinnaker::GenApi::CIntegerPtr ptrBinningHorizontal = ptrBinH;
+    Spinnaker::GenApi::CIntegerPtr ptrBinningVertical = ptrBinV;
     
     if (IsWritable(ptrBinningHorizontal)) {
       ptrBinningHorizontal->SetValue(horizontal);
