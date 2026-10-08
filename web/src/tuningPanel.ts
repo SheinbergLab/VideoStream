@@ -970,11 +970,17 @@ export function attachTuningPanel(
     ptpBusy = true;
     try {
       const raw = await conn.sendEvalAsync(
+        // Standard names (Lucid); a Blackfly S has GevIEEE1588 and its status
+        // only. The last branch re-raises "no such node" for cameras with neither.
         "catch {camera::node PtpDataSetLatch 1}; " +
-          "list [camera::node PtpEnable] [camera::node PtpStatus] [camera::node PtpServoStatus] [camera::node PtpOffsetFromMaster]",
+          "if {![catch {camera::node PtpEnable} en]} {" +
+          "list $en [camera::node PtpStatus] [camera::node PtpServoStatus] [camera::node PtpOffsetFromMaster]" +
+          "} elseif {![catch {camera::node GevIEEE1588} en]} {" +
+          "list $en [camera::node GevIEEE1588Status] - nan" +
+          "} else {camera::node PtpEnable}",
       );
       const [enabled, status, servo, offset] = parseTclList(raw);
-      if (cameraKey) showPtp(enabled === "1", status ?? "", servo ?? "", Number(offset));
+      if (cameraKey) showPtp(enabled === "1", status ?? "", servo === "-" ? "" : (servo ?? ""), Number(offset));
     } catch (e) {
       if (String(e).includes("no such node")) {
         ptpUnsupported = true;

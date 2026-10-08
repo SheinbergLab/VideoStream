@@ -81,22 +81,29 @@ namespace eval ::et_camera {
     proc ptp_enable {{opts {}}} {
         set slave_only [expr {[dict exists $opts slave_only] ? [dict get $opts slave_only] : 1}]
         set wait_s     [expr {[dict exists $opts wait_s] ? [dict get $opts wait_s] : 20}]
+        # Standard SFNC names (Lucid), else the older GevIEEE1588* set (FLIR
+        # Blackfly S), whose mode is an Auto/SlaveOnly enumeration.
         if {[catch {
             camera::node PtpSlaveOnly $slave_only
             camera::node PtpEnable 1
-        } err]} {
-            puts "PTP: cannot enable on this camera ($err)"
+        } err] && [catch {
+            camera::node GevIEEE1588Mode [expr {$slave_only ? "SlaveOnly" : "Auto"}]
+            camera::node GevIEEE1588 1
+        } err2]} {
+            puts "PTP: cannot enable on this camera ($err; $err2)"
             return {}
         }
         set deadline [expr {[clock milliseconds] + int($wait_s * 1000)}]
         while {1} {
             set st [ptp_status]
-            set status [dict get $st status]
+            set status [dict getdef $st status unknown]
             if {$status eq "Slave" || [clock milliseconds] > $deadline} { break }
             after 500
         }
         if {$status eq "Slave"} {
-            puts "PTP: locked to grandmaster, offset [dict get $st offset_ns] ns"
+            # A Blackfly S can't report its offset from the master
+            set off [expr {[dict exists $st offset_ns] ? ", offset [dict get $st offset_ns] ns" : ""}]
+            puts "PTP: locked to grandmaster$off"
         } else {
             puts "PTP: status $status after ${wait_s}s (no grandmaster on the LAN?); timestamps stay on the camera's free-running clock"
         }
@@ -106,7 +113,14 @@ namespace eval ::et_camera {
     # Latched PTP state: status (Disabled/Listening/Uncalibrated/Slave/...),
     # servo, offset_ns from the master, clock/parent/grandmaster IDs.
     proc ptp_status {} {
-        set d [dict create enabled [camera::node PtpEnable]]
+        # Blackfly S has only the enable flag and the status (no servo state,
+        # offset or clock IDs), under GevIEEE1588* names.
+        if {[catch {camera::node PtpEnable} en]} {
+            set d [dict create enabled [camera::node GevIEEE1588]]
+            if {![catch {camera::node GevIEEE1588Status} v]} { dict set d status $v }
+            return $d
+        }
+        set d [dict create enabled $en]
         catch { camera::node PtpDataSetLatch 1 }
         foreach {key node} {status PtpStatus servo PtpServoStatus offset_ns PtpOffsetFromMaster
                             clock_id PtpClockID parent_id PtpParentClockID grandmaster_id PtpGrandmasterClockID} {
