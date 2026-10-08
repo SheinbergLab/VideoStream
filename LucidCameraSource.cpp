@@ -51,6 +51,19 @@ static void releaseSystem() {
   Arena::CloseSystem(system);
 }
 
+// Arena enumerates every GigE Vision camera on the network, including FLIR
+// Blackflys, which the Spinnaker path owns. Keep only Lucid's own devices so
+// indices and the camera list agree between the probe and the open path.
+static std::vector<Arena::DeviceInfo> lucidOnly(std::vector<Arena::DeviceInfo> all) {
+  std::vector<Arena::DeviceInfo> out;
+  for (Arena::DeviceInfo& d : all) {
+    std::string vendor = d.VendorName().c_str();
+    for (char& c : vendor) c = (char) tolower((unsigned char) c);
+    if (vendor.find("lucid") != std::string::npos) out.push_back(d);
+  }
+  return out;
+}
+
 std::vector<LucidDeviceSummary> lucidListDevices() {
   std::vector<LucidDeviceSummary> out;
   try {
@@ -62,7 +75,7 @@ std::vector<LucidDeviceSummary> lucidListDevices() {
         deviceOpen = g_open_devices > 0;
       }
       if (!deviceOpen) system->UpdateDevices(1000);
-      for (Arena::DeviceInfo& d : system->GetDevices())
+      for (Arena::DeviceInfo& d : lucidOnly(system->GetDevices()))
         out.push_back({d.ModelName().c_str(), d.SerialNumber().c_str()});
     } catch (GenICam::GenericException& ge) {
       std::cerr << "Lucid probe: " << ge.what() << std::endl;
@@ -142,7 +155,7 @@ bool LucidCameraSource::initializeCamera() {
   try {
     impl_->system = acquireSystem();
     impl_->system->UpdateDevices(1000);
-    std::vector<Arena::DeviceInfo> devices = impl_->system->GetDevices();
+    std::vector<Arena::DeviceInfo> devices = lucidOnly(impl_->system->GetDevices());
 
     int index = -1;
     if (!serial_.empty()) {
