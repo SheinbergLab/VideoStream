@@ -3364,12 +3364,17 @@ int main(int argc, char **argv)
 #endif
   }
 
+  // A source named on the command line that can't be opened (camera
+  // unplugged, wrong subnet) shouldn't take the viewer down with it: carry
+  // on with no source so another one can be picked in the browser. Exiting
+  // here also made systemd retry forever without ever serving the viewer.
+  if (!no_source && !g_sourceManager.startSource(source_type, source_params)) {
+    std::cerr << "Failed to start the " << source_type
+              << " source; continuing with no source (pick one in the viewer)" << std::endl;
+    no_source = true;
+  }
+
   if (!no_source) {
-    if (!g_sourceManager.startSource(source_type, source_params)) {
-      std::cerr << "Failed to start source" << std::endl;
-      return -1;
-    }
-    
     g_frameSource = g_sourceManager.getCurrentSource();
 
     // give sourceManager access to clear widgets and frame buffer clear
