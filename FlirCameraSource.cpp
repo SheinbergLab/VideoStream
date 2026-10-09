@@ -70,6 +70,29 @@ bool FlirCameraSource::initializeCamera() {
     // Retrieve GenICam nodemap
     INodeMap& nodeMap = pCam->GetNodeMap();
     nodeMapPtr = &nodeMap;
+
+    // VideoStream paces frames with AcquisitionFrameRate. A camera saved with
+    // FrameStart triggering on (e.g. from an external-trigger setup) would
+    // wait forever for a pulse and never send a frame, so start free-running.
+    // A script can switch it back on afterwards (camera::node TriggerMode On).
+    try {
+        CEnumerationPtr trigSel = nodeMap.GetNode("TriggerSelector");
+        CEnumerationPtr trigMode = nodeMap.GetNode("TriggerMode");
+        if (IsAvailable(trigSel) && IsWritable(trigSel)) {
+            CEnumEntryPtr frameStart = trigSel->GetEntryByName("FrameStart");
+            if (IsAvailable(frameStart)) trigSel->SetIntValue(frameStart->GetValue());
+        }
+        if (IsAvailable(trigMode) && IsWritable(trigMode)) {
+            CEnumEntryPtr off = trigMode->GetEntryByName("Off");
+            if (IsAvailable(off) && trigMode->GetIntValue() != off->GetValue()) {
+                std::cout << "FLIR camera was in trigger mode; switching it off for free-running acquisition"
+                          << std::endl;
+                trigMode->SetIntValue(off->GetValue());
+            }
+        }
+    } catch (Spinnaker::Exception& e) {
+        std::cerr << "FLIR trigger mode: " << e.what() << std::endl;
+    }
     
     // Configure chunk data by default
     configureChunkData(true, false);
@@ -188,7 +211,10 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
     }
     
     try {
-        ImagePtr pResultImage = pCam->GetNextImage();
+        // Bounded wait: Spinnaker's default waits forever, which froze the
+        // whole main loop (and with it Tcl and the viewer) when a camera
+        // started but sent no frames (trigger mode, USB stall).
+        ImagePtr pResultImage = pCam->GetNextImage(2000);
         
         // Check if image is incomplete
         if (pResultImage->IsIncomplete()) {
@@ -254,6 +280,17 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
         return true;
         
     } catch (Spinnaker::Exception &e) {
+        if (e.GetError() == SPINNAKER_ERR_TIMEOUT) {
+            // no frame within 2 s; say so every ~10 s rather than every retry
+            static auto lastWarn = std::chrono::steady_clock::time_point();
+            auto now = std::chrono::steady_clock::now();
+            if (now - lastWarn > std::chrono::seconds(10)) {
+                lastWarn = now;
+                std::cerr << "FLIR camera: no frame for 2 s (trigger mode or a stalled link?)"
+                          << std::endl;
+            }
+            return false;
+        }
         std::cerr << "Error: " << e.what() << std::endl;
         return false;
     }
