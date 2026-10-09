@@ -70,6 +70,29 @@ bool FlirCameraSource::initializeCamera() {
     // Retrieve GenICam nodemap
     INodeMap& nodeMap = pCam->GetNodeMap();
     nodeMapPtr = &nodeMap;
+
+    // VideoStream paces frames with AcquisitionFrameRate. A camera saved with
+    // FrameStart triggering on (e.g. from an external-trigger setup) would
+    // wait forever for a pulse and never send a frame, so start free-running.
+    // A script can switch it back on afterwards (camera::node TriggerMode On).
+    try {
+        CEnumerationPtr trigSel = nodeMap.GetNode("TriggerSelector");
+        CEnumerationPtr trigMode = nodeMap.GetNode("TriggerMode");
+        if (IsAvailable(trigSel) && IsWritable(trigSel)) {
+            CEnumEntryPtr frameStart = trigSel->GetEntryByName("FrameStart");
+            if (IsAvailable(frameStart)) trigSel->SetIntValue(frameStart->GetValue());
+        }
+        if (IsAvailable(trigMode) && IsWritable(trigMode)) {
+            CEnumEntryPtr off = trigMode->GetEntryByName("Off");
+            if (IsAvailable(off) && trigMode->GetIntValue() != off->GetValue()) {
+                std::cout << "FLIR camera was in trigger mode; switching it off for free-running acquisition"
+                          << std::endl;
+                trigMode->SetIntValue(off->GetValue());
+            }
+        }
+    } catch (Spinnaker::Exception& e) {
+        std::cerr << "FLIR trigger mode: " << e.what() << std::endl;
+    }
     
     // Configure chunk data by default
     configureChunkData(true, false);
@@ -188,7 +211,10 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
     }
     
     try {
-        ImagePtr pResultImage = pCam->GetNextImage();
+        // Bounded wait: Spinnaker's default waits forever, which froze the
+        // whole main loop (and with it Tcl and the viewer) when a camera
+        // started but sent no frames (trigger mode, USB stall).
+        ImagePtr pResultImage = pCam->GetNextImage(2000);
         
         // Check if image is incomplete
         if (pResultImage->IsIncomplete()) {
@@ -254,6 +280,17 @@ bool FlirCameraSource::getNextFrame(cv::Mat& frame, FrameMetadata& metadata) {
         return true;
         
     } catch (Spinnaker::Exception &e) {
+        if (e.GetError() == SPINNAKER_ERR_TIMEOUT) {
+            // no frame within 2 s; say so every ~10 s rather than every retry
+            static auto lastWarn = std::chrono::steady_clock::time_point();
+            auto now = std::chrono::steady_clock::now();
+            if (now - lastWarn > std::chrono::seconds(10)) {
+                lastWarn = now;
+                std::cerr << "FLIR camera: no frame for 2 s (trigger mode or a stalled link?)"
+                          << std::endl;
+            }
+            return false;
+        }
         std::cerr << "Error: " << e.what() << std::endl;
         return false;
     }
@@ -517,8 +554,17 @@ bool FlirCameraSource::configureFrameRate(float frameRate, float* actualRate) {
     if (!IsAvailable(ptrFrameRate) || !IsWritable(ptrFrameRate))
       return false;
     
-    ptrFrameRate->SetValue(frameRate);
-    
+    // Spinnaker throws OutOfRange past the node's limits (a script asking for
+    // 250 fps on a camera that tops out at 85). Clamp and report so a
+    // too-fast request degrades to "as fast as possible", as the Lucid
+    // source does.
+    double lo = ptrFrameRate->GetMin(), hi = ptrFrameRate->GetMax();
+    double target = std::max(lo, std::min((double) frameRate, hi));
+    if (target != frameRate)
+      std::cerr << "AcquisitionFrameRate " << frameRate << " outside [" << lo
+                << ", " << hi << "], using " << target << std::endl;
+    ptrFrameRate->SetValue(target);
+
     // Read back actual value
     fps = static_cast<float>(ptrFrameRate->GetValue());
     if (actualRate) *actualRate = fps;
@@ -672,17 +718,44 @@ bool FlirCameraSource::configureBinning(int horizontal, int vertical)
     if (IsWritable(ptrWidth)) ptrWidth->SetValue(ptrWidth->GetMin());
     if (IsWritable(ptrHeight)) ptrHeight->SetValue(ptrHeight->GetMin());
     
-    // Now set binning selector and binning amount
+    // Prefer on-sensor binning (raises the achievable frame rate), falling
+    // back to "All" (done after readout, so it shrinks the image but not the
+    // readout time). A selector entry can exist yet allow no binning on a
+    // given sensor (the BFS-PGE-13Y3M's "Sensor" tops out at 1), so only
+    // use one whose range reaches the requested binning. Clear every
+    // selector first so a previous choice doesn't stack with the new one.
     CEnumerationPtr ptrBinningSelector = nodeMap.GetNode("BinningSelector");
+    Spinnaker::GenApi::CIntegerPtr ptrBinH = nodeMap.GetNode("BinningHorizontal");
+    Spinnaker::GenApi::CIntegerPtr ptrBinV = nodeMap.GetNode("BinningVertical");
     if (IsWritable(ptrBinningSelector)) {
-      CEnumEntryPtr ptrBinningSelectorAll = ptrBinningSelector->GetEntryByName("All");
-      if (IsReadable(ptrBinningSelectorAll)) {
-        ptrBinningSelector->SetIntValue(ptrBinningSelectorAll->GetValue());
+      const char* preferred[] = {"Sensor", "All"};
+      for (const char* name : preferred) {
+        CEnumEntryPtr entry = ptrBinningSelector->GetEntryByName(name);
+        if (!IsAvailable(entry)) continue;
+        ptrBinningSelector->SetIntValue(entry->GetValue());
+        if (IsWritable(ptrBinH)) ptrBinH->SetValue(ptrBinH->GetMin());
+        if (IsWritable(ptrBinV)) ptrBinV->SetValue(ptrBinV->GetMin());
+      }
+      bool chosen = false;
+      for (const char* name : preferred) {
+        CEnumEntryPtr entry = ptrBinningSelector->GetEntryByName(name);
+        if (!IsAvailable(entry)) continue;
+        ptrBinningSelector->SetIntValue(entry->GetValue());
+        if (IsWritable(ptrBinH) && IsWritable(ptrBinV) &&
+            ptrBinH->GetMax() >= horizontal && ptrBinV->GetMax() >= vertical) {
+          std::cout << "Binning via the " << name << " selector" << std::endl;
+          chosen = true;
+          break;
+        }
+      }
+      if (!chosen) {
+        CEnumEntryPtr all = ptrBinningSelector->GetEntryByName("All");
+        if (IsAvailable(all)) ptrBinningSelector->SetIntValue(all->GetValue());
       }
     }
-    
-    Spinnaker::GenApi::CIntegerPtr ptrBinningHorizontal = nodeMap.GetNode("BinningHorizontal");
-    Spinnaker::GenApi::CIntegerPtr ptrBinningVertical = nodeMap.GetNode("BinningVertical");
+
+    Spinnaker::GenApi::CIntegerPtr ptrBinningHorizontal = ptrBinH;
+    Spinnaker::GenApi::CIntegerPtr ptrBinningVertical = ptrBinV;
     
     if (IsWritable(ptrBinningHorizontal)) {
       ptrBinningHorizontal->SetValue(horizontal);

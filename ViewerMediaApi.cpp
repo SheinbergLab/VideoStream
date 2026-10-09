@@ -104,8 +104,21 @@ static void append_camera(json_t* arr, const char* vendor, int id,
   json_array_append_new(arr, o);
 }
 
+// On Linux a webcam is /dev/video<N>. Opening an index with no device makes
+// OpenCV spew GStreamer and V4L2 warnings for every attempt, so skip those.
+static bool webcam_device_exists(int i) {
+#ifdef __linux__
+  std::error_code ec;
+  return fs::exists("/dev/video" + std::to_string(i), ec);
+#else
+  (void) i;
+  return true;
+#endif
+}
+
 static void probe_webcams(json_t* cameras) {
   for (int i = 0; i < 4; ++i) {
+    if (!webcam_device_exists(i)) continue;
     cv::VideoCapture cap(i, cv::CAP_ANY);
     if (!cap.isOpened()) continue;
     cap.release();
@@ -116,6 +129,7 @@ static void probe_webcams(json_t* cameras) {
 ViewerCameraPick viewer_probe_first_camera() {
   ViewerCameraPick pick;
   for (int i = 0; i < 4; ++i) {
+    if (!webcam_device_exists(i)) continue;
     cv::VideoCapture cap(i, cv::CAP_ANY);
     if (!cap.isOpened()) continue;
     cap.release();
